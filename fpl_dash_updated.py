@@ -462,7 +462,7 @@ app.layout = html.Div([
             ]),
             
             # DEFCON BONUS TAB
-            dcc.Tab(label='Defcon Bonus', value='defcon-bonus', children=[
+            dcc.Tab(label='Def Con Bonus', value='defcon-bonus', children=[
                 html.Div([
                     html.Div([
                         html.H3("Understanding Defensive Contribution Bonuses", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
@@ -541,7 +541,7 @@ app.layout = html.Div([
             ]),
             
             # BONUS CONSISTENCY TAB
-            dcc.Tab(label='DefCon Bonus: Consistency', value='bonus-consistency', children=[
+            dcc.Tab(label='Def Con Bonus: Consistency', value='bonus-consistency', children=[
                 html.Div([
                     # Explanation Card
                     html.Div([
