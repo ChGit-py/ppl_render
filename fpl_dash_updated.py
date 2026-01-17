@@ -245,6 +245,7 @@ top_form = df_active.nlargest(1, 'form').iloc[0] if len(df_active) > 0 else None
 # =============================================================================
 
 app = Dash(__name__)
+server = app.server
 
 # =============================================================================
 # HELPER FUNCTIONS
