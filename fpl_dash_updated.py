@@ -951,7 +951,7 @@ app.layout = html.Div([
     
     # Footer
     html.Div([
-        html.P(["Built for analytical FPL decision-making • Data from ",
+        html.P(["Built for analytical Fantasy Premier League decision making • Data from ",
                 html.A("Official FPL API", href="https://fantasy.premierleague.com", target="_blank", 
                        style={'color': COLORS['secondary']})],
                style={'color': 'rgba(255,255,255,0.7)', 'fontSize': '13px', 'margin': '0'})
