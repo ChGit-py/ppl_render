@@ -1193,7 +1193,7 @@ def update_cs(position, team, max_price, min_minutes):
 
 if __name__ == '__main__':
     print("\n" + "="*60)
-    print("  FPL Analytics Dashboard")
+    print("  Fantasy Premier League Analytics Dashboard")
     print("="*60)
     print(f"  Current Gameweek: {current_gw['name'] if current_gw else 'N/A'}")
     print(f"  Players loaded: {len(df)}")
