@@ -526,6 +526,7 @@ app.layout = html.Div([
                                 {'name': 'Defcon/90', 'id': 'defcon_per_90', 'type': 'numeric', 'format': {'specifier': '.2f'}},
                                 {'name': 'vs Bonus', 'id': 'defcon_vs_bonus', 'type': 'numeric', 'format': {'specifier': '+.2f'}},
                                 {'name': '% Target', 'id': 'bonus_rate', 'type': 'numeric', 'format': {'specifier': '.0f'}},
+                                {'name': 'Own', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                             ],
                             sort_action='native',
                             page_size=20,
@@ -620,6 +621,7 @@ app.layout = html.Div([
                                 {'name': 'Avg Defcon', 'id': 'avg_defcon_qualifying', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                                 {'name': 'Max', 'id': 'max_defcon_game', 'type': 'numeric'},
                                 {'name': 'Min', 'id': 'min_defcon_game', 'type': 'numeric'},
+                                {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                             ],
                             sort_action='native',
                             page_size=20,
@@ -685,6 +687,7 @@ app.layout = html.Div([
                                 {'name': 'Defcon/90', 'id': 'defcon_per_90', 'type': 'numeric', 'format': {'specifier': '.2f'}},
                                 {'name': 'xDefcon', 'id': 'expected_defcon', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                                 {'name': 'Diff', 'id': 'defcon_diff', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                             ],
                             sort_action='native',
                             page_size=15,
@@ -750,6 +753,7 @@ app.layout = html.Div([
                                 {'name': 'Assists', 'id': 'assists', 'type': 'numeric'},
                                 {'name': 'xA', 'id': 'expected_assists', 'type': 'numeric', 'format': {'specifier': '.2f'}},
                                 {'name': 'xA Diff', 'id': 'xa_diff', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                             ],
                             sort_action='native',
                             page_size=15,
@@ -936,6 +940,7 @@ app.layout = html.Div([
                                 {'name': 'CS/90', 'id': 'cs_per_90', 'type': 'numeric', 'format': {'specifier': '.2f'}},
                                 {'name': 'GC', 'id': 'goals_conceded', 'type': 'numeric'},
                                 {'name': 'GC/90', 'id': 'gc_per_90', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                             ],
                             sort_action='native',
                             page_size=15,
@@ -1005,7 +1010,7 @@ def update_bonus(position, team, max_price, min_minutes):
     bar_fig.add_hline(y=0, line_color='#333', line_width=2)
     bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45, yaxis_title='Distance from Threshold', showlegend=False)
     
-    cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'defcon', 'defcon_per_90', 'defcon_vs_bonus', 'bonus_rate']
+    cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'defcon', 'defcon_per_90', 'defcon_vs_bonus', 'bonus_rate', 'ownership']
     table_data = prepare_table_data(filtered.nlargest(50, 'defcon_per_90'), cols)
     
     return scatter_fig, bar_fig, table_data
@@ -1078,7 +1083,7 @@ def update_consistency(position, team, max_price, min_games, min_minutes):
     )
     
     # Table data
-    cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'qualifying_games', 'bonus_games', 'hit_rate', 'avg_defcon_qualifying', 'max_defcon_game', 'min_defcon_game']
+    cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'qualifying_games', 'bonus_games', 'hit_rate', 'avg_defcon_qualifying', 'max_defcon_game', 'min_defcon_game', 'ownership']
     table_data = prepare_table_data(filtered.nlargest(50, 'hit_rate'), cols)
     
     return bar_fig, scatter_fig, table_data
@@ -1101,7 +1106,7 @@ def update_defcon(position, team, max_price, min_minutes):
         fig.add_trace(go.Scatter(x=[0, max_val], y=[0, max_val], mode='lines', line=dict(dash='dash', color='#999'), name='Expected'))
     fig.update_layout(template='plotly_white', height=400)
     
-    cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'defcon', 'defcon_per_90', 'expected_defcon', 'defcon_diff']
+    cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'defcon', 'defcon_per_90', 'expected_defcon', 'defcon_diff', 'ownership']
     table_data = prepare_table_data(filtered.nlargest(50, 'defcon_per_90'), cols)
     
     return fig, table_data
@@ -1124,7 +1129,7 @@ def update_xg(position, team, max_price, min_minutes):
         fig.add_trace(go.Scatter(x=[0, max_val], y=[0, max_val], mode='lines', line=dict(dash='dash', color='#999'), name='Expected'))
     fig.update_layout(template='plotly_white', height=400)
     
-    cols = ['web_name', 'team_name', 'position', 'price', 'goals_scored', 'expected_goals', 'xg_diff', 'assists', 'expected_assists', 'xa_diff']
+    cols = ['web_name', 'team_name', 'position', 'price', 'goals_scored', 'expected_goals', 'xg_diff', 'assists', 'expected_assists', 'xa_diff', 'ownership']
     table_data = prepare_table_data(filtered.sort_values('xg_diff').head(50), cols)
     
     return fig, table_data
@@ -1183,7 +1188,7 @@ def update_cs(position, team, max_price, min_minutes):
                      hover_name='web_name', hover_data=['price', 'clean_sheets', 'goals_conceded'])
     fig.update_layout(template='plotly_white', height=400)
     
-    cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'clean_sheets', 'cs_per_90', 'goals_conceded', 'gc_per_90']
+    cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'clean_sheets', 'cs_per_90', 'goals_conceded', 'gc_per_90', 'ownership']
     table_data = prepare_table_data(filtered.nlargest(50, 'cs_per_90'), cols)
     
     return fig, table_data
