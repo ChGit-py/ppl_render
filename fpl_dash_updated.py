@@ -365,8 +365,8 @@ def build_position_breakdown_chart():
 
 
 # Prepare home page table data
-home_value_cols = ['web_name', 'team_name', 'position', 'price', 'total_points', 'points_per_million', 'form', 'ownership']
-home_table_data = prepare_table_data(df_active[df_active['minutes'] > 450].nlargest(10, 'points_per_million'), home_value_cols)
+home_value_cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'total_points', 'points_per_million', 'form', 'ownership']
+home_table_data = prepare_table_data(df_active[df_active['minutes'] > 1350].nlargest(15, 'points_per_million'), home_value_cols)
 
 # =============================================================================
 # LAYOUT
@@ -436,7 +436,7 @@ app.layout = html.Div([
                     
                     html.Div([
                         html.H2("Value Watch", style={'color': COLORS['primary'], 'margin': '0 0 4px 0'}),
-                        html.P("Top 10 value picks (min. 450 minutes)", style={'color': COLORS['text_light']})
+                        html.P("Top 15 value picks (min. 1350 minutes)", style={'color': COLORS['text_light']})
                     ], style={'marginBottom': '24px'}),
                     
                     html.Div([
@@ -447,11 +447,13 @@ app.layout = html.Div([
                                 {'name': 'Team', 'id': 'team_name'},
                                 {'name': 'Pos', 'id': 'position'},
                                 {'name': 'Price', 'id': 'price', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                {'name': 'Mins', 'id': 'minutes', 'type': 'numeric'},
                                 {'name': 'Points', 'id': 'total_points', 'type': 'numeric'},
                                 {'name': 'Pts/£m', 'id': 'points_per_million', 'type': 'numeric', 'format': {'specifier': '.2f'}},
                                 {'name': 'Form', 'id': 'form', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                                 {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                             ],
+                            sort_action='native',
                             style_cell=TABLE_STYLE_CELL,
                             style_header=TABLE_STYLE_HEADER,
                             style_data=TABLE_STYLE_DATA,
