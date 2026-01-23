@@ -1,5 +1,5 @@
 """
-FPL Analytics Dashboard
+Fantasy Premier League Analytics Dashboard
 Track Defensive Contributions, Expected Metrics, and Value Picks
 """
 
