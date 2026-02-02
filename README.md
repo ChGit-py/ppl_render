@@ -1,5 +1,5 @@
 # Fantasy Premier League
-An interactive data visualization dashboard for Fantasy Premier League (FPL) analysis, built with Dash and Plotly.
+An interactive data visualisation dashboard for Fantasy Premier League (FPL) analysis, built with Dash and Plotly.
 
 ## Features
 - **Home** – Season overview with key stats, player spotlights, and top value picks
