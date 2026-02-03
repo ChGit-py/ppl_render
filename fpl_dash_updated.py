@@ -1389,7 +1389,7 @@ def update_fdr(position, team, max_price, min_minutes):
     bar_fig.add_trace(go.Bar(
         x=team_fdr['team_name'],
         y=team_fdr['avg_fdr_5'],
-        marker_color=[COLORS['success'] if x <= 2.7 else (COLORS['warning'] if x <= 3.5 else COLORS['danger']) for x in team_fdr['avg_fdr_5']],
+        marker_color=[COLORS['success'] if x <= 2.8 else (COLORS['warning'] if x <= 3.5 else COLORS['danger']) for x in team_fdr['avg_fdr_5']],
         text=[f"{x:.2f}" for x in team_fdr['avg_fdr_5']],
         textposition='outside',
         hovertemplate='%{x}<br>Avg FDR: %{y:.2f}<br>Fixtures: %{customdata}<extra></extra>',
