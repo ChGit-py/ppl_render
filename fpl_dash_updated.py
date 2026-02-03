@@ -1049,7 +1049,7 @@ app.layout = html.Div([
                         html.P([
                             "Rank players by their team's upcoming fixture difficulty. ",
                             html.Strong("Lower FDR = easier fixtures"), ". ",
-                            "FDR ranges from 1 (very easy) to 5 (very hard)."
+                            "FDR ranges from 1 (very easy) to 5 (very hard). Use this tab to see which teams have easier fixtures and potentially target players from those teams."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div([
                             html.Span("📅 Next 5 Gameweeks", style={'backgroundColor': COLORS['secondary'],
