@@ -1403,10 +1403,10 @@ app.layout = html.Div([
             # =================================================================
             # CAPTAIN OPTIMIZER TAB
             # =================================================================
-            dcc.Tab(label='Captain Optimizer', value='captain', children=[
+            dcc.Tab(label='Captain Optimiser', value='captain', children=[
                 html.Div([
                     html.Div([
-                        html.H3("Captain Pick Optimizer", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
+                        html.H3("Captain Pick Optimiser", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
                         html.P([
                             "Captaincy is the ", html.Strong("single biggest rank differentiator"), " in FPL. ",
                             "Your captain's points are doubled, so getting it right every week compounds massively. ",
@@ -1937,7 +1937,7 @@ def update_differentials(position, team, max_price, max_own, min_minutes):
     return scatter_fig, bar_fig, table_data
 
 
-# --- CAPTAIN OPTIMIZER ---
+# --- CAPTAIN OPTIMISER ---
 @callback(
     [Output('cap-bar', 'figure'), Output('cap-ha-scatter', 'figure'), Output('cap-table', 'data')],
     [Input('cap-position', 'value'), Input('cap-team', 'value'), Input('cap-price', 'value'), Input('cap-minutes', 'value')]
@@ -2060,7 +2060,7 @@ if __name__ == '__main__':
     print(f"  Captain candidates with history: {len(player_histories)}")
     print("  Features: Home, DefCon Bonus, Consistency, Defensive,")
     print("  xG/xA, Value, Form, Clean Sheets, Fixtures,")
-    print("  Differentials, Captain Optimizer, Transfer Trends")
+    print("  Differentials, Captain Optimiser, Transfer Trends")
     print("="*60)
     print("\n  Starting server...")
     print("  Open http://127.0.0.1:8053 in your browser")
