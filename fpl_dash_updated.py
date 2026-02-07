@@ -726,7 +726,7 @@ app.layout = html.Div([
             ]),
 
             # DEFCON BONUS TAB
-            dcc.Tab(label='Def Con Bonus', value='defcon-bonus', children=[
+            dcc.Tab(label='Defensive Contributions Bonus', value='defcon-bonus', children=[
                 html.Div([
                     html.Div([
                         html.H3("Understanding Defensive Contribution Bonuses", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
@@ -806,7 +806,7 @@ app.layout = html.Div([
             ]),
 
             # BONUS CONSISTENCY TAB
-            dcc.Tab(label='Def Con Bonus: Consistency', value='bonus-consistency', style={'whiteSpace': 'normal', 'textAlign': 'center'}, selected_style={'whiteSpace': 'normal', 'textAlign': 'center'}, children=[
+            dcc.Tab(label='Defensive Contributions Bonus: Consistency', value='bonus-consistency', style={'whiteSpace': 'normal', 'textAlign': 'center'}, selected_style={'whiteSpace': 'normal', 'textAlign': 'center'}, children=[
                 html.Div([
                     # Explanation Card
                     html.Div([
@@ -1652,7 +1652,8 @@ def update_bonus(position, team, max_price, min_minutes):
         text=top_25['defcon_vs_bonus'].round(2), textposition='outside'
     ))
     bar_fig.add_hline(y=0, line_color='#333', line_width=2)
-    bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45, yaxis_title='Distance from Threshold', showlegend=False, font=dict(family='Arial, sans-serif'))
+    bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45, yaxis_title='Distance from Threshold',
+                          showlegend=False, font=dict(family='Arial, sans-serif'))
 
     cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'defcon', 'defcon_per_90', 'defcon_vs_bonus', 'bonus_rate', 'ownership']
     table_data = prepare_table_data(filtered.nlargest(50, 'defcon_per_90'), cols)
