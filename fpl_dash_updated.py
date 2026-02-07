@@ -1705,7 +1705,8 @@ def update_consistency(position, team, max_price, min_games, min_minutes):
     bar_fig.add_hline(y=50, line_dash="dash", line_color=COLORS['success'], annotation_text="50% threshold", annotation_position="right")
     bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
                           yaxis_title='Bonus Hit Rate (%)', showlegend=False,
-                          yaxis=dict(range=[0, max(top_25['hit_rate'].max() * 1.15, 55) if len(top_25) > 0 else 100]))
+                          yaxis=dict(range=[0, max(top_25['hit_rate'].max() * 1.15, 55) if len(top_25) > 0 else 100]),
+                          font=dict(family='Arial, sans-serif'))
 
     # Scatter - Hit Rate vs Avg Defcon
     scatter_fig = px.scatter(
@@ -1812,7 +1813,8 @@ def update_form(position, team, max_price, min_minutes):
 
     fig = px.bar(top_form, x='web_name', y='form_vs_season', color='form_vs_season',
                  color_continuous_scale=['#dc3545', '#ffc107', '#28a745'], hover_data=['team_name', 'form', 'ppg'])
-    fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45, coloraxis_showscale=False)
+    fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45, coloraxis_showscale=False,
+                      font=dict(family='Arial, sans-serif'))
 
     cols = ['web_name', 'team_name', 'position', 'price', 'form', 'ppg', 'form_vs_season', 'ownership']
     table_data = prepare_table_data(filtered.sort_values('form_vs_season', ascending=False).head(50), cols)
@@ -1867,7 +1869,8 @@ def update_fdr(position, team, max_price, min_minutes):
     bar_fig.add_hline(y=3.0, line_dash="dash", line_color='#999', annotation_text="Avg (3.0)", annotation_position="right")
     bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
                           yaxis_title='Average FDR (Next 5 GWs)', showlegend=False,
-                          yaxis=dict(range=[0, 5.5]))
+                          yaxis=dict(range=[0, 5.5]),
+                          font=dict(family='Arial, sans-serif'))
 
     # Scatter - Total Points vs FDR
     scatter_fig = px.scatter(
@@ -1967,7 +1970,8 @@ def update_captain(position, team, max_price, min_minutes):
     ))
     bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
                           yaxis_title='Captain Score', showlegend=False,
-                          yaxis=dict(range=[0, top_20['captain_score'].max() * 1.1]))
+                          yaxis=dict(range=[0, top_20['captain_score'].max() * 1.1]),
+                          font=dict(family='Arial, sans-serif'))
 
     ha_filtered = filtered.dropna(subset=['home_ppg', 'away_ppg'])
     ha_scatter = px.scatter(
@@ -2013,7 +2017,8 @@ def update_transfers(position, team, max_price, min_minutes):
     ))
     risers_fig.update_layout(template='plotly_white', height=380, xaxis_tickangle=-45,
                              yaxis_title='Net Transfers In', showlegend=False,
-                             yaxis=dict(range=[0, risers['net_transfers_gw'].max() * 1.1]))
+                             yaxis=dict(range=[0, risers['net_transfers_gw'].max() * 1.1]),
+                             font=dict(family='Arial, sans-serif'))
 
     fallers = filtered.nsmallest(20, 'net_transfers_gw')
     fallers_fig = go.Figure()
