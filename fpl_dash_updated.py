@@ -1406,7 +1406,7 @@ app.layout = html.Div([
             dcc.Tab(label='Captain Optimiser', value='captain', children=[
                 html.Div([
                     html.Div([
-                        html.H3("Captain Pick Optimiser", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
+                        html.H2("Captain Pick Optimiser", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
                         html.P([
                             "Captaincy is the ", html.Strong("single biggest rank differentiator"), " in FPL. ",
                             "Your captain's points are doubled, so getting it right every week compounds massively. ",
