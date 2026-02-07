@@ -754,7 +754,7 @@ app.layout = html.Div([
                                 dcc.Slider(id='bonus-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Min. Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Input(id='bonus-minutes', type='number', value=450, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -844,7 +844,7 @@ app.layout = html.Div([
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Min. Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Input(id='consistency-minutes', type='number', value=200, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -921,7 +921,7 @@ app.layout = html.Div([
                                 dcc.Slider(id='defcon-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Min. Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Input(id='defcon-minutes', type='number', value=200, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -986,7 +986,7 @@ app.layout = html.Div([
                                 dcc.Slider(id='xg-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Min. Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Input(id='xg-minutes', type='number', value=200, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -1052,7 +1052,7 @@ app.layout = html.Div([
                                 dcc.Slider(id='value-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Min. Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Input(id='value-minutes', type='number', value=200, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -1111,7 +1111,7 @@ app.layout = html.Div([
                                 dcc.Slider(id='form-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Min. Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Input(id='form-minutes', type='number', value=200, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -1174,7 +1174,7 @@ app.layout = html.Div([
                                 dcc.Slider(id='cs-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Min. Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Input(id='cs-minutes', type='number', value=200, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -1250,7 +1250,7 @@ app.layout = html.Div([
                                 dcc.Slider(id='fdr-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Min. Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Input(id='fdr-minutes', type='number', value=200, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -1346,7 +1346,7 @@ app.layout = html.Div([
                                            marks={i: f'{i}%' for i in [5, 25, 50, 75, 100]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Min. Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Input(id='diff-minutes', type='number', value=450, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -1437,7 +1437,7 @@ app.layout = html.Div([
                                 dcc.Slider(id='cap-price', min=4, max=16, step=0.5, value=16, marks={i: f'{i}' for i in [4, 6, 8, 10, 12, 14, 16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Min. Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Input(id='cap-minutes', type='number', value=450, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -1533,7 +1533,7 @@ app.layout = html.Div([
                                 dcc.Slider(id='xfer-price', min=4, max=16, step=0.5, value=16, marks={i: f'{i}' for i in [4, 6, 8, 10, 12, 14, 16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Min. Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Input(id='xfer-minutes', type='number', value=0, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -1682,7 +1682,7 @@ def update_consistency(position, team, max_price, min_games, min_minutes):
     # Apply price filter
     filtered = filtered[filtered['price'] <= max_price]
 
-    # Apply min minutes filter
+    # Apply Min. Minutes filter
     filtered = filtered[filtered['minutes'] >= min_minutes]
 
     # Apply min games filter
