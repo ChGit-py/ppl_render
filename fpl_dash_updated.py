@@ -443,8 +443,8 @@ top_form = df_active.nlargest(1, 'form').iloc[0] if len(df_active) > 0 else None
 # RANK GAINS: ADDITIONAL DATA PROCESSING
 # =============================================================================
 
-# --- Next fixture venue & FDR for captain optimizer ---
-print("Computing next-fixture data for captain optimizer...")
+# --- Next fixture venue & FDR for captain optimiser ---
+print("Computing next fixture data for captain optimiser...")
 next_gw_num = current_gw_num + 1
 next_gw_fixtures = [f for f in fixtures_data if f.get('event') == next_gw_num]
 
@@ -459,7 +459,7 @@ df_active['next_opponent'] = df_active['team'].map(lambda x: team_next_fixture.g
 df_active['next_venue'] = df_active['team'].map(lambda x: team_next_fixture.get(x, {}).get('venue', ''))
 df_active['next_fdr'] = df_active['team'].map(lambda x: team_next_fixture.get(x, {}).get('fdr', 3))
 
-# --- Home/Away splits via player history (for captain optimizer) ---
+# --- Home/Away splits via player history (for captain optimiser) ---
 print("Fetching player histories for captain & home/away analysis...")
 captain_candidates = df_active[
     (df_active['minutes'] >= 450) &
@@ -1313,12 +1313,12 @@ app.layout = html.Div([
                         html.H3("Ownership Differentials", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
                         html.P([
                             "FPL ranking is ", html.Strong("relative"), ". You gain rank by owning players ",
-                            html.Strong("most managers don't"), " — but only if those players score well. ",
-                            "This tab cross-references strong underlying stats (form, xGI, PPG) with low ownership ",
-                            "to surface the highest-upside differentials."
+                            html.Strong("most managers don't"), " but only if those players score well. ",
+                            "This tab cross references strong underlying stats (form, xGI, PPG) with low ownership ",
+                            "to surface the highest upside differentials."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div([
-                            html.Span("Target: <10% ownership with above-average output",
+                            html.Span("Target: <10% ownership with above average output",
                                       style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
                                              'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
                         ])
@@ -1401,7 +1401,7 @@ app.layout = html.Div([
             ]),
 
             # =================================================================
-            # CAPTAIN OPTIMIZER TAB
+            # CAPTAIN OPTIMISER TAB
             # =================================================================
             dcc.Tab(label='Captain Optimiser', value='captain', children=[
                 html.Div([
