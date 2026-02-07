@@ -733,7 +733,7 @@ app.layout = html.Div([
                         html.P(["Players earn ", html.Strong("2 bonus points"), " when they achieve ",
                                 html.Strong("10+ defensive contributions"), " in a single match."],
                                style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
-                        html.Div([html.Span("ðŸŽ¯ Target: 10 defcon per 90", style={'backgroundColor': COLORS['secondary'],
+                        html.Div([html.Span("Target: 10 defcon per 90", style={'backgroundColor': COLORS['secondary'],
                                   'color': COLORS['primary'], 'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})])
                     ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
@@ -806,7 +806,7 @@ app.layout = html.Div([
             ]),
 
             # BONUS CONSISTENCY TAB
-            dcc.Tab(label='Def Con Bonus: Consistency', value='bonus-consistency', children=[
+            dcc.Tab(label='Def Con Bonus: Consistency', value='bonus-consistency', style={'whiteSpace': 'normal', 'textAlign': 'center'}, selected_style={'whiteSpace': 'normal', 'textAlign': 'center'}, children=[
                 html.Div([
                     # Explanation Card
                     html.Div([
@@ -816,7 +816,7 @@ app.layout = html.Div([
                             "A player averaging 10 defcon per 90 minutes might be inconsistent (20 one week, 0 the next) vs someone who reliably hits 9-11 every game."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div([
-                            html.Span("ðŸ“Š Based on games with 60+ minutes played", style={'backgroundColor': COLORS['secondary'],
+                            html.Span("Based on games with 60+ minutes played", style={'backgroundColor': COLORS['secondary'],
                                       'color': COLORS['primary'], 'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
                         ])
                     ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
@@ -902,7 +902,7 @@ app.layout = html.Div([
             ]),
 
             # DEFENSIVE CONTRIBUTIONS TAB
-            dcc.Tab(label='Defensive Contributions', value='defcon', children=[
+            dcc.Tab(label='Defensive Contributions', value='defcon', style={'whiteSpace': 'normal', 'textAlign': 'center'}, selected_style={'whiteSpace': 'normal', 'textAlign': 'center'}, children=[
                 html.Div([
                     html.Div([
                         html.Div([
@@ -1227,7 +1227,7 @@ app.layout = html.Div([
                             "FDR ranges from 1 (very easy) to 5 (very hard). Use this tab to see which teams have easier fixtures and potentially target players from those teams."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div([
-                            html.Span("ðŸ“… Next 5 Gameweeks", style={'backgroundColor': COLORS['secondary'],
+                            html.Span("Next 5 Gameweeks", style={'backgroundColor': COLORS['secondary'],
                                       'color': COLORS['primary'], 'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
                         ])
                     ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
@@ -1307,7 +1307,7 @@ app.layout = html.Div([
             # =================================================================
             # OWNERSHIP DIFFERENTIALS TAB
             # =================================================================
-            dcc.Tab(label='Differentials', value='differentials', children=[
+            dcc.Tab(label='Differentials', value='differentials', style={'whiteSpace': 'normal', 'textAlign': 'center'}, selected_style={'whiteSpace': 'normal', 'textAlign': 'center'}, children=[
                 html.Div([
                     html.Div([
                         html.H3("Ownership Differentials", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
