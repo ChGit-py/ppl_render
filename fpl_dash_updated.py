@@ -585,7 +585,7 @@ def build_player_spotlight(player, title, metric_label, metric_value):
             'fontSize': '22px',
             'fontWeight': '700'
         }),
-        html.P(f"{player['team_name']} €¢ {player['position']} €¢ £{player['price']:.1f}m", style={
+        html.P(f"{player['team_name']}  {player['position']}  £{player['price']:.1f}m", style={
             'color': COLORS['text_light'],
             'margin': '0 0 16px 0',
             'fontSize': '14px'
@@ -1602,7 +1602,7 @@ app.layout = html.Div([
 
     # Footer
     html.Div([
-        html.P(["Built for analytical Fantasy Premier League decision making €¢ Data from ",
+        html.P(["Built for analytical Fantasy Premier League decision making  Data from ",
                 html.A("Official FPL API", href="https://fantasy.premierleague.com", target="_blank",
                        style={'color': COLORS['secondary']})],
                style={'color': 'rgba(255,255,255,0.7)', 'fontSize': '13px', 'margin': '0'})
@@ -1698,7 +1698,7 @@ def update_consistency(position, team, max_price, min_games, min_minutes):
         marker_color=[COLORS['success'] if x >= 50 else (COLORS['warning'] if x >= 25 else COLORS['danger']) for x in top_25['hit_rate']],
         text=[f"{x:.0f}%" for x in top_25['hit_rate']],
         textposition='outside',
-        hovertemplate='%{x}<br>%{customdata[2]} €¢ %{customdata[3]}<br>Hit Rate: %{y:.1f}%<br>Bonus Games: %{customdata[0]}/%{customdata[1]}<extra></extra>',
+        hovertemplate='%{x}<br>%{customdata[2]}  %{customdata[3]}<br>Hit Rate: %{y:.1f}%<br>Bonus Games: %{customdata[0]}/%{customdata[1]}<extra></extra>',
         customdata=top_25[['bonus_games', 'qualifying_games', 'position', 'team_name']].values
     ))
     bar_fig.add_hline(y=50, line_dash="dash", line_color=COLORS['success'], annotation_text="50% threshold", annotation_position="right")
