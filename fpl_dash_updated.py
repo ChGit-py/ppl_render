@@ -154,6 +154,101 @@ def calculate_bonus_consistency(player_ids, min_minutes=60, bonus_threshold=10):
 
     return results
 
+
+def fetch_player_history_batch(player_ids, max_workers=20):
+    """
+    Fetch match-by-match history for multiple players in parallel.
+    Returns dict of player_id -> list of match dicts.
+    """
+    results = {}
+
+    def _fetch(pid):
+        return pid, fetch_player_history(pid)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_fetch, pid): pid for pid in player_ids}
+        for future in as_completed(futures):
+            pid, history = future.result()
+            if history:
+                results[pid] = history
+    return results
+
+
+# =============================================================================
+# RANK GAINS: CAPTAIN & TRANSFER HELPER FUNCTIONS
+# =============================================================================
+
+def calculate_home_away_splits(player_histories):
+    """
+    From match-by-match history, compute home/away PPG for each player.
+    Returns dict of player_id -> {home_ppg, away_ppg, home_games, away_games}
+    """
+    splits = {}
+    for pid, matches in player_histories.items():
+        home_pts = [m['total_points'] for m in matches if m.get('was_home') and m.get('minutes', 0) >= 60]
+        away_pts = [m['total_points'] for m in matches if not m.get('was_home') and m.get('minutes', 0) >= 60]
+
+        splits[pid] = {
+            'home_ppg': sum(home_pts) / len(home_pts) if home_pts else 0,
+            'away_ppg': sum(away_pts) / len(away_pts) if away_pts else 0,
+            'home_games': len(home_pts),
+            'away_games': len(away_pts),
+        }
+    return splits
+
+
+def compute_captain_score(row, weights=None):
+    """
+    Weighted captain score combining multiple factors.
+    Higher score = better captain pick.
+    """
+    if weights is None:
+        weights = {
+            'form': 0.25,
+            'xgi': 0.20,
+            'ppg': 0.15,
+            'fdr_inv': 0.15,
+            'bps_rate': 0.10,
+            'venue_ppg': 0.10,
+            'ownership_inv': 0.05
+        }
+
+    form_score = row.get('form', 0) or 0
+    xgi_score = row.get('expected_goal_involvements', 0) or 0
+    ppg_score = row.get('ppg', 0) or 0
+    fdr_inv_score = (6 - (row.get('next_fdr', 3) or 3))
+    bps_score = row.get('bps_per_90', 0) or 0
+    venue_ppg_score = row.get('venue_ppg', 0) or 0
+    own_inv_score = max(0, 100 - (row.get('ownership', 50) or 50)) / 100
+
+    raw = (
+        weights['form'] * form_score +
+        weights['xgi'] * xgi_score * 2 +
+        weights['ppg'] * ppg_score +
+        weights['fdr_inv'] * fdr_inv_score * 2 +
+        weights['bps_rate'] * bps_score * 0.3 +
+        weights['venue_ppg'] * venue_ppg_score +
+        weights['ownership_inv'] * own_inv_score * 10
+    )
+    return round(raw, 2)
+
+
+def estimate_price_change_likelihood(row, total_managers):
+    """
+    Heuristic price-change likelihood based on net transfers relative to ownership.
+    Returns a score from -100 (very likely to fall) to +100 (very likely to rise).
+    """
+    ownership_count = (row.get('ownership', 0) / 100) * total_managers
+    if ownership_count <= 0:
+        ownership_count = 1
+
+    net = row.get('net_transfers_gw', 0)
+    ratio = net / ownership_count
+
+    score = np.clip(ratio * 2000, -100, 100)
+    return round(score, 1)
+
+
 # =============================================================================
 # DATA PROCESSING
 # =============================================================================
@@ -200,6 +295,23 @@ def process_player_data(data):
 
     df['cs_per_90'] = (df['clean_sheets'] / df['minutes_safe']) * 90
     df['gc_per_90'] = (df['goals_conceded'] / df['minutes_safe']) * 90
+
+    # Transfer columns
+    df['transfers_in_gw'] = df['transfers_in_event']
+    df['transfers_out_gw'] = df['transfers_out_event']
+    df['net_transfers_gw'] = df['transfers_in_gw'] - df['transfers_out_gw']
+    df['transfer_ratio'] = np.where(
+        df['transfers_out_gw'] > 0,
+        df['transfers_in_gw'] / df['transfers_out_gw'],
+        df['transfers_in_gw']
+    )
+    df['cost_change_start'] = df['cost_change_start'] / 10
+    df['cost_change_event'] = df['cost_change_event'] / 10
+    df['cost_change_start_fall'] = df['cost_change_start_fall'] / 10
+
+    # BPS columns
+    df['bps_per_90'] = (df['bps'] / df['minutes_safe']) * 90
+    df['bonus_per_90'] = (df['bonus'] / df['minutes_safe']) * 90
 
     return df
 
@@ -328,6 +440,69 @@ best_value = df_active[df_active['minutes'] > 450].nlargest(1, 'points_per_milli
 top_form = df_active.nlargest(1, 'form').iloc[0] if len(df_active) > 0 else None
 
 # =============================================================================
+# RANK GAINS: ADDITIONAL DATA PROCESSING
+# =============================================================================
+
+# --- Next fixture venue & FDR for captain optimizer ---
+print("Computing next-fixture data for captain optimizer...")
+next_gw_num = current_gw_num + 1
+next_gw_fixtures = [f for f in fixtures_data if f.get('event') == next_gw_num]
+
+team_next_fixture = {}
+for f in next_gw_fixtures:
+    home_name = teams_df[teams_df['id'] == f['team_h']]['name'].values[0] if f['team_h'] in teams_df['id'].values else 'Unknown'
+    away_name = teams_df[teams_df['id'] == f['team_a']]['name'].values[0] if f['team_a'] in teams_df['id'].values else 'Unknown'
+    team_next_fixture[f['team_h']] = {'opponent': away_name, 'venue': 'H', 'fdr': f.get('team_h_difficulty', 3)}
+    team_next_fixture[f['team_a']] = {'opponent': home_name, 'venue': 'A', 'fdr': f.get('team_a_difficulty', 3)}
+
+df_active['next_opponent'] = df_active['team'].map(lambda x: team_next_fixture.get(x, {}).get('opponent', ''))
+df_active['next_venue'] = df_active['team'].map(lambda x: team_next_fixture.get(x, {}).get('venue', ''))
+df_active['next_fdr'] = df_active['team'].map(lambda x: team_next_fixture.get(x, {}).get('fdr', 3))
+
+# --- Home/Away splits via player history (for captain optimizer) ---
+print("Fetching player histories for captain & home/away analysis...")
+captain_candidates = df_active[
+    (df_active['minutes'] >= 450) &
+    (df_active['position'].isin(['DEF', 'MID', 'FWD']))
+].nlargest(150, 'form')['id'].tolist()
+
+print(f"  Fetching match history for {len(captain_candidates)} captain candidates...")
+player_histories = fetch_player_history_batch(captain_candidates)
+print(f"  Retrieved history for {len(player_histories)} players")
+
+home_away_splits = calculate_home_away_splits(player_histories)
+
+df_active['home_ppg'] = df_active['id'].map(lambda x: home_away_splits.get(x, {}).get('home_ppg'))
+df_active['away_ppg'] = df_active['id'].map(lambda x: home_away_splits.get(x, {}).get('away_ppg'))
+df_active['home_games'] = df_active['id'].map(lambda x: home_away_splits.get(x, {}).get('home_games'))
+df_active['away_games'] = df_active['id'].map(lambda x: home_away_splits.get(x, {}).get('away_games'))
+df_active['venue_ppg'] = df_active.apply(
+    lambda r: r['home_ppg'] if r['next_venue'] == 'H' else r['away_ppg'], axis=1
+)
+df_active['ha_diff'] = df_active['home_ppg'] - df_active['away_ppg']
+
+# --- Captain score ---
+print("Computing captain scores...")
+df_active['captain_score'] = df_active.apply(compute_captain_score, axis=1)
+
+# --- Transfer trend / price prediction ---
+print("Computing price change likelihood scores...")
+df_active['price_change_likelihood'] = df_active.apply(
+    lambda r: estimate_price_change_likelihood(r, total_managers), axis=1
+)
+
+# --- Differential score (high output + low ownership) ---
+df_active['differential_score'] = (
+    (df_active['ppg'].fillna(0) * 0.5) +
+    (df_active['form'].fillna(0) * 0.3) +
+    ((100 - df_active['ownership'].fillna(50)) / 10 * 0.2)
+).round(2)
+
+sorted_teams = sorted(df['team_name'].unique())
+
+print("Rank gains data processing complete.")
+
+# =============================================================================
 # DASH APPLICATION
 # =============================================================================
 
@@ -410,7 +585,7 @@ def build_player_spotlight(player, title, metric_label, metric_value):
             'fontSize': '22px',
             'fontWeight': '700'
         }),
-        html.P(f"{player['team_name']} • {player['position']} • £{player['price']:.1f}m", style={
+        html.P(f"{player['team_name']} â€¢ {player['position']} â€¢ Â£{player['price']:.1f}m", style={
             'color': COLORS['text_light'],
             'margin': '0 0 16px 0',
             'fontSize': '14px'
@@ -441,7 +616,7 @@ def build_position_breakdown_chart():
     fig = go.Figure()
     fig.add_trace(go.Bar(name='Avg Points', x=position_stats['position'], y=position_stats['total_points'],
                          marker_color=COLORS['primary'], text=position_stats['total_points'].round(1), textposition='outside'))
-    fig.add_trace(go.Bar(name='Avg Pts/£m (x10)', x=position_stats['position'], y=position_stats['points_per_million'] * 10,
+    fig.add_trace(go.Bar(name='Avg Pts/Â£m (x10)', x=position_stats['position'], y=position_stats['points_per_million'] * 10,
                          marker_color=COLORS['secondary'], text=position_stats['points_per_million'].round(2), textposition='outside'))
 
     fig.update_layout(barmode='group', template='plotly_white', height=350,
@@ -510,7 +685,7 @@ app.layout = html.Div([
                     html.Div([
                         build_player_spotlight(top_scorer, "Top Scorer", "Total Points", f"{int(top_scorer['total_points'])}" if top_scorer is not None else "N/A"),
                         build_player_spotlight(most_selected, "Most Selected", "Ownership", f"{most_selected['ownership']:.1f}%" if most_selected is not None else "N/A"),
-                        build_player_spotlight(best_value, "Best Value", "Points/£m", f"{best_value['points_per_million']:.2f}" if best_value is not None else "N/A"),
+                        build_player_spotlight(best_value, "Best Value", "Points/Â£m", f"{best_value['points_per_million']:.2f}" if best_value is not None else "N/A"),
                         build_player_spotlight(top_form, "In Form", "Form Rating", f"{top_form['form']:.1f}" if top_form is not None else "N/A"),
                     ], style={'display': 'flex', 'flexWrap': 'wrap', 'gap': '20px', 'marginBottom': '40px'}),
 
@@ -536,7 +711,7 @@ app.layout = html.Div([
                                 {'name': 'Price', 'id': 'price', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                                 {'name': 'Mins', 'id': 'minutes', 'type': 'numeric'},
                                 {'name': 'Points', 'id': 'total_points', 'type': 'numeric'},
-                                {'name': 'Pts/£m', 'id': 'points_per_million', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'Pts/Â£m', 'id': 'points_per_million', 'type': 'numeric', 'format': {'specifier': '.2f'}},
                                 {'name': 'Form', 'id': 'form', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                                 {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                             ],
@@ -558,7 +733,7 @@ app.layout = html.Div([
                         html.P(["Players earn ", html.Strong("2 bonus points"), " when they achieve ",
                                 html.Strong("10+ defensive contributions"), " in a single match."],
                                style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
-                        html.Div([html.Span("🎯 Target: 10 defcon per 90", style={'backgroundColor': COLORS['secondary'],
+                        html.Div([html.Span("ðŸŽ¯ Target: 10 defcon per 90", style={'backgroundColor': COLORS['secondary'],
                                   'color': COLORS['primary'], 'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})])
                     ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
@@ -576,7 +751,7 @@ app.layout = html.Div([
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Max Price", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Slider(id='bonus-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
+                                dcc.Slider(id='bonus-price', min=4, max=16, step=0.5, value=16, marks={i: f'Â£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
@@ -641,7 +816,7 @@ app.layout = html.Div([
                             "A player averaging 10 defcon per 90 minutes might be inconsistent (20 one week, 0 the next) vs someone who reliably hits 9-11 every game."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div([
-                            html.Span("📊 Based on games with 60+ minutes played", style={'backgroundColor': COLORS['secondary'],
+                            html.Span("ðŸ“Š Based on games with 60+ minutes played", style={'backgroundColor': COLORS['secondary'],
                                       'color': COLORS['primary'], 'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
                         ])
                     ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
@@ -661,7 +836,7 @@ app.layout = html.Div([
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Max Price", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Slider(id='consistency-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
+                                dcc.Slider(id='consistency-price', min=4, max=16, step=0.5, value=16, marks={i: f'Â£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Min Games", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
@@ -743,7 +918,7 @@ app.layout = html.Div([
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Max Price", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Slider(id='defcon-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
+                                dcc.Slider(id='defcon-price', min=4, max=16, step=0.5, value=16, marks={i: f'Â£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
@@ -808,7 +983,7 @@ app.layout = html.Div([
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Max Price", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Slider(id='xg-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
+                                dcc.Slider(id='xg-price', min=4, max=16, step=0.5, value=16, marks={i: f'Â£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
@@ -874,7 +1049,7 @@ app.layout = html.Div([
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Max Price", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Slider(id='value-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
+                                dcc.Slider(id='value-price', min=4, max=16, step=0.5, value=16, marks={i: f'Â£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
@@ -886,7 +1061,7 @@ app.layout = html.Div([
 
                     html.Div([
                         html.H3("Points vs Price", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-                        html.P("Find the best value players by points returned per £1m invested.", style={'color': COLORS['text_light']}),
+                        html.P("Find the best value players by points returned per Â£1m invested.", style={'color': COLORS['text_light']}),
                         dcc.Graph(id='value-scatter')
                     ], style=CARD_STYLE),
 
@@ -901,7 +1076,7 @@ app.layout = html.Div([
                                 {'name': 'Pos', 'id': 'position'},
                                 {'name': 'Price', 'id': 'price', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                                 {'name': 'Points', 'id': 'total_points', 'type': 'numeric'},
-                                {'name': 'Pts/£m', 'id': 'points_per_million', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'Pts/Â£m', 'id': 'points_per_million', 'type': 'numeric', 'format': {'specifier': '.2f'}},
                                 {'name': 'Form', 'id': 'form', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                                 {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                             ],
@@ -933,7 +1108,7 @@ app.layout = html.Div([
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Max Price", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Slider(id='form-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
+                                dcc.Slider(id='form-price', min=4, max=16, step=0.5, value=16, marks={i: f'Â£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
@@ -996,7 +1171,7 @@ app.layout = html.Div([
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Max Price", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Slider(id='cs-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
+                                dcc.Slider(id='cs-price', min=4, max=16, step=0.5, value=16, marks={i: f'Â£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
@@ -1052,7 +1227,7 @@ app.layout = html.Div([
                             "FDR ranges from 1 (very easy) to 5 (very hard). Use this tab to see which teams have easier fixtures and potentially target players from those teams."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div([
-                            html.Span("📅 Next 5 Gameweeks", style={'backgroundColor': COLORS['secondary'],
+                            html.Span("ðŸ“… Next 5 Gameweeks", style={'backgroundColor': COLORS['secondary'],
                                       'color': COLORS['primary'], 'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
                         ])
                     ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
@@ -1072,7 +1247,7 @@ app.layout = html.Div([
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Max Price", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Slider(id='fdr-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
+                                dcc.Slider(id='fdr-price', min=4, max=16, step=0.5, value=16, marks={i: f'Â£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
@@ -1128,13 +1303,306 @@ app.layout = html.Div([
                     ], style=CARD_STYLE)
                 ], style={'padding': '20px 0'})
             ]),
+
+            # =================================================================
+            # OWNERSHIP DIFFERENTIALS TAB
+            # =================================================================
+            dcc.Tab(label='Differentials', value='differentials', children=[
+                html.Div([
+                    html.Div([
+                        html.H3("Ownership Differentials", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
+                        html.P([
+                            "FPL ranking is ", html.Strong("relative"), ". You gain rank by owning players ",
+                            html.Strong("most managers don't"), " — but only if those players score well. ",
+                            "This tab cross-references strong underlying stats (form, xGI, PPG) with low ownership ",
+                            "to surface the highest-upside differentials."
+                        ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
+                        html.Div([
+                            html.Span("Target: <10% ownership with above-average output",
+                                      style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
+                                             'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
+                        ])
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+
+                    html.Div([
+                        html.Div([
+                            html.Div([
+                                html.Label("Position", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Dropdown(id='diff-position', options=[{'label': 'All', 'value': 'All'}] +
+                                             [{'label': p, 'value': p} for p in ['GKP', 'DEF', 'MID', 'FWD']], value='All', clearable=False)
+                            ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Team", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Dropdown(id='diff-team', options=[{'label': 'All', 'value': 'All'}] +
+                                             [{'label': t, 'value': t} for t in sorted_teams], value='All', clearable=False)
+                            ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Max Price", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Slider(id='diff-price', min=4, max=16, step=0.5, value=16, marks={i: f'{i}' for i in [4, 6, 8, 10, 12, 14, 16]})
+                            ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Max Ownership %", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Slider(id='diff-max-own', min=1, max=50, step=1, value=15,
+                                           marks={1: '1%', 5: '5%', 10: '10%', 15: '15%', 25: '25%', 50: '50%'})
+                            ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Input(id='diff-minutes', type='number', value=450, min=0, step=50,
+                                          style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
+                            ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
+                        ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-end'})
+                    ], style=CARD_STYLE),
+
+                    html.Div([
+                        html.H3("PPG vs Ownership", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+                        html.P("Top-left quadrant = high output, low ownership. These are your rank-gainers.",
+                               style={'color': COLORS['text_light']}),
+                        dcc.Graph(id='diff-scatter')
+                    ], style=CARD_STYLE),
+
+                    html.Div([
+                        html.H3("Top Differentials by Composite Score", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+                        html.P("Weighted score combining PPG, form, and low ownership.", style={'color': COLORS['text_light']}),
+                        dcc.Graph(id='diff-bar')
+                    ], style=CARD_STYLE),
+
+                    html.Div([
+                        html.H4("Differential Rankings", style={'color': COLORS['primary'], 'marginBottom': '16px'}),
+                        dash_table.DataTable(
+                            id='diff-table',
+                            data=[],
+                            columns=[
+                                {'name': 'Player', 'id': 'web_name'},
+                                {'name': 'Team', 'id': 'team_name'},
+                                {'name': 'Pos', 'id': 'position'},
+                                {'name': 'Price', 'id': 'price', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                {'name': 'Points', 'id': 'total_points', 'type': 'numeric'},
+                                {'name': 'Form', 'id': 'form', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                {'name': 'PPG', 'id': 'ppg', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'xGI', 'id': 'expected_goal_involvements', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                {'name': 'Diff Score', 'id': 'differential_score', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'Avg FDR', 'id': 'avg_fdr_5', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'Next 5', 'id': 'fixture_string'},
+                            ],
+                            sort_action='native',
+                            page_size=20,
+                            style_cell=TABLE_STYLE_CELL,
+                            style_header=TABLE_STYLE_HEADER,
+                            style_data=TABLE_STYLE_DATA,
+                            style_data_conditional=[
+                                {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
+                                {'if': {'filter_query': '{ownership} <= 5', 'column_id': 'ownership'}, 'backgroundColor': '#e8f5e9'},
+                                {'if': {'filter_query': '{ownership} > 5 && {ownership} <= 10', 'column_id': 'ownership'}, 'backgroundColor': '#fff8e1'},
+                            ]
+                        )
+                    ], style=CARD_STYLE)
+                ], style={'padding': '20px 0'})
+            ]),
+
+            # =================================================================
+            # CAPTAIN OPTIMIZER TAB
+            # =================================================================
+            dcc.Tab(label='Captain Optimizer', value='captain', children=[
+                html.Div([
+                    html.Div([
+                        html.H3("Captain Pick Optimizer", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
+                        html.P([
+                            "Captaincy is the ", html.Strong("single biggest rank differentiator"), " in FPL. ",
+                            "Your captain's points are doubled, so getting it right every week compounds massively. ",
+                            "This tool scores candidates using a weighted model: ",
+                            html.Strong("Form (25%), xGI (20%), PPG (15%), Fixture ease (15%), BPS rate (10%), Home/Away PPG (10%), Differential (5%)"), "."
+                        ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
+                        html.Div([
+                            html.Span(f"Next fixture: GW{next_gw_num}",
+                                      style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
+                                             'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
+                        ])
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+
+                    html.Div([
+                        html.Div([
+                            html.Div([
+                                html.Label("Position", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Dropdown(id='cap-position', options=[{'label': 'All', 'value': 'All'}] +
+                                             [{'label': p, 'value': p} for p in ['DEF', 'MID', 'FWD']], value='All', clearable=False)
+                            ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Team", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Dropdown(id='cap-team', options=[{'label': 'All', 'value': 'All'}] +
+                                             [{'label': t, 'value': t} for t in sorted_teams], value='All', clearable=False)
+                            ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Max Price", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Slider(id='cap-price', min=4, max=16, step=0.5, value=16, marks={i: f'{i}' for i in [4, 6, 8, 10, 12, 14, 16]})
+                            ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Input(id='cap-minutes', type='number', value=450, min=0, step=50,
+                                          style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
+                            ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
+                        ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-end'})
+                    ], style=CARD_STYLE),
+
+                    html.Div([
+                        html.H3("Top Captain Picks (Weighted Score)", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+                        html.P("Composite score combining form, xGI, fixtures, BPS, and home/away splits.",
+                               style={'color': COLORS['text_light']}),
+                        dcc.Graph(id='cap-bar')
+                    ], style=CARD_STYLE),
+
+                    html.Div([
+                        html.H3("Home vs Away PPG", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+                        html.P("Players above the diagonal perform better at home. Use this alongside next fixture venue.",
+                               style={'color': COLORS['text_light']}),
+                        dcc.Graph(id='cap-ha-scatter')
+                    ], style=CARD_STYLE),
+
+                    html.Div([
+                        html.H4("Captain Rankings", style={'color': COLORS['primary'], 'marginBottom': '16px'}),
+                        dash_table.DataTable(
+                            id='cap-table',
+                            data=[],
+                            columns=[
+                                {'name': 'Player', 'id': 'web_name'},
+                                {'name': 'Team', 'id': 'team_name'},
+                                {'name': 'Pos', 'id': 'position'},
+                                {'name': 'Price', 'id': 'price', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                {'name': 'Captain Score', 'id': 'captain_score', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'Form', 'id': 'form', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                {'name': 'PPG', 'id': 'ppg', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'xGI', 'id': 'expected_goal_involvements', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'Next', 'id': 'next_opponent'},
+                                {'name': 'Venue', 'id': 'next_venue'},
+                                {'name': 'FDR', 'id': 'next_fdr', 'type': 'numeric'},
+                                {'name': 'Home PPG', 'id': 'home_ppg', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'Away PPG', 'id': 'away_ppg', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'BPS/90', 'id': 'bps_per_90', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                            ],
+                            sort_action='native',
+                            page_size=20,
+                            style_cell=TABLE_STYLE_CELL,
+                            style_header=TABLE_STYLE_HEADER,
+                            style_data=TABLE_STYLE_DATA,
+                            style_data_conditional=[
+                                {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
+                                {'if': {'filter_query': '{next_fdr} <= 2', 'column_id': 'next_fdr'}, 'backgroundColor': '#e8f5e9'},
+                                {'if': {'filter_query': '{next_fdr} >= 4', 'column_id': 'next_fdr'}, 'backgroundColor': '#ffebee'},
+                                {'if': {'filter_query': '{next_venue} = H', 'column_id': 'next_venue'}, 'color': COLORS['success'], 'fontWeight': '600'},
+                                {'if': {'filter_query': '{next_venue} = A', 'column_id': 'next_venue'}, 'color': COLORS['danger'], 'fontWeight': '600'},
+                            ]
+                        )
+                    ], style=CARD_STYLE)
+                ], style={'padding': '20px 0'})
+            ]),
+
+            # =================================================================
+            # TRANSFER TRENDS TAB
+            # =================================================================
+            dcc.Tab(label='Transfer Trends', value='transfers', children=[
+                html.Div([
+                    html.Div([
+                        html.H3("Transfer Trends & Price Prediction", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
+                        html.P([
+                            "Getting ahead of price changes by even ", html.Strong("one day"), " compounds over a season. ",
+                            "Every 0.1m saved means better players later. This tab tracks net transfer velocity and estimates ",
+                            "which players are closest to a price rise or fall based on transfer-to-ownership ratios."
+                        ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
+                        html.Div([
+                            html.Span("Price changes happen overnight based on transfer activity",
+                                      style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
+                                             'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
+                        ])
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+
+                    html.Div([
+                        html.Div([
+                            html.Div([
+                                html.Label("Position", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Dropdown(id='xfer-position', options=[{'label': 'All', 'value': 'All'}] +
+                                             [{'label': p, 'value': p} for p in ['GKP', 'DEF', 'MID', 'FWD']], value='All', clearable=False)
+                            ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Team", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Dropdown(id='xfer-team', options=[{'label': 'All', 'value': 'All'}] +
+                                             [{'label': t, 'value': t} for t in sorted_teams], value='All', clearable=False)
+                            ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Max Price", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Slider(id='xfer-price', min=4, max=16, step=0.5, value=16, marks={i: f'{i}' for i in [4, 6, 8, 10, 12, 14, 16]})
+                            ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Input(id='xfer-minutes', type='number', value=0, min=0, step=50,
+                                          style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
+                            ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
+                        ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-end'})
+                    ], style=CARD_STYLE),
+
+                    html.Div([
+                        html.H3("Likely Price Risers", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+                        html.P("Players with the highest net transfer-in velocity relative to ownership. Buy before the rise.",
+                               style={'color': COLORS['text_light']}),
+                        dcc.Graph(id='xfer-risers-bar')
+                    ], style=CARD_STYLE),
+
+                    html.Div([
+                        html.H3("Likely Price Fallers", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+                        html.P("Players being sold fastest. Sell before the drop to preserve team value.",
+                               style={'color': COLORS['text_light']}),
+                        dcc.Graph(id='xfer-fallers-bar')
+                    ], style=CARD_STYLE),
+
+                    html.Div([
+                        html.H3("Transfer Momentum vs Season Price Change", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+                        html.P("See which players still have room to rise or have further to fall.",
+                               style={'color': COLORS['text_light']}),
+                        dcc.Graph(id='xfer-scatter')
+                    ], style=CARD_STYLE),
+
+                    html.Div([
+                        html.H4("Transfer Activity This Gameweek", style={'color': COLORS['primary'], 'marginBottom': '16px'}),
+                        dash_table.DataTable(
+                            id='xfer-table',
+                            data=[],
+                            columns=[
+                                {'name': 'Player', 'id': 'web_name'},
+                                {'name': 'Team', 'id': 'team_name'},
+                                {'name': 'Pos', 'id': 'position'},
+                                {'name': 'Price', 'id': 'price', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                {'name': 'GW In', 'id': 'transfers_in_gw', 'type': 'numeric'},
+                                {'name': 'GW Out', 'id': 'transfers_out_gw', 'type': 'numeric'},
+                                {'name': 'Net', 'id': 'net_transfers_gw', 'type': 'numeric'},
+                                {'name': 'In/Out', 'id': 'transfer_ratio', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'Price Chg', 'id': 'price_change_likelihood', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                {'name': 'Season +/-', 'id': 'cost_change_start', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                {'name': 'Form', 'id': 'form', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                            ],
+                            sort_action='native',
+                            page_size=20,
+                            style_cell=TABLE_STYLE_CELL,
+                            style_header=TABLE_STYLE_HEADER,
+                            style_data=TABLE_STYLE_DATA,
+                            style_data_conditional=[
+                                {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
+                                {'if': {'filter_query': '{net_transfers_gw} > 0', 'column_id': 'net_transfers_gw'}, 'backgroundColor': '#e8f5e9'},
+                                {'if': {'filter_query': '{net_transfers_gw} < 0', 'column_id': 'net_transfers_gw'}, 'backgroundColor': '#ffebee'},
+                                {'if': {'filter_query': '{price_change_likelihood} >= 50', 'column_id': 'price_change_likelihood'}, 'backgroundColor': '#e8f5e9'},
+                                {'if': {'filter_query': '{price_change_likelihood} <= -50', 'column_id': 'price_change_likelihood'}, 'backgroundColor': '#ffebee'},
+                            ]
+                        )
+                    ], style=CARD_STYLE)
+                ], style={'padding': '20px 0'})
+            ]),
         ])
     ], style={'maxWidth': '1400px', 'margin': '0 auto', 'padding': '24px 20px',
               'backgroundColor': COLORS['background'], 'minHeight': 'calc(100vh - 60px)'}),
 
     # Footer
     html.Div([
-        html.P(["Built for analytical Fantasy Premier League decision making • Data from ",
+        html.P(["Built for analytical Fantasy Premier League decision making â€¢ Data from ",
                 html.A("Official FPL API", href="https://fantasy.premierleague.com", target="_blank",
                        style={'color': COLORS['secondary']})],
                style={'color': 'rgba(255,255,255,0.7)', 'fontSize': '13px', 'margin': '0'})
@@ -1174,7 +1642,7 @@ def update_bonus(position, team, max_price, min_minutes):
                              color_discrete_map={'DEF': COLORS['primary'], 'MID': COLORS['accent'], 'FWD': COLORS['info']})
     scatter_fig.add_hline(y=10, line_dash="dash", line_color=COLORS['danger'],
                           annotation_text="Bonus Threshold (10)", annotation_position="top right")
-    scatter_fig.update_layout(template='plotly_white', height=400, xaxis_title='Price (£m)', yaxis_title='Defcon per 90')
+    scatter_fig.update_layout(template='plotly_white', height=400, xaxis_title='Price (Â£m)', yaxis_title='Defcon per 90')
 
     top_25 = filtered.nlargest(25, 'defcon_per_90')
     bar_fig = go.Figure()
@@ -1230,7 +1698,7 @@ def update_consistency(position, team, max_price, min_games, min_minutes):
         marker_color=[COLORS['success'] if x >= 50 else (COLORS['warning'] if x >= 25 else COLORS['danger']) for x in top_25['hit_rate']],
         text=[f"{x:.0f}%" for x in top_25['hit_rate']],
         textposition='outside',
-        hovertemplate='%{x}<br>%{customdata[2]} • %{customdata[3]}<br>Hit Rate: %{y:.1f}%<br>Bonus Games: %{customdata[0]}/%{customdata[1]}<extra></extra>',
+        hovertemplate='%{x}<br>%{customdata[2]} â€¢ %{customdata[3]}<br>Hit Rate: %{y:.1f}%<br>Bonus Games: %{customdata[0]}/%{customdata[1]}<extra></extra>',
         customdata=top_25[['bonus_games', 'qualifying_games', 'position', 'team_name']].values
     ))
     bar_fig.add_hline(y=50, line_dash="dash", line_color=COLORS['success'], annotation_text="50% threshold", annotation_position="right")
@@ -1426,6 +1894,158 @@ def update_fdr(position, team, max_price, min_minutes):
     return bar_fig, scatter_fig, table_data
 
 
+# --- OWNERSHIP DIFFERENTIALS ---
+@callback(
+    [Output('diff-scatter', 'figure'), Output('diff-bar', 'figure'), Output('diff-table', 'data')],
+    [Input('diff-position', 'value'), Input('diff-team', 'value'), Input('diff-price', 'value'),
+     Input('diff-max-own', 'value'), Input('diff-minutes', 'value')]
+)
+def update_differentials(position, team, max_price, max_own, min_minutes):
+    filtered = filter_data(position, team, max_price, min_minutes)
+    filtered = filtered[filtered['ownership'] <= max_own]
+    filtered = filtered.dropna(subset=['ppg', 'ownership'])
+
+    scatter_fig = px.scatter(
+        filtered, x='ownership', y='ppg', color='position', size='form',
+        hover_name='web_name',
+        hover_data=['team_name', 'price', 'form', 'expected_goal_involvements', 'total_points'],
+        color_discrete_map={'GKP': '#666', 'DEF': COLORS['primary'], 'MID': COLORS['accent'], 'FWD': COLORS['info']}
+    )
+    if len(filtered) > 0:
+        median_ppg = df_active[df_active['minutes'] >= 450]['ppg'].median()
+        scatter_fig.add_hline(y=median_ppg, line_dash='dash', line_color='#999',
+                              annotation_text=f'Median PPG ({median_ppg:.1f})', annotation_position='top right')
+    scatter_fig.update_layout(template='plotly_white', height=400, xaxis_title='Ownership %', yaxis_title='Points Per Game')
+
+    top_25 = filtered.nlargest(25, 'differential_score')
+    bar_fig = go.Figure()
+    bar_fig.add_trace(go.Bar(
+        x=top_25['web_name'], y=top_25['differential_score'],
+        marker_color=COLORS['accent'],
+        text=[f"{x:.1f}" for x in top_25['differential_score']],
+        textposition='outside',
+        hovertemplate='%{x}<br>Score: %{y:.2f}<br>Own: %{customdata[0]:.1f}%<br>PPG: %{customdata[1]:.2f}<extra></extra>',
+        customdata=top_25[['ownership', 'ppg']].values
+    ))
+    bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
+                          yaxis_title='Differential Score', showlegend=False)
+
+    cols = ['web_name', 'team_name', 'position', 'price', 'total_points', 'form', 'ppg',
+            'expected_goal_involvements', 'ownership', 'differential_score', 'avg_fdr_5', 'fixture_string']
+    table_data = prepare_table_data(filtered.nlargest(50, 'differential_score'), cols)
+
+    return scatter_fig, bar_fig, table_data
+
+
+# --- CAPTAIN OPTIMIZER ---
+@callback(
+    [Output('cap-bar', 'figure'), Output('cap-ha-scatter', 'figure'), Output('cap-table', 'data')],
+    [Input('cap-position', 'value'), Input('cap-team', 'value'), Input('cap-price', 'value'), Input('cap-minutes', 'value')]
+)
+def update_captain(position, team, max_price, min_minutes):
+    filtered = filter_data(position, team, max_price, min_minutes, positions_allowed=['DEF', 'MID', 'FWD'])
+    filtered = filtered.dropna(subset=['captain_score'])
+    filtered = filtered[filtered['captain_score'] > 0]
+
+    top_20 = filtered.nlargest(20, 'captain_score')
+    bar_fig = go.Figure()
+    bar_fig.add_trace(go.Bar(
+        x=top_20['web_name'], y=top_20['captain_score'],
+        marker_color=[COLORS['success'] if v == 'H' else COLORS['info'] for v in top_20['next_venue']],
+        text=[f"{s:.1f}" for s in top_20['captain_score']],
+        textposition='outside',
+        hovertemplate=(
+            '%{x}<br>'
+            'Score: %{y:.2f}<br>'
+            'vs %{customdata[0]} (%{customdata[1]})<br>'
+            'FDR: %{customdata[2]}<br>'
+            'Form: %{customdata[3]:.1f}<extra></extra>'
+        ),
+        customdata=top_20[['next_opponent', 'next_venue', 'next_fdr', 'form']].values
+    ))
+    bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
+                          yaxis_title='Captain Score', showlegend=False)
+
+    ha_filtered = filtered.dropna(subset=['home_ppg', 'away_ppg'])
+    ha_scatter = px.scatter(
+        ha_filtered, x='away_ppg', y='home_ppg', color='position',
+        hover_name='web_name',
+        hover_data=['team_name', 'next_opponent', 'next_venue', 'price'],
+        color_discrete_map={'DEF': COLORS['primary'], 'MID': COLORS['accent'], 'FWD': COLORS['info']}
+    )
+    if len(ha_filtered) > 0:
+        max_val = max(ha_filtered['home_ppg'].max(), ha_filtered['away_ppg'].max(), 1)
+        ha_scatter.add_trace(go.Scatter(x=[0, max_val], y=[0, max_val], mode='lines',
+                                        line=dict(dash='dash', color='#999'), name='Equal'))
+    ha_scatter.update_layout(template='plotly_white', height=400, xaxis_title='Away PPG', yaxis_title='Home PPG')
+
+    cols = ['web_name', 'team_name', 'position', 'price', 'captain_score', 'form', 'ppg',
+            'expected_goal_involvements', 'next_opponent', 'next_venue', 'next_fdr',
+            'home_ppg', 'away_ppg', 'bps_per_90', 'ownership']
+    table_data = prepare_table_data(filtered.nlargest(50, 'captain_score'), cols)
+
+    return bar_fig, ha_scatter, table_data
+
+
+# --- TRANSFER TRENDS ---
+@callback(
+    [Output('xfer-risers-bar', 'figure'), Output('xfer-fallers-bar', 'figure'),
+     Output('xfer-scatter', 'figure'), Output('xfer-table', 'data')],
+    [Input('xfer-position', 'value'), Input('xfer-team', 'value'),
+     Input('xfer-price', 'value'), Input('xfer-minutes', 'value')]
+)
+def update_transfers(position, team, max_price, min_minutes):
+    filtered = filter_data(position, team, max_price, min_minutes)
+    filtered = filtered.dropna(subset=['net_transfers_gw'])
+
+    risers = filtered.nlargest(20, 'net_transfers_gw')
+    risers_fig = go.Figure()
+    risers_fig.add_trace(go.Bar(
+        x=risers['web_name'], y=risers['net_transfers_gw'],
+        marker_color=COLORS['success'],
+        text=[f"+{int(x):,}" for x in risers['net_transfers_gw']],
+        textposition='outside',
+        hovertemplate='%{x}<br>Net In: +%{y:,.0f}<br>Price: %{customdata[0]:.1f}<br>Own: %{customdata[1]:.1f}%<extra></extra>',
+        customdata=risers[['price', 'ownership']].values
+    ))
+    risers_fig.update_layout(template='plotly_white', height=380, xaxis_tickangle=-45,
+                             yaxis_title='Net Transfers In', showlegend=False)
+
+    fallers = filtered.nsmallest(20, 'net_transfers_gw')
+    fallers_fig = go.Figure()
+    fallers_fig.add_trace(go.Bar(
+        x=fallers['web_name'], y=fallers['net_transfers_gw'],
+        marker_color=COLORS['danger'],
+        text=[f"{int(x):,}" for x in fallers['net_transfers_gw']],
+        textposition='outside',
+        hovertemplate='%{x}<br>Net Out: %{y:,.0f}<br>Price: %{customdata[0]:.1f}<br>Own: %{customdata[1]:.1f}%<extra></extra>',
+        customdata=fallers[['price', 'ownership']].values
+    ))
+    fallers_fig.update_layout(template='plotly_white', height=380, xaxis_tickangle=-45,
+                              yaxis_title='Net Transfers Out', showlegend=False)
+
+    scatter_fig = px.scatter(
+        filtered[filtered['ownership'] >= 1],
+        x='net_transfers_gw', y='cost_change_start',
+        color='position', size='ownership',
+        hover_name='web_name',
+        hover_data=['team_name', 'price', 'form', 'transfers_in_gw', 'transfers_out_gw'],
+        color_discrete_map={'GKP': '#666', 'DEF': COLORS['primary'], 'MID': COLORS['accent'], 'FWD': COLORS['info']}
+    )
+    scatter_fig.add_hline(y=0, line_dash='dash', line_color='#999')
+    scatter_fig.add_vline(x=0, line_dash='dash', line_color='#999')
+    scatter_fig.update_layout(template='plotly_white', height=400,
+                              xaxis_title='Net Transfers This GW', yaxis_title='Season Price Change (m)')
+
+    sorted_by_activity = filtered.copy()
+    sorted_by_activity['abs_net'] = sorted_by_activity['net_transfers_gw'].abs()
+    cols = ['web_name', 'team_name', 'position', 'price', 'transfers_in_gw', 'transfers_out_gw',
+            'net_transfers_gw', 'transfer_ratio', 'price_change_likelihood', 'cost_change_start', 'form', 'ownership']
+    table_data = prepare_table_data(sorted_by_activity.nlargest(50, 'abs_net'), cols)
+
+    return risers_fig, fallers_fig, scatter_fig, table_data
+
+
 # =============================================================================
 # RUN
 # =============================================================================
@@ -1437,6 +2057,10 @@ if __name__ == '__main__':
     print(f"  Current Gameweek: {current_gw['name'] if current_gw else 'N/A'}")
     print(f"  Players loaded: {len(df)}")
     print(f"  Active players: {len(df_active)}")
+    print(f"  Captain candidates with history: {len(player_histories)}")
+    print("  Features: Home, DefCon Bonus, Consistency, Defensive,")
+    print("  xG/xA, Value, Form, Clean Sheets, Fixtures,")
+    print("  Differentials, Captain Optimizer, Transfer Trends")
     print("="*60)
     print("\n  Starting server...")
     print("  Open http://127.0.0.1:8053 in your browser")
