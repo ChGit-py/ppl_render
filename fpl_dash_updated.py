@@ -1342,8 +1342,8 @@ app.layout = html.Div([
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Max Ownership %", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Slider(id='diff-max-own', min=1, max=50, step=1, value=15,
-                                           marks={1: '1%', 5: '5%', 10: '10%', 15: '15%', 25: '25%', 50: '50%'})
+                                dcc.Slider(id='diff-max-own', min=0, max=100, step=10, value=15,
+                                           marks={0: '0', 5: '5', 10: '10', 15: '15', 25: '25', 50: '50', 75: '75'})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
