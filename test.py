@@ -558,7 +558,7 @@ app.layout = html.Div([
                         html.P(["Players earn ", html.Strong("2 bonus points"), " when they achieve ",
                                 html.Strong("10+ defensive contributions"), " in a single match."],
                                style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
-                        html.Div([html.Span("🎯 Target: 10 defcon per 90", style={'backgroundColor': COLORS['secondary'],
+                        html.Div([html.Span("🎯 Target: 10.0 defcon per 90", style={'backgroundColor': COLORS['secondary'],
                                   'color': COLORS['primary'], 'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})])
                     ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
@@ -1049,7 +1049,7 @@ app.layout = html.Div([
                         html.P([
                             "Rank players by their team's upcoming fixture difficulty. ",
                             html.Strong("Lower FDR = easier fixtures"), ". ",
-                            "FDR ranges from 1 (very easy) to 5 (very hard). Use this tab to see which teams have easier fixtures and potentially target players from those teams."
+                            "FDR ranges from 1 (very easy) to 5 (very hard)."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div([
                             html.Span("📅 Next 5 Gameweeks", style={'backgroundColor': COLORS['secondary'],
@@ -1169,9 +1169,10 @@ def update_bonus(position, team, max_price, min_minutes):
     filtered = filter_data(position, team, max_price, min_minutes, positions_allowed=['DEF', 'MID', 'FWD'])
     filtered = filtered.dropna(subset=['defcon_per_90'])
 
-    scatter_fig = px.scatter(filtered, x='price', y='defcon_per_90', color='position', size='minutes',
-                             hover_name='web_name', hover_data=['team_name', 'defcon', 'defcon_vs_bonus'],
-                             color_discrete_map={'DEF': COLORS['primary'], 'MID': COLORS['accent'], 'FWD': COLORS['info']})
+    plot_data = filtered.copy()
+    plot_data['position'] = plot_data['position'].astype(str)
+    scatter_fig = px.scatter(plot_data, x='price', y='defcon_per_90', color='position', size='minutes',
+                             hover_name='web_name', hover_data=['team_name', 'defcon', 'defcon_vs_bonus'])
     scatter_fig.add_hline(y=10, line_dash="dash", line_color=COLORS['danger'],
                           annotation_text="Bonus Threshold (10)", annotation_position="top right")
     scatter_fig.update_layout(template='plotly_white', height=400, xaxis_title='Price (£m)', yaxis_title='Defcon per 90')
@@ -1239,15 +1240,16 @@ def update_consistency(position, team, max_price, min_games, min_minutes):
                           yaxis=dict(range=[0, max(top_25['hit_rate'].max() * 1.15, 55) if len(top_25) > 0 else 100]))
 
     # Scatter - Hit Rate vs Avg Defcon
+    plot_data = filtered.copy()
+    plot_data['position'] = plot_data['position'].astype(str)
     scatter_fig = px.scatter(
-        filtered,
+        plot_data,
         x='avg_defcon_qualifying',
         y='hit_rate',
         color='position',
         size='qualifying_games',
         hover_name='web_name',
-        hover_data=['team_name', 'price', 'bonus_games', 'qualifying_games'],
-        color_discrete_map={'DEF': COLORS['primary'], 'MID': COLORS['accent'], 'FWD': COLORS['info']}
+        hover_data=['team_name', 'price', 'bonus_games', 'qualifying_games']
     )
     scatter_fig.add_hline(y=50, line_dash="dash", line_color='#999', annotation_text="50% hit rate")
     scatter_fig.add_vline(x=10, line_dash="dash", line_color='#999', annotation_text="Bonus threshold")
@@ -1274,9 +1276,10 @@ def update_defcon(position, team, max_price, min_minutes):
     filtered = filter_data(position, team, max_price, min_minutes, positions_allowed=['DEF', 'MID', 'FWD'])
     filtered = filtered.dropna(subset=['defcon_per_90', 'expected_defcon'])
 
-    fig = px.scatter(filtered, x='expected_defcon', y='defcon', color='position', size='minutes',
-                     hover_name='web_name', hover_data=['team_name', 'price', 'defcon_per_90'],
-                     color_discrete_map={'DEF': COLORS['primary'], 'MID': COLORS['accent'], 'FWD': COLORS['info']})
+    plot_data = filtered.copy()
+    plot_data['position'] = plot_data['position'].astype(str)
+    fig = px.scatter(plot_data, x='expected_defcon', y='defcon', color='position', size='minutes',
+                     hover_name='web_name', hover_data=['team_name', 'price', 'defcon_per_90'])
     if len(filtered) > 0:
         max_val = max(filtered['defcon'].max(), filtered['expected_defcon'].max())
         fig.add_trace(go.Scatter(x=[0, max_val], y=[0, max_val], mode='lines', line=dict(dash='dash', color='#999'), name='Expected'))
@@ -1297,9 +1300,10 @@ def update_xg(position, team, max_price, min_minutes):
     filtered = filter_data(position, team, max_price, min_minutes)
     filtered = filtered.dropna(subset=['expected_goals'])
 
-    fig = px.scatter(filtered, x='expected_goals', y='goals_scored', color='position', size='minutes',
-                     hover_name='web_name', hover_data=['team_name', 'price', 'xg_diff'],
-                     color_discrete_map={'GKP': '#666', 'DEF': COLORS['primary'], 'MID': COLORS['accent'], 'FWD': COLORS['info']})
+    plot_data = filtered.copy()
+    plot_data['position'] = plot_data['position'].astype(str)
+    fig = px.scatter(plot_data, x='expected_goals', y='goals_scored', color='position', size='minutes',
+                     hover_name='web_name', hover_data=['team_name', 'price', 'xg_diff'])
     if len(filtered) > 0:
         max_val = max(filtered['goals_scored'].max(), filtered['expected_goals'].max())
         fig.add_trace(go.Scatter(x=[0, max_val], y=[0, max_val], mode='lines', line=dict(dash='dash', color='#999'), name='Expected'))
@@ -1320,9 +1324,10 @@ def update_value(position, team, max_price, min_minutes):
     filtered = filter_data(position, team, max_price, min_minutes)
     filtered = filtered.dropna(subset=['points_per_million'])
 
-    fig = px.scatter(filtered, x='price', y='total_points', color='position', size='ownership',
-                     hover_name='web_name', hover_data=['team_name', 'points_per_million', 'form'],
-                     color_discrete_map={'GKP': '#666', 'DEF': COLORS['primary'], 'MID': COLORS['accent'], 'FWD': COLORS['info']})
+    plot_data = filtered.copy()
+    plot_data['position'] = plot_data['position'].astype(str)
+    fig = px.scatter(plot_data, x='price', y='total_points', color='position', size='ownership',
+                     hover_name='web_name', hover_data=['team_name', 'points_per_million', 'form'])
     fig.update_layout(template='plotly_white', height=400)
 
     cols = ['web_name', 'team_name', 'position', 'price', 'total_points', 'points_per_million', 'form', 'ownership']
@@ -1360,8 +1365,10 @@ def update_cs(position, team, max_price, min_minutes):
     filtered = filter_data(position, team, max_price, min_minutes, positions_allowed=['GKP', 'DEF'])
     filtered = filtered.dropna(subset=['cs_per_90', 'gc_per_90'])
 
-    fig = px.scatter(filtered, x='gc_per_90', y='cs_per_90', color='team_name', size='minutes',
-                     hover_name='web_name', hover_data=['price', 'clean_sheets', 'goals_conceded'])
+    plot_data = filtered.copy()
+    plot_data['position'] = plot_data['position'].astype(str)
+    fig = px.scatter(plot_data, x='gc_per_90', y='cs_per_90', color='position', size='minutes',
+                     hover_name='web_name', hover_data=['team_name', 'price', 'clean_sheets', 'goals_conceded'])
     fig.update_layout(template='plotly_white', height=400)
 
     cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'clean_sheets', 'cs_per_90', 'goals_conceded', 'gc_per_90', 'ownership']
@@ -1389,7 +1396,7 @@ def update_fdr(position, team, max_price, min_minutes):
     bar_fig.add_trace(go.Bar(
         x=team_fdr['team_name'],
         y=team_fdr['avg_fdr_5'],
-        marker_color=[COLORS['success'] if x <= 2.6 else (COLORS['warning'] if x <= 3.5 else COLORS['danger']) for x in team_fdr['avg_fdr_5']],
+        marker_color=[COLORS['success'] if x <= 2.5 else (COLORS['warning'] if x <= 3.5 else COLORS['danger']) for x in team_fdr['avg_fdr_5']],
         text=[f"{x:.2f}" for x in team_fdr['avg_fdr_5']],
         textposition='outside',
         hovertemplate='%{x}<br>Avg FDR: %{y:.2f}<br>Fixtures: %{customdata}<extra></extra>',
@@ -1401,15 +1408,16 @@ def update_fdr(position, team, max_price, min_minutes):
                           yaxis=dict(range=[0, 5.5]))
 
     # Scatter - Total Points vs FDR
+    plot_data = filtered.copy()
+    plot_data['position'] = plot_data['position'].astype(str)
     scatter_fig = px.scatter(
-        filtered,
+        plot_data,
         x='avg_fdr_5',
         y='total_points',
         color='position',
         size='form',
         hover_name='web_name',
-        hover_data=['team_name', 'price', 'fixture_string'],
-        color_discrete_map={'GKP': '#666', 'DEF': COLORS['primary'], 'MID': COLORS['accent'], 'FWD': COLORS['info']}
+        hover_data=['team_name', 'price', 'fixture_string']
     )
     scatter_fig.add_vline(x=3.0, line_dash="dash", line_color='#999')
     scatter_fig.update_layout(
@@ -1439,6 +1447,6 @@ if __name__ == '__main__':
     print(f"  Active players: {len(df_active)}")
     print("="*60)
     print("\n  Starting server...")
-    print("  Open http://127.0.0.1:8053 in your browser")
+    print("  Open http://127.0.0.1:8054 in your browser")
     print("="*60 + "\n")
-    app.run(debug=True, port=8053)
+    app.run(debug=True, port=8054)

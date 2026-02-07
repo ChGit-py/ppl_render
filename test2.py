@@ -558,7 +558,7 @@ app.layout = html.Div([
                         html.P(["Players earn ", html.Strong("2 bonus points"), " when they achieve ",
                                 html.Strong("10+ defensive contributions"), " in a single match."],
                                style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
-                        html.Div([html.Span("🎯 Target: 10 defcon per 90", style={'backgroundColor': COLORS['secondary'],
+                        html.Div([html.Span("🎯 Target: 10.0 defcon per 90", style={'backgroundColor': COLORS['secondary'],
                                   'color': COLORS['primary'], 'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})])
                     ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
@@ -566,12 +566,11 @@ app.layout = html.Div([
                         html.Div([
                             html.Div([
                                 html.Label("Position", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Dropdown(id='bonus-position', options=[{'label': 'All', 'value': 'All'}] +
-                                             [{'label': p, 'value': p} for p in ['DEF', 'MID', 'FWD']], value='All', clearable=False)
+                                dcc.Dropdown(id='bonus-position', options=[{'label': p, 'value': p} for p in ['DEF', 'MID', 'FWD']], value='DEF', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Team", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Dropdown(id='bonus-team', options=[{'label': 'All', 'value': 'All'}] +
+                                dcc.Dropdown(id='bonus-team', options=
                                              [{'label': t, 'value': t} for t in sorted(df['team_name'].unique())], value='All', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
@@ -651,12 +650,11 @@ app.layout = html.Div([
                         html.Div([
                             html.Div([
                                 html.Label("Position", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Dropdown(id='consistency-position', options=[{'label': 'All', 'value': 'All'}] +
-                                             [{'label': p, 'value': p} for p in ['DEF', 'MID', 'FWD']], value='All', clearable=False)
+                                dcc.Dropdown(id='consistency-position', options=[{'label': p, 'value': p} for p in ['DEF', 'MID', 'FWD']], value='DEF', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Team", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Dropdown(id='consistency-team', options=[{'label': 'All', 'value': 'All'}] +
+                                dcc.Dropdown(id='consistency-team', options=
                                              [{'label': t, 'value': t} for t in sorted(df['team_name'].unique())], value='All', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
@@ -733,12 +731,11 @@ app.layout = html.Div([
                         html.Div([
                             html.Div([
                                 html.Label("Position", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Dropdown(id='defcon-position', options=[{'label': 'All', 'value': 'All'}] +
-                                             [{'label': p, 'value': p} for p in ['DEF', 'MID', 'FWD']], value='All', clearable=False)
+                                dcc.Dropdown(id='defcon-position', options=[{'label': p, 'value': p} for p in ['DEF', 'MID', 'FWD']], value='DEF', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Team", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Dropdown(id='defcon-team', options=[{'label': 'All', 'value': 'All'}] +
+                                dcc.Dropdown(id='defcon-team', options=
                                              [{'label': t, 'value': t} for t in sorted(df['team_name'].unique())], value='All', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
@@ -798,12 +795,11 @@ app.layout = html.Div([
                         html.Div([
                             html.Div([
                                 html.Label("Position", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Dropdown(id='xg-position', options=[{'label': 'All', 'value': 'All'}] +
-                                             [{'label': p, 'value': p} for p in ['GKP', 'DEF', 'MID', 'FWD']], value='All', clearable=False)
+                                dcc.Dropdown(id='xg-position', options=[{'label': p, 'value': p} for p in ['GKP', 'DEF', 'MID', 'FWD']], value='DEF', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Team", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Dropdown(id='xg-team', options=[{'label': 'All', 'value': 'All'}] +
+                                dcc.Dropdown(id='xg-team', options=
                                              [{'label': t, 'value': t} for t in sorted(df['team_name'].unique())], value='All', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
@@ -864,12 +860,11 @@ app.layout = html.Div([
                         html.Div([
                             html.Div([
                                 html.Label("Position", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Dropdown(id='value-position', options=[{'label': 'All', 'value': 'All'}] +
-                                             [{'label': p, 'value': p} for p in ['GKP', 'DEF', 'MID', 'FWD']], value='All', clearable=False)
+                                dcc.Dropdown(id='value-position', options=[{'label': p, 'value': p} for p in ['GKP', 'DEF', 'MID', 'FWD']], value='DEF', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Team", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Dropdown(id='value-team', options=[{'label': 'All', 'value': 'All'}] +
+                                dcc.Dropdown(id='value-team', options=
                                              [{'label': t, 'value': t} for t in sorted(df['team_name'].unique())], value='All', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
@@ -923,12 +918,11 @@ app.layout = html.Div([
                         html.Div([
                             html.Div([
                                 html.Label("Position", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Dropdown(id='form-position', options=[{'label': 'All', 'value': 'All'}] +
-                                             [{'label': p, 'value': p} for p in ['GKP', 'DEF', 'MID', 'FWD']], value='All', clearable=False)
+                                dcc.Dropdown(id='form-position', options=[{'label': p, 'value': p} for p in ['GKP', 'DEF', 'MID', 'FWD']], value='DEF', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Team", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Dropdown(id='form-team', options=[{'label': 'All', 'value': 'All'}] +
+                                dcc.Dropdown(id='form-team', options=
                                              [{'label': t, 'value': t} for t in sorted(df['team_name'].unique())], value='All', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
@@ -986,12 +980,11 @@ app.layout = html.Div([
                         html.Div([
                             html.Div([
                                 html.Label("Position", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Dropdown(id='cs-position', options=[{'label': 'All', 'value': 'All'}] +
-                                             [{'label': p, 'value': p} for p in ['GKP', 'DEF']], value='All', clearable=False)
+                                dcc.Dropdown(id='cs-position', options=[{'label': p, 'value': p} for p in ['GKP', 'DEF']], value='DEF', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Team", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Dropdown(id='cs-team', options=[{'label': 'All', 'value': 'All'}] +
+                                dcc.Dropdown(id='cs-team', options=
                                              [{'label': t, 'value': t} for t in sorted(df['team_name'].unique())], value='All', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
@@ -1049,7 +1042,7 @@ app.layout = html.Div([
                         html.P([
                             "Rank players by their team's upcoming fixture difficulty. ",
                             html.Strong("Lower FDR = easier fixtures"), ". ",
-                            "FDR ranges from 1 (very easy) to 5 (very hard). Use this tab to see which teams have easier fixtures and potentially target players from those teams."
+                            "FDR ranges from 1 (very easy) to 5 (very hard)."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div([
                             html.Span("📅 Next 5 Gameweeks", style={'backgroundColor': COLORS['secondary'],
@@ -1062,12 +1055,11 @@ app.layout = html.Div([
                         html.Div([
                             html.Div([
                                 html.Label("Position", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Dropdown(id='fdr-position', options=[{'label': 'All', 'value': 'All'}] +
-                                             [{'label': p, 'value': p} for p in ['GKP', 'DEF', 'MID', 'FWD']], value='All', clearable=False)
+                                dcc.Dropdown(id='fdr-position', options=[{'label': p, 'value': p} for p in ['GKP', 'DEF', 'MID', 'FWD']], value='DEF', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Team", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Dropdown(id='fdr-team', options=[{'label': 'All', 'value': 'All'}] +
+                                dcc.Dropdown(id='fdr-team', options=
                                              [{'label': t, 'value': t} for t in sorted(df['team_name'].unique())], value='All', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
@@ -1389,7 +1381,7 @@ def update_fdr(position, team, max_price, min_minutes):
     bar_fig.add_trace(go.Bar(
         x=team_fdr['team_name'],
         y=team_fdr['avg_fdr_5'],
-        marker_color=[COLORS['success'] if x <= 2.6 else (COLORS['warning'] if x <= 3.5 else COLORS['danger']) for x in team_fdr['avg_fdr_5']],
+        marker_color=[COLORS['success'] if x <= 2.5 else (COLORS['warning'] if x <= 3.5 else COLORS['danger']) for x in team_fdr['avg_fdr_5']],
         text=[f"{x:.2f}" for x in team_fdr['avg_fdr_5']],
         textposition='outside',
         hovertemplate='%{x}<br>Avg FDR: %{y:.2f}<br>Fixtures: %{customdata}<extra></extra>',
@@ -1439,6 +1431,6 @@ if __name__ == '__main__':
     print(f"  Active players: {len(df_active)}")
     print("="*60)
     print("\n  Starting server...")
-    print("  Open http://127.0.0.1:8053 in your browser")
+    print("  Open http://127.0.0.1:8055 in your browser")
     print("="*60 + "\n")
-    app.run(debug=True, port=8053)
+    app.run(debug=True, port=8055)
