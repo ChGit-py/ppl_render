@@ -1416,7 +1416,7 @@ app.layout = html.Div([
                         html.Div([
                             html.Span(f"Next fixture: GW{next_gw_num}",
                                       style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
-                                             'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
+                                             'padding': '12px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
                         ])
                     ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
