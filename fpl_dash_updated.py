@@ -807,7 +807,7 @@ app.layout = html.Div([
 
             # BONUS CONSISTENCY TAB
             dcc.Tab(label='Def Cons Bonus: Consistency', value='bonus-consistency',
-                    style={'whiteSpace': 'normal', 'textAlign': 'left'},
+                    style={'whiteSpace': 'normal', 'textAlign': 'left', 'paddingLeft': '10px', 'alignitems': 'center'},
                     selected_style={'whiteSpace': 'normal', 'textAlign': 'center'}, children=[
                 html.Div([
                     # Explanation Card
