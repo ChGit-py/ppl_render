@@ -726,7 +726,7 @@ app.layout = html.Div([
             ]),
 
             # DEFCON BONUS TAB
-            dcc.Tab(label='Defensive Contributions Bonus', value='defcon-bonus', children=[
+            dcc.Tab(label='Def Con Bonus', value='defcon-bonus', children=[
                 html.Div([
                     html.Div([
                         html.H3("Understanding Defensive Contribution Bonuses", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
@@ -806,8 +806,8 @@ app.layout = html.Div([
             ]),
 
             # BONUS CONSISTENCY TAB
-            dcc.Tab(label='Defensive Contributions Bonus: Consistency', value='bonus-consistency',
-                    style={'width': '120px', 'whiteSpace': 'normal', 'textAlign': 'center'},
+            dcc.Tab(label='Def Cons Bonus: Consistency', value='bonus-consistency',
+                    style={'whiteSpace': 'normal', 'textAlign': 'center'},
                     selected_style={'whiteSpace': 'normal', 'textAlign': 'center'}, children=[
                 html.Div([
                     # Explanation Card
@@ -904,8 +904,8 @@ app.layout = html.Div([
             ]),
 
             # DEFENSIVE CONTRIBUTIONS TAB
-            dcc.Tab(label='Defensive Contributions', value='defcon',
-                    style={'width': '120px', 'whiteSpace': 'normal', 'textAlign': 'center'},
+            dcc.Tab(label='Def Cons', value='defcon',
+                    style={'whiteSpace': 'normal', 'textAlign': 'center'},
                     selected_style={'whiteSpace': 'normal', 'textAlign': 'center'}, children=[
                 html.Div([
                     html.Div([
