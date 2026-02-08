@@ -1311,7 +1311,8 @@ app.layout = html.Div([
             # =================================================================
             # OWNERSHIP DIFFERENTIALS TAB
             # =================================================================
-            dcc.Tab(label='Differentials', value='differentials', style={'whiteSpace': 'normal', 'textAlign': 'center'}, selected_style={'whiteSpace': 'normal', 'textAlign': 'center'}, children=[
+            dcc.Tab(label='Differentials', value='differentials', style={'whiteSpace': 'normal', 'textAlign': 'left', 'paddingLeft': '10px', 'alignItems': 'center'},
+                    selected_style={'whiteSpace': 'normal', 'textAlign': 'center'}, children=[
                 html.Div([
                     html.Div([
                         html.H3("Ownership Differentials", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
