@@ -2038,7 +2038,7 @@ def update_transfers(position, team, max_price, min_minutes):
     ))
     fallers_fig.update_layout(template='plotly_white', height=380, xaxis_tickangle=-45,
                               yaxis_title='Net Transfers Out', showlegend=False,
-                              yaxis=dict(range=[fallers['net_transfers_gw'].min() * 1.1, 0]))
+                              yaxis=dict(range=[fallers['net_transfers_gw'].min() * 1.2, 0]))
 
     scatter_fig = px.scatter(
         filtered[filtered['ownership'] >= 1],
