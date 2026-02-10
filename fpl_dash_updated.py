@@ -1940,7 +1940,8 @@ def update_differentials(position, team, max_price, max_own, min_minutes):
         customdata=top_25[['ownership', 'ppg']].values
     ))
     bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
-                          yaxis_title='Differential Score', showlegend=False)
+                          yaxis_title='Differential Score', showlegend=False,
+                          yaxis=dict(range=[0, top_25['differential_score'].max() * 1.1]))
 
     cols = ['web_name', 'team_name', 'position', 'price', 'total_points', 'form', 'ppg',
             'expected_goal_involvements', 'ownership', 'differential_score', 'avg_fdr_5', 'fixture_string']
