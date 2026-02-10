@@ -2022,7 +2022,8 @@ def update_transfers(position, team, max_price, min_minutes):
         customdata=risers[['price', 'ownership']].values
     ))
     risers_fig.update_layout(template='plotly_white', height=380, xaxis_tickangle=-45,
-                             yaxis_title='Net Transfers In', showlegend=False)
+                             yaxis_title='Net Transfers In', showlegend=False,
+                             yaxis=dict(range=[0, risers['net_transfers_gw'].max() * 1.1]))
 
     fallers = filtered.nsmallest(20, 'net_transfers_gw')
     fallers_fig = go.Figure()
@@ -2035,7 +2036,8 @@ def update_transfers(position, team, max_price, min_minutes):
         customdata=fallers[['price', 'ownership']].values
     ))
     fallers_fig.update_layout(template='plotly_white', height=380, xaxis_tickangle=-45,
-                              yaxis_title='Net Transfers Out', showlegend=False)
+                              yaxis_title='Net Transfers Out', showlegend=False,
+                              yaxis=dict(range=[0, fallers['net_transfers_gw'].min() * 1.1]))
 
     scatter_fig = px.scatter(
         filtered[filtered['ownership'] >= 1],
