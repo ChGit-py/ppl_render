@@ -1976,7 +1976,8 @@ def update_captain(position, team, max_price, min_minutes):
         customdata=top_20[['next_opponent', 'next_venue', 'next_fdr', 'form']].values
     ))
     bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
-                          yaxis_title='Captain Score', showlegend=False)
+                          yaxis_title='Captain Score', showlegend=False,
+                          yaxis=dict(range=[0, (top_20['captain_score']).max() * 1.1]))
 
     ha_filtered = filtered.dropna(subset=['home_ppg', 'away_ppg'])
     ha_scatter = px.scatter(
