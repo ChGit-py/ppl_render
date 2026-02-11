@@ -1653,7 +1653,7 @@ def update_bonus(position, team, max_price, min_minutes):
                           annotation_text="DEF Threshold (10)", annotation_position="top right")
     scatter_fig.add_hline(y=12, line_dash="dash", line_color=COLORS['warning'],
                           annotation_text="MID/FWD Threshold (12)", annotation_position="bottom right")
-    scatter_fig.update_layout(template='plotly_white', height=400, xaxis_title='Price (£m)', yaxis_title='Defcon per 90')
+    scatter_fig.update_layout(template='plotly_white', height=400, xaxis_title='Price (£m)', yaxis_title='Defcon per 90', font=dict(family='Arial, sans-serif'))
 
     top_25 = filtered.nlargest(25, 'defcon_per_90')
     bar_fig = go.Figure()
@@ -1735,7 +1735,8 @@ def update_consistency(position, team, max_price, min_games, min_minutes):
         template='plotly_white',
         height=400,
         xaxis_title='Avg Defcon (in 60+ min games)',
-        yaxis_title='Bonus Hit Rate (%)'
+        yaxis_title='Bonus Hit Rate (%)',
+        font=dict(family='Arial, sans-serif')
     )
 
     # Table data
@@ -1896,7 +1897,8 @@ def update_fdr(position, team, max_price, min_minutes):
         template='plotly_white',
         height=400,
         xaxis_title='Avg Fixture Difficulty (lower = easier)',
-        yaxis_title='Total Points'
+        yaxis_title='Total Points',
+        font=dict(family='Arial, sans-serif')
     )
 
     # Table - sorted by FDR (ascending = easiest first)
@@ -1927,7 +1929,7 @@ def update_differentials(position, team, max_price, max_own, min_minutes):
         median_ppg = df_active[df_active['minutes'] >= 450]['ppg'].median()
         scatter_fig.add_hline(y=median_ppg, line_dash='dash', line_color='#999',
                               annotation_text=f'Median PPG ({median_ppg:.1f})', annotation_position='top right')
-    scatter_fig.update_layout(template='plotly_white', height=400, xaxis_title='Ownership %', yaxis_title='Points Per Game')
+    scatter_fig.update_layout(template='plotly_white', height=400, xaxis_title='Ownership %', yaxis_title='Points Per Game', font=dict(family='Arial, sans-serif'))
 
     top_25 = filtered.nlargest(25, 'differential_score')
     bar_fig = go.Figure()
@@ -1991,7 +1993,7 @@ def update_captain(position, team, max_price, min_minutes):
         max_val = max(ha_filtered['home_ppg'].max(), ha_filtered['away_ppg'].max(), 1)
         ha_scatter.add_trace(go.Scatter(x=[0, max_val], y=[0, max_val], mode='lines',
                                         line=dict(dash='dash', color='#999'), name='Equal'))
-    ha_scatter.update_layout(template='plotly_white', height=400, xaxis_title='Away PPG', yaxis_title='Home PPG')
+    ha_scatter.update_layout(template='plotly_white', height=400, xaxis_title='Away PPG', yaxis_title='Home PPG', font=dict(family='Arial, sans-serif'))
 
     cols = ['web_name', 'team_name', 'position', 'price', 'captain_score', 'form', 'ppg',
             'expected_goal_involvements', 'next_opponent', 'next_venue', 'next_fdr',
@@ -2051,7 +2053,7 @@ def update_transfers(position, team, max_price, min_minutes):
     scatter_fig.add_hline(y=0, line_dash='dash', line_color='#999')
     scatter_fig.add_vline(x=0, line_dash='dash', line_color='#999')
     scatter_fig.update_layout(template='plotly_white', height=400,
-                              xaxis_title='Net Transfers This GW', yaxis_title='Season Price Change (m)')
+                              xaxis_title='Net Transfers This GW', yaxis_title='Season Price Change (m)', font=dict(family='Arial, sans-serif'))
 
     sorted_by_activity = filtered.copy()
     sorted_by_activity['abs_net'] = sorted_by_activity['net_transfers_gw'].abs()
