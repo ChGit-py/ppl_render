@@ -1017,7 +1017,7 @@ app.layout = html.Div([
                         html.P(["Players earn ", html.Strong("2 bonus points"), " when they hit the defcon threshold: ",
                                 html.Strong("10+ for DEF"), " or ", html.Strong("12+ for MID/FWD"), " in a single match."],
                                style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
-                        html.Div([html.Span("ðŸŽ¯ Target: 10 defcon/90 (DEF) · 12 defcon/90 (MID/FWD)", style={'backgroundColor': COLORS['secondary'],
+                        html.Div([html.Span("Ž¯ Target: 10 defcon/90 (DEF) · 12 defcon/90 (MID/FWD)", style={'backgroundColor': COLORS['secondary'],
                                   'color': COLORS['primary'], 'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})])
                     ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
@@ -1034,7 +1034,7 @@ app.layout = html.Div([
                                              [{'label': t, 'value': t} for t in sorted(df['team_name'].unique())], value='All', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Max Price", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Max. Price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Slider(id='bonus-price', min=4, max=16, step=0.5, value=16, marks={i: f'Â£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
@@ -1100,7 +1100,7 @@ app.layout = html.Div([
                             "A player averaging the threshold per 90 minutes might be inconsistent (20 one week, 0 the next) vs someone who reliably hits it every game."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div([
-                            html.Span("ðŸ“Š Based on games with 60+ minutes played", style={'backgroundColor': COLORS['secondary'],
+                            html.Span("Based on games with 60+ minutes played", style={'backgroundColor': COLORS['secondary'],
                                       'color': COLORS['primary'], 'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
                         ])
                     ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
@@ -1119,7 +1119,7 @@ app.layout = html.Div([
                                              [{'label': t, 'value': t} for t in sorted(df['team_name'].unique())], value='All', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Max Price", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Max. Price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Slider(id='consistency-price', min=4, max=16, step=0.5, value=16, marks={i: f'Â£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
@@ -1201,7 +1201,7 @@ app.layout = html.Div([
                                              [{'label': t, 'value': t} for t in sorted(df['team_name'].unique())], value='All', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Max Price", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Max. Price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Slider(id='defcon-price', min=4, max=16, step=0.5, value=16, marks={i: f'Â£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
@@ -1266,7 +1266,7 @@ app.layout = html.Div([
                                              [{'label': t, 'value': t} for t in sorted(df['team_name'].unique())], value='All', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Max Price", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Max. Price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Slider(id='xg-price', min=4, max=16, step=0.5, value=16, marks={i: f'Â£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
@@ -1332,7 +1332,7 @@ app.layout = html.Div([
                                              [{'label': t, 'value': t} for t in sorted(df['team_name'].unique())], value='All', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Max Price", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Max. Price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Slider(id='value-price', min=4, max=16, step=0.5, value=16, marks={i: f'Â£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
@@ -1391,7 +1391,7 @@ app.layout = html.Div([
                                              [{'label': t, 'value': t} for t in sorted(df['team_name'].unique())], value='All', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Max Price", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Max. Price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Slider(id='form-price', min=4, max=16, step=0.5, value=16, marks={i: f'Â£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
@@ -1454,7 +1454,7 @@ app.layout = html.Div([
                                              [{'label': t, 'value': t} for t in sorted(df['team_name'].unique())], value='All', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Max Price", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Max. Price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Slider(id='cs-price', min=4, max=16, step=0.5, value=16, marks={i: f'Â£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
@@ -1511,7 +1511,7 @@ app.layout = html.Div([
                             "FDR ranges from 1 (very easy) to 5 (very hard). Use this tab to see which teams have easier fixtures and potentially target players from those teams."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div([
-                            html.Span("ðŸ“… Next 5 Gameweeks", style={'backgroundColor': COLORS['secondary'],
+                            html.Span("Next 5 Gameweeks", style={'backgroundColor': COLORS['secondary'],
                                       'color': COLORS['primary'], 'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
                         ])
                     ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
@@ -1530,7 +1530,7 @@ app.layout = html.Div([
                                              [{'label': t, 'value': t} for t in sorted(df['team_name'].unique())], value='All', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Max Price", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Max. Price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Slider(id='fdr-price', min=4, max=16, step=0.5, value=16, marks={i: f'Â£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
@@ -1621,7 +1621,7 @@ app.layout = html.Div([
                                              [{'label': t, 'value': t} for t in sorted_teams], value='All', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Max Price", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Max. Price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Slider(id='diff-price', min=4, max=16, step=0.5, value=16, marks={i: f'{i}' for i in [4, 6, 8, 10, 12, 14, 16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
@@ -1717,7 +1717,7 @@ app.layout = html.Div([
                                              [{'label': t, 'value': t} for t in sorted_teams], value='All', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Max Price", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Max. Price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Slider(id='cap-price', min=4, max=16, step=0.5, value=16, marks={i: f'{i}' for i in [4, 6, 8, 10, 12, 14, 16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
@@ -1813,7 +1813,7 @@ app.layout = html.Div([
                                              [{'label': t, 'value': t} for t in sorted_teams], value='All', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Max Price", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Max. Price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Slider(id='xfer-price', min=4, max=16, step=0.5, value=16, marks={i: f'{i}' for i in [4, 6, 8, 10, 12, 14, 16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
