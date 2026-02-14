@@ -905,7 +905,7 @@ app.layout = html.Div([
     html.Div([
         html.Div([
             html.Div([
-                html.Span("Fantasy Premier League", style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
+                html.Span("Fantasy Premier League 2025/26", style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
                                         'padding': '6px 12px', 'borderRadius': '6px', 'fontWeight': '800',
                                         'fontSize': '18px', 'marginRight': '12px'}),
                 html.Span("Analytics Dashboard", style={'color': 'white', 'fontSize': '20px', 'fontWeight': '600'})
