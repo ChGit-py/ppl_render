@@ -1597,7 +1597,7 @@ app.layout = html.Div([
                         html.H3("Ownership Differentials", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
                         html.P([
                             "FPL ranking is ", html.Strong("relative"), ". You gain rank by owning players ",
-                            html.Strong("most managers don't"), "but only if those players score well. ",
+                            html.Strong("most managers don't"),  "but only if those players score well. ",
                             "This tab cross references strong underlying stats (form, xGI, PPG) with low ownership ",
                             "to surface the highest-upside differentials."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
