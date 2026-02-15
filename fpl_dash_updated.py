@@ -1597,8 +1597,8 @@ app.layout = html.Div([
                         html.H3("Ownership Differentials", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
                         html.P([
                             "FPL ranking is ", html.Strong("relative"), ". You gain rank by owning players ",
-                            html.Strong("most managers don't"), "but only if those players score well. ",
-                            "This tab cross-references strong underlying stats (form, xGI, PPG) with low ownership ",
+                            html.Strong("most managers don't"),  " but only if those players score well. ",
+                            "This tab cross references strong underlying stats (form, xGI, PPG) with low ownership ",
                             "to surface the highest-upside differentials."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div([
@@ -1626,8 +1626,8 @@ app.layout = html.Div([
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Max Ownership %", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Slider(id='diff-max-own', min=5, max=50, step=5, value=15,
-                                           marks={i: f'{i}%' for i in [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]})
+                                dcc.Slider(id='diff-max-own', min=5, max=100, step=1, value=5,
+                                           marks={i: f'{i}%' for i in [5, 25, 50, 75, 100]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
