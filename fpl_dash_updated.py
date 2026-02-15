@@ -2235,7 +2235,8 @@ def update_differentials(position, team, max_price, max_own, min_minutes):
         customdata=top_25[['ownership', 'ppg']].values
     ))
     bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
-                          yaxis_title='Differential Score', showlegend=False)
+                          yaxis_title='Differential Score', showlegend=False,
+                          yaxis=dict(range=[0, top_25['differential_score'].max() * 1.1]))
 
     cols = ['web_name', 'team_name', 'position', 'price', 'total_points', 'form', 'ppg',
             'expected_goal_involvements', 'ownership', 'differential_score', 'avg_fdr_5', 'fixture_string']
@@ -2271,7 +2272,8 @@ def update_captain(position, team, max_price, min_minutes):
         customdata=top_20[['next_opponent', 'next_venue', 'next_fdr', 'form']].values
     ))
     bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
-                          yaxis_title='Captain Score', showlegend=False)
+                          yaxis_title='Captain Score', showlegend=False,
+                          yaxis=dict(range=[0, top_20['captain_score'].max() * 1.1]))
 
     ha_filtered = filtered.dropna(subset=['home_ppg', 'away_ppg'])
     ha_scatter = px.scatter(
@@ -2316,7 +2318,8 @@ def update_transfers(position, team, max_price, min_minutes):
         customdata=risers[['price', 'ownership']].values
     ))
     risers_fig.update_layout(template='plotly_white', height=380, xaxis_tickangle=-45,
-                             yaxis_title='Net Transfers In', showlegend=False)
+                             yaxis_title='Net Transfers In', showlegend=False,
+                             yaxis=dict(range=[0, risers['net_transfers_gw'].max() * 1.1]))
 
     fallers = filtered.nsmallest(20, 'net_transfers_gw')
     fallers_fig = go.Figure()
@@ -2329,7 +2332,8 @@ def update_transfers(position, team, max_price, min_minutes):
         customdata=fallers[['price', 'ownership']].values
     ))
     fallers_fig.update_layout(template='plotly_white', height=380, xaxis_tickangle=-45,
-                              yaxis_title='Net Transfers Out', showlegend=False)
+                              yaxis_title='Net Transfers Out', showlegend=False,
+                              yaxis=dict(range=[0, fallers['net_transfers_gw'].min() * 1.1]))
 
     scatter_fig = px.scatter(
         filtered[filtered['ownership'] >= 1],
