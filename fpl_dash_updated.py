@@ -391,7 +391,7 @@ TABLE_STYLE_DATA = {
 }
 
 # =============================================================================
-# FETCH AND PROCESS DATA — WRAPPED FOR AUTO-REFRESH
+# FETCH AND PROCESS DATA €” WRAPPED FOR AUTO-REFRESH
 # =============================================================================
 
 import time
@@ -848,7 +848,7 @@ def build_player_spotlight(player, title, metric_label, metric_value):
             'fontSize': '22px',
             'fontWeight': '700'
         }),
-        html.P(f"{player['team_name']} {player['position']}  £{player['price']:.1f}m", style={
+        html.P(f"{player['team_name']} {player['position']} £{player['price']:.1f}m", style={
             'color': COLORS['text_light'],
             'margin': '0 0 16px 0',
             'fontSize': '14px'
@@ -892,6 +892,50 @@ def build_position_breakdown_chart():
 # Prepare home page table data
 home_value_cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'total_points', 'points_per_million', 'form', 'ownership']
 home_table_data = prepare_table_data(df_active[df_active['minutes'] > 1350].nlargest(15, 'points_per_million'), home_value_cols)
+
+
+def build_chip_usage_chart():
+    """Build a bar chart showing chip usage for the current gameweek."""
+    chip_colors = {
+        'Bench Boost': COLORS['info'],
+        'Triple Captain': COLORS['accent'],
+        'Wildcard': COLORS['success'],
+        'Free Hit': COLORS['warning'],
+    }
+    chip_label_map = {
+        'bboost': 'Bench Boost',
+        '3xc': 'Triple Captain',
+        'wildcard': 'Wildcard',
+        'freehit': 'Free Hit',
+    }
+
+    if not chip_plays:
+        fig = go.Figure()
+        fig.add_annotation(text="No chip data available yet", xref="paper", yref="paper",
+                           x=0.5, y=0.5, showarrow=False, font=dict(size=16, color=COLORS['text_light']))
+        fig.update_layout(template='plotly_white', height=300)
+        return fig
+
+    names = [chip_label_map.get(c['chip_name'], c['chip_name']) for c in chip_plays]
+    counts = [c['num_played'] for c in chip_plays]
+    colors = [chip_colors.get(n, COLORS['primary']) for n in names]
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=names, y=counts,
+        marker_color=colors,
+        text=[f"{c:,}" for c in counts],
+        textposition='outside',
+    ))
+    fig.update_layout(
+        template='plotly_white', height=300,
+        margin=dict(t=40, b=40, l=40, r=40),
+        yaxis_title='Managers',
+        showlegend=False,
+        font=dict(family='Arial, sans-serif'),
+        yaxis=dict(range=[0, max(counts) * 1.15]) if counts else {}
+    )
+    return fig
 
 # =============================================================================
 # LAYOUT
@@ -962,6 +1006,13 @@ app.layout = html.Div([
                     ], style={'display': 'flex', 'flexWrap': 'wrap', 'margin': '0 -10px 40px -10px'}),
 
                     html.Div([
+                        html.H2("Chip Usage This Gameweek", style={'color': COLORS['primary'], 'margin': '0 0 4px 0'}),
+                        html.P("Number of managers activating each chip", style={'color': COLORS['text_light']})
+                    ], style={'marginBottom': '24px'}),
+
+                    html.Div([dcc.Graph(figure=build_chip_usage_chart(), config={'displayModeBar': False})], style=CARD_STYLE),
+
+                    html.Div([
                         html.H2("Player Spotlights", style={'color': COLORS['primary'], 'margin': '0 0 4px 0'}),
                         html.P("Top performers across key metrics", style={'color': COLORS['text_light']})
                     ], style={'marginBottom': '24px'}),
@@ -1017,7 +1068,7 @@ app.layout = html.Div([
                         html.P(["Players earn ", html.Strong("2 bonus points"), " when they hit the defcon threshold: ",
                                 html.Strong("10+ for DEF"), " or ", html.Strong("12+ for MID/FWD"), " in a single match."],
                                style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
-                        html.Div([html.Span("Ž¯ Target: 10 defcon/90 (DEF) · 12 defcon/90 (MID/FWD)", style={'backgroundColor': COLORS['secondary'],
+                        html.Div([html.Span("Å½¯ Target: 10 defcon/90 (DEF) · 12 defcon/90 (MID/FWD)", style={'backgroundColor': COLORS['secondary'],
                                   'color': COLORS['primary'], 'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})])
                     ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
