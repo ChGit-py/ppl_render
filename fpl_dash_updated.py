@@ -1658,7 +1658,7 @@ app.layout = html.Div([
                             "to surface the highest-upside differentials."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div([
-                            html.Span("Target: <10% ownership with above-average output",
+                            html.Span("Target: <10% ownership with above average output",
                                       style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
                                              'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
                         ])
