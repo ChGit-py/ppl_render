@@ -1847,7 +1847,7 @@ app.layout = html.Div([
                         html.P([
                             "Getting ahead of price changes by even ", html.Strong("one day"), " compounds over a season. ",
                             "Every £0.1m saved means better players later. This tab tracks net transfer velocity and estimates ",
-                            "which players are closest to a price rise or fall based on transfer-to-ownership ratios."
+                            "which players are closest to a price rise or fall based on transfer to ownership ratios."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div([
                             html.Span("Price changes happen overnight based on transfer activity",
