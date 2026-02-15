@@ -11,3 +11,5 @@ An interactive data visualisation dashboard for Fantasy Premier League (FPL) ana
 - **Form Tracker**: Identify players trending up or down vs season average
 - **Clean Sheets**: Defensive asset rankings by CS and goals conceded rates
 - **Fixture Difficulty**: Plan transfers using upcoming fixture difficulty ratings
+- **Differentials**: Take a look at players with strong underlying stats with low ownership
+- **Captaincy Optimiser**: Which players could be great captaincy picks?
