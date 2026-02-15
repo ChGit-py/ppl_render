@@ -848,7 +848,7 @@ def build_player_spotlight(player, title, metric_label, metric_value):
             'fontSize': '22px',
             'fontWeight': '700'
         }),
-        html.P(f"{player['team_name']} {player['position']} £{player['price']:.1f}m", style={
+        html.P(f"{player['team_name']} {player['position']}  £{player['price']:.1f}m", style={
             'color': COLORS['text_light'],
             'margin': '0 0 16px 0',
             'fontSize': '14px'
@@ -918,6 +918,11 @@ def build_chip_usage_chart():
 
     names = [chip_label_map.get(c['chip_name'], c['chip_name']) for c in chip_plays]
     counts = [c['num_played'] for c in chip_plays]
+
+    # Sort by count descending
+    sorted_pairs = sorted(zip(names, counts), key=lambda x: x[1], reverse=True)
+    names = [p[0] for p in sorted_pairs]
+    counts = [p[1] for p in sorted_pairs]
     colors = [chip_colors.get(n, COLORS['primary']) for n in names]
 
     fig = go.Figure()
