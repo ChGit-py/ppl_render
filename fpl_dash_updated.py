@@ -1678,7 +1678,7 @@ app.layout = html.Div([
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Max. Price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Slider(id='diff-price', min=4, max=16, step=0.5, value=16, marks={i: f'{i}' for i in [4, 6, 8, 10, 12, 14, 16]})
+                                dcc.Slider(id='diff-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4, 6, 8, 10, 12, 14, 16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Max Ownership %", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
@@ -1774,7 +1774,7 @@ app.layout = html.Div([
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Max. Price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Slider(id='cap-price', min=4, max=16, step=0.5, value=16, marks={i: f'{i}' for i in [4, 6, 8, 10, 12, 14, 16]})
+                                dcc.Slider(id='cap-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4, 6, 8, 10, 12, 14, 16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Min. Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
@@ -1870,7 +1870,7 @@ app.layout = html.Div([
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Max. Price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Slider(id='xfer-price', min=4, max=16, step=0.5, value=16, marks={i: f'{i}' for i in [4, 6, 8, 10, 12, 14, 16]})
+                                dcc.Slider(id='xfer-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4, 6, 8, 10, 12, 14, 16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Min. Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
