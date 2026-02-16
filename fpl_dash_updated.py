@@ -1201,7 +1201,7 @@ app.layout = html.Div([
                     # Scatter - Hit Rate vs Avg Defcon
                     html.Div([
                         html.H3("Consistency vs Average Output", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-                        html.P("Compare hit rate (consistency) against average defcon in qualifying games. Top-right = high output AND consistent.", style={'color': COLORS['text_light']}),
+                        html.P("Compare hit rate (consistency) against average defcon in qualifying games. Top right = high output AND consistent.", style={'color': COLORS['text_light']}),
                         dcc.Graph(id='consistency-scatter')
                     ], style=CARD_STYLE),
 
