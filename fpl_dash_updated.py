@@ -2080,8 +2080,8 @@ def update_consistency(position, team, max_price, min_games, min_minutes):
         color_discrete_map={'DEF': COLORS['primary'], 'MID': COLORS['accent'], 'FWD': COLORS['info']}
     )
     scatter_fig.add_hline(y=50, line_dash="dash", line_color='#999', annotation_text="50% hit rate")
-    scatter_fig.add_vline(x=10, line_dash="dash", line_color=COLORS['danger'], annotation_text="DEF threshold (10)")
-    scatter_fig.add_vline(x=12, line_dash="dash", line_color=COLORS['warning'], annotation_text="MID/FWD threshold (12)")
+    scatter_fig.add_vline(x=10, line_dash="dash", line_color=COLORS['warning'], annotation_text="DEF threshold (10)")
+    scatter_fig.add_vline(x=12, line_dash="dash", line_color=COLORS['danger'], annotation_text="MID/FWD threshold (12)")
     scatter_fig.update_layout(
         template='plotly_white',
         height=400,
