@@ -2077,7 +2077,7 @@ def update_consistency(position, team, max_price, min_games, min_minutes):
         size='qualifying_games',
         hover_name='web_name',
         hover_data=['team_name', 'price', 'bonus_games', 'qualifying_games'],
-        color_discrete_map={'DEF': COLORS['primary'], 'MID': COLORS['accent'], 'FWD': COLORS['info']}
+        color_discrete_map={'DEF': COLORS['accent'], 'MID': COLORS['primary'], 'FWD': COLORS['info']}
     )
     scatter_fig.add_hline(y=50, line_dash="dash", line_color='#999', annotation_text="50% hit rate")
     scatter_fig.add_vline(x=10, line_dash="dash", line_color=COLORS['danger'], annotation_text="DEF threshold (10)")
