@@ -577,34 +577,13 @@ sorted_teams = DATA['sorted_teams']
 next_gw_num = DATA['next_gw_num']
 player_histories = DATA['player_histories']
 
-avg_gw_score = current_gw['average_entry_score'] if current_gw else 0
-highest_gw_score = current_gw['highest_score'] if current_gw else 0
-
-top_scorer = df_active.nlargest(1, 'total_points').iloc[0] if len(df_active) > 0 else None
-most_selected = df_active.nlargest(1, 'ownership').iloc[0] if len(df_active) > 0 else None
-best_value = df_active[df_active['minutes'] > 450].nlargest(1, 'points_per_million').iloc[0] if len(df_active[df_active['minutes'] > 450]) > 0 else None
-top_form = df_active.nlargest(1, 'form').iloc[0] if len(df_active) > 0 else None
-
-# Most captained player for the current GW
-most_captained_id = current_gw.get('most_captained') if current_gw else None
-most_captained_player = None
-if most_captained_id:
-    match = df_active[df_active['id'] == most_captained_id]
-    if len(match) > 0:
-        most_captained_player = match.iloc[0]
-
-# Chip usage for the current GW
-chip_plays = current_gw.get('chip_plays', []) if current_gw else []
+# Chip name mapping (used by home tab callback)
 chip_name_map = {
     'bboost': 'Bench Boost',
     '3xc': 'Triple Captain',
     'wildcard': 'Wildcard',
     'freehit': 'Free Hit',
 }
-chip_summary = ', '.join(
-    [f"{chip_name_map.get(c['chip_name'], c['chip_name'])}: {c['num_played']:,}" for c in chip_plays]
-) if chip_plays else "No data yet"
-total_chips_used = sum(c['num_played'] for c in chip_plays) if chip_plays else 0
 
 # =============================================================================
 # DASH APPLICATION
@@ -865,82 +844,8 @@ def build_player_spotlight(player, title, metric_label, metric_value):
     ], style={**CARD_STYLE, 'flex': '1', 'minWidth': '220px'})
 
 
-def build_position_breakdown_chart():
-    position_stats = df_active[df_active['minutes'] > 450].groupby('position').agg({
-        'total_points': 'mean',
-        'points_per_million': 'mean',
-        'price': 'mean'
-    }).round(2).reset_index()
-
-    position_order = ['GKP', 'DEF', 'MID', 'FWD']
-    position_stats['position'] = pd.Categorical(position_stats['position'], categories=position_order, ordered=True)
-    position_stats = position_stats.sort_values('position')
-
-    fig = go.Figure()
-    fig.add_trace(go.Bar(name='Avg Points', x=position_stats['position'], y=position_stats['total_points'],
-                         marker_color=COLORS['primary'], text=position_stats['total_points'].round(1), textposition='outside'))
-    fig.add_trace(go.Bar(name='Avg Pts/£m (x10)', x=position_stats['position'], y=position_stats['points_per_million'] * 10,
-                         marker_color=COLORS['secondary'], text=position_stats['points_per_million'].round(2), textposition='outside'))
-
-    fig.update_layout(barmode='group', template='plotly_white', height=350,
-                      margin=dict(t=40, b=40, l=40, r=40),
-                      legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5),
-                      yaxis_title='Value', xaxis_title='Position', font=dict(family='Arial, sans-serif'))
-    return fig
-
-
-# Prepare home page table data
+# Home page table columns (used by callback)
 home_value_cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'total_points', 'points_per_million', 'form', 'ownership']
-home_table_data = prepare_table_data(df_active[df_active['minutes'] > 1350].nlargest(15, 'points_per_million'), home_value_cols)
-
-
-def build_chip_usage_chart():
-    """Build a bar chart showing chip usage for the current gameweek."""
-    chip_colors = {
-        'Bench Boost': COLORS['info'],
-        'Triple Captain': COLORS['accent'],
-        'Wildcard': COLORS['success'],
-        'Free Hit': COLORS['warning'],
-    }
-    chip_label_map = {
-        'bboost': 'Bench Boost',
-        '3xc': 'Triple Captain',
-        'wildcard': 'Wildcard',
-        'freehit': 'Free Hit',
-    }
-
-    if not chip_plays:
-        fig = go.Figure()
-        fig.add_annotation(text="No chip data available yet", xref="paper", yref="paper",
-                           x=0.5, y=0.5, showarrow=False, font=dict(size=16, color=COLORS['text_light']))
-        fig.update_layout(template='plotly_white', height=300)
-        return fig
-
-    names = [chip_label_map.get(c['chip_name'], c['chip_name']) for c in chip_plays]
-    counts = [c['num_played'] for c in chip_plays]
-
-    # Sort by count descending
-    sorted_pairs = sorted(zip(names, counts), key=lambda x: x[1], reverse=True)
-    names = [p[0] for p in sorted_pairs]
-    counts = [p[1] for p in sorted_pairs]
-    colors = [chip_colors.get(n, COLORS['primary']) for n in names]
-
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        x=names, y=counts,
-        marker_color=colors,
-        text=[f"{c:,}" for c in counts],
-        textposition='outside',
-    ))
-    fig.update_layout(
-        template='plotly_white', height=300,
-        margin=dict(t=40, b=40, l=40, r=40),
-        yaxis_title='Managers',
-        showlegend=False,
-        font=dict(family='Arial, sans-serif'),
-        yaxis=dict(range=[0, max(counts) * 1.15]) if counts else {}
-    )
-    return fig
 
 # =============================================================================
 # LAYOUT
@@ -977,92 +882,7 @@ app.layout = html.Div([
 
             # HOME TAB
             dcc.Tab(label='Home', value='home', children=[
-                html.Div([
-                    html.Div([
-                        html.H2("Season Overview", style={'color': COLORS['primary'], 'margin': '0 0 4px 0'}),
-                        html.P("Key statistics from the 2025/26 FPL season", style={'color': COLORS['text_light']})
-                    ], style={'marginBottom': '24px'}),
-
-                    html.Div([
-                        html.Div([build_stat_card("Total Managers", f"{total_managers:,}", "Competing worldwide")],
-                                 style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
-                        html.Div([build_stat_card("Current Gameweek", current_gw['name'].replace('Gameweek ', 'GW') if current_gw else "N/A", f"Average: {avg_gw_score} pts")],
-                                 style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
-                        html.Div([build_stat_card("Highest GW Score", f"{highest_gw_score}", "This gameweek", color=COLORS['success'])],
-                                 style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
-                        html.Div([build_stat_card("Next Deadline", next_gw['name'].replace('Gameweek ', 'GW') if next_gw else "N/A",
-                                                  datetime.fromisoformat(next_gw['deadline_time'].replace('Z', '+00:00')).strftime('%d %b, %H:%M') if next_gw else "")],
-                                 style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
-                    ], style={'display': 'flex', 'flexWrap': 'wrap', 'margin': '0 -10px 40px -10px'}),
-
-                    html.Div([
-                        html.Div([build_stat_card(
-                            "Most Captained",
-                            most_captained_player['web_name'] if most_captained_player is not None else "N/A",
-                            f"{most_captained_player['team_name']} · £{most_captained_player['price']:.1f}m" if most_captained_player is not None else "Data available after deadline",
-                            color=COLORS['accent']
-                        )], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
-                        html.Div([build_stat_card(
-                            "Chips Used This GW",
-                            f"{total_chips_used:,}" if total_chips_used > 0 else "N/A",
-                            chip_summary,
-                            color=COLORS['info']
-                        )], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
-                    ], style={'display': 'flex', 'flexWrap': 'wrap', 'margin': '0 -10px 40px -10px'}),
-
-                    html.Div([
-                        html.H2("Chip Usage This Gameweek", style={'color': COLORS['primary'], 'margin': '0 0 4px 0'}),
-                        html.P("Number of managers activating each chip", style={'color': COLORS['text_light']})
-                    ], style={'marginBottom': '24px'}),
-
-                    html.Div([dcc.Graph(figure=build_chip_usage_chart(), config={'displayModeBar': False})], style=CARD_STYLE),
-
-                    html.Div([
-                        html.H2("Player Spotlights", style={'color': COLORS['primary'], 'margin': '0 0 4px 0'}),
-                        html.P("Top performers across key metrics", style={'color': COLORS['text_light']})
-                    ], style={'marginBottom': '24px'}),
-
-                    html.Div([
-                        build_player_spotlight(top_scorer, "Top Scorer", "Total Points", f"{int(top_scorer['total_points'])}" if top_scorer is not None else "N/A"),
-                        build_player_spotlight(most_selected, "Most Selected", "Ownership", f"{most_selected['ownership']:.1f}%" if most_selected is not None else "N/A"),
-                        build_player_spotlight(best_value, "Best Value", "Points/£m", f"{best_value['points_per_million']:.2f}" if best_value is not None else "N/A"),
-                        build_player_spotlight(top_form, "In Form", "Form Rating", f"{top_form['form']:.1f}" if top_form is not None else "N/A"),
-                    ], style={'display': 'flex', 'flexWrap': 'wrap', 'gap': '20px', 'marginBottom': '40px'}),
-
-                    html.Div([
-                        html.H2("Position Breakdown", style={'color': COLORS['primary'], 'margin': '0 0 4px 0'}),
-                        html.P("Average points and value by position", style={'color': COLORS['text_light']})
-                    ], style={'marginBottom': '24px'}),
-
-                    html.Div([dcc.Graph(figure=build_position_breakdown_chart(), config={'displayModeBar': False})], style=CARD_STYLE),
-
-                    html.Div([
-                        html.H2("Value Watch", style={'color': COLORS['primary'], 'margin': '0 0 4px 0'}),
-                        html.P("Top 15 value picks (min. 1350 minutes)", style={'color': COLORS['text_light']})
-                    ], style={'marginBottom': '24px'}),
-
-                    html.Div([
-                        dash_table.DataTable(
-                            data=home_table_data,
-                            columns=[
-                                {'name': 'Player', 'id': 'web_name'},
-                                {'name': 'Team', 'id': 'team_name'},
-                                {'name': 'Pos', 'id': 'position'},
-                                {'name': 'Price', 'id': 'price', 'type': 'numeric', 'format': {'specifier': '.1f'}},
-                                {'name': 'Mins', 'id': 'minutes', 'type': 'numeric'},
-                                {'name': 'Points', 'id': 'total_points', 'type': 'numeric'},
-                                {'name': 'Pts/£m', 'id': 'points_per_million', 'type': 'numeric', 'format': {'specifier': '.2f'}},
-                                {'name': 'Form', 'id': 'form', 'type': 'numeric', 'format': {'specifier': '.1f'}},
-                                {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
-                            ],
-                            sort_action='native',
-                            style_cell=TABLE_STYLE_CELL,
-                            style_header=TABLE_STYLE_HEADER,
-                            style_data=TABLE_STYLE_DATA,
-                            style_data_conditional=[{'if': {'row_index': 'odd'}, 'backgroundColor': '#f9f9f9'}]
-                        )
-                    ], style=CARD_STYLE)
-                ], style={'padding': '20px 0'})
+                html.Div(id='home-content')
             ]),
 
             # DEFCON BONUS TAB
@@ -1073,7 +893,7 @@ app.layout = html.Div([
                         html.P(["Players earn ", html.Strong("2 bonus points"), " when they hit the defcon threshold: ",
                                 html.Strong("10+ for DEF"), " or ", html.Strong("12+ for MID/FWD"), " in a single match."],
                                style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
-                        html.Div([html.Span("Target: 10 defcon/90 (DEF) · 12 defcon/90 (MID/FWD)", style={'backgroundColor': COLORS['secondary'],
+                        html.Div([html.Span("Å½¯ Target: 10 defcon/90 (DEF) · 12 defcon/90 (MID/FWD)", style={'backgroundColor': COLORS['secondary'],
                                   'color': COLORS['primary'], 'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})])
                     ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
@@ -1094,7 +914,7 @@ app.layout = html.Div([
                                 dcc.Slider(id='bonus-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Min. Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Input(id='bonus-minutes', type='number', value=450, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -1184,7 +1004,7 @@ app.layout = html.Div([
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Min. Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Input(id='consistency-minutes', type='number', value=200, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -1201,7 +1021,7 @@ app.layout = html.Div([
                     # Scatter - Hit Rate vs Avg Defcon
                     html.Div([
                         html.H3("Consistency vs Average Output", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-                        html.P("Compare hit rate (consistency) against average defcon in qualifying games. Top right = high output AND consistent.", style={'color': COLORS['text_light']}),
+                        html.P("Compare hit rate (consistency) against average defcon in qualifying games. Top-right = high output AND consistent.", style={'color': COLORS['text_light']}),
                         dcc.Graph(id='consistency-scatter')
                     ], style=CARD_STYLE),
 
@@ -1261,7 +1081,7 @@ app.layout = html.Div([
                                 dcc.Slider(id='defcon-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Min. Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Input(id='defcon-minutes', type='number', value=200, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -1326,7 +1146,7 @@ app.layout = html.Div([
                                 dcc.Slider(id='xg-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Min. Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Input(id='xg-minutes', type='number', value=200, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -1392,7 +1212,7 @@ app.layout = html.Div([
                                 dcc.Slider(id='value-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Min. Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Input(id='value-minutes', type='number', value=200, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -1451,7 +1271,7 @@ app.layout = html.Div([
                                 dcc.Slider(id='form-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Min. Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Input(id='form-minutes', type='number', value=200, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -1514,7 +1334,7 @@ app.layout = html.Div([
                                 dcc.Slider(id='cs-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Min. Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Input(id='cs-minutes', type='number', value=200, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -1590,7 +1410,7 @@ app.layout = html.Div([
                                 dcc.Slider(id='fdr-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Min. Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Input(id='fdr-minutes', type='number', value=200, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -1658,7 +1478,7 @@ app.layout = html.Div([
                             "to surface the highest-upside differentials."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div([
-                            html.Span("Target: <10% ownership with above average output",
+                            html.Span("Target: <10% ownership with above-average output",
                                       style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
                                              'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
                         ])
@@ -1678,7 +1498,7 @@ app.layout = html.Div([
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Max. Price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Slider(id='diff-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4, 6, 8, 10, 12, 14, 16]})
+                                dcc.Slider(id='diff-price', min=4, max=16, step=0.5, value=16, marks={i: f'{i}' for i in [4, 6, 8, 10, 12, 14, 16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Max Ownership %", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
@@ -1686,7 +1506,7 @@ app.layout = html.Div([
                                            marks={i: f'{i}%' for i in [5, 25, 50, 75, 100]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Min. Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Input(id='diff-minutes', type='number', value=450, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -1695,7 +1515,7 @@ app.layout = html.Div([
 
                     html.Div([
                         html.H3("PPG vs Ownership", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-                        html.P("Top left quadrant = high output, low ownership. These are your rank gainers.",
+                        html.P("Top-left quadrant = high output, low ownership. These are your rank-gainers.",
                                style={'color': COLORS['text_light']}),
                         dcc.Graph(id='diff-scatter')
                     ], style=CARD_STYLE),
@@ -1774,10 +1594,10 @@ app.layout = html.Div([
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Max. Price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Slider(id='cap-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4, 6, 8, 10, 12, 14, 16]})
+                                dcc.Slider(id='cap-price', min=4, max=16, step=0.5, value=16, marks={i: f'{i}' for i in [4, 6, 8, 10, 12, 14, 16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Min. Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Input(id='cap-minutes', type='number', value=450, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -1846,8 +1666,8 @@ app.layout = html.Div([
                         html.H3("Transfer Trends & Price Prediction", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
                         html.P([
                             "Getting ahead of price changes by even ", html.Strong("one day"), " compounds over a season. ",
-                            "Every £0.1m saved means better players later. This tab tracks net transfer velocity and estimates ",
-                            "which players are closest to a price rise or fall based on transfer to ownership ratios."
+                            "Every 0.1m saved means better players later. This tab tracks net transfer velocity and estimates ",
+                            "which players are closest to a price rise or fall based on transfer-to-ownership ratios."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div([
                             html.Span("Price changes happen overnight based on transfer activity",
@@ -1870,10 +1690,10 @@ app.layout = html.Div([
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Max. Price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Slider(id='xfer-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4, 6, 8, 10, 12, 14, 16]})
+                                dcc.Slider(id='xfer-price', min=4, max=16, step=0.5, value=16, marks={i: f'{i}' for i in [4, 6, 8, 10, 12, 14, 16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Min. Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Input(id='xfer-minutes', type='number', value=0, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -1987,6 +1807,192 @@ def filter_data(position, team, max_price, min_minutes, positions_allowed=None):
     return filtered
 
 
+# HOME TAB (dynamic - rebuilds from fresh DATA on each interval tick)
+@callback(
+    Output('home-content', 'children'),
+    Input('refresh-interval', 'n_intervals')
+)
+def update_home_tab(n):
+    """Rebuild the entire Home tab from current DATA so it reflects refreshed data."""
+    data = get_data()
+    df_now = data.get('df_active', pd.DataFrame())
+    current_gw_now = data.get('current_gw')
+    next_gw_now = data.get('next_gw')
+    total_mgrs = data.get('total_managers', 0)
+
+    avg_gw = current_gw_now['average_entry_score'] if current_gw_now else 0
+    highest_gw = current_gw_now['highest_score'] if current_gw_now else 0
+
+    # Top players
+    top_scorer_now = df_now.nlargest(1, 'total_points').iloc[0] if len(df_now) > 0 else None
+    most_selected_now = df_now.nlargest(1, 'ownership').iloc[0] if len(df_now) > 0 else None
+    best_value_now = df_now[df_now['minutes'] > 450].nlargest(1, 'points_per_million').iloc[0] if len(df_now[df_now['minutes'] > 450]) > 0 else None
+    top_form_now = df_now.nlargest(1, 'form').iloc[0] if len(df_now) > 0 else None
+
+    # Most captained
+    most_cap_id = current_gw_now.get('most_captained') if current_gw_now else None
+    most_cap = None
+    if most_cap_id:
+        match = df_now[df_now['id'] == most_cap_id]
+        if len(match) > 0:
+            most_cap = match.iloc[0]
+
+    # Chip usage
+    chips = current_gw_now.get('chip_plays', []) if current_gw_now else []
+    chip_sum = ', '.join(
+        [f"{chip_name_map.get(c['chip_name'], c['chip_name'])}: {c['num_played']:,}" for c in chips]
+    ) if chips else "No data yet"
+    total_chips = sum(c['num_played'] for c in chips) if chips else 0
+
+    # Chip bar chart
+    chip_colors = {
+        'Bench Boost': COLORS['info'],
+        'Triple Captain': COLORS['accent'],
+        'Wildcard': COLORS['success'],
+        'Free Hit': COLORS['warning'],
+    }
+    if chips:
+        c_names = [chip_name_map.get(c['chip_name'], c['chip_name']) for c in chips]
+        c_counts = [c['num_played'] for c in chips]
+        sorted_pairs = sorted(zip(c_names, c_counts), key=lambda x: x[1], reverse=True)
+        c_names = [p[0] for p in sorted_pairs]
+        c_counts = [p[1] for p in sorted_pairs]
+        c_colors = [chip_colors.get(n, COLORS['primary']) for n in c_names]
+        chip_fig = go.Figure()
+        chip_fig.add_trace(go.Bar(x=c_names, y=c_counts, marker_color=c_colors,
+                                  text=[f"{c:,}" for c in c_counts], textposition='outside'))
+        chip_fig.update_layout(template='plotly_white', height=300,
+                               margin=dict(t=40, b=40, l=40, r=40),
+                               yaxis_title='Managers', showlegend=False,
+                               font=dict(family='Arial, sans-serif'),
+                               yaxis=dict(range=[0, max(c_counts) * 1.15]))
+    else:
+        chip_fig = go.Figure()
+        chip_fig.add_annotation(text="No chip data available yet", xref="paper", yref="paper",
+                                x=0.5, y=0.5, showarrow=False, font=dict(size=16, color=COLORS['text_light']))
+        chip_fig.update_layout(template='plotly_white', height=300)
+
+    # Position breakdown chart
+    pos_data = df_now[df_now['minutes'] > 450]
+    if len(pos_data) > 0:
+        position_stats = pos_data.groupby('position').agg({
+            'total_points': 'mean', 'points_per_million': 'mean', 'price': 'mean'
+        }).round(2).reset_index()
+        position_order = ['GKP', 'DEF', 'MID', 'FWD']
+        position_stats['position'] = pd.Categorical(position_stats['position'], categories=position_order, ordered=True)
+        position_stats = position_stats.sort_values('position')
+        pos_fig = go.Figure()
+        pos_fig.add_trace(go.Bar(name='Avg Points', x=position_stats['position'], y=position_stats['total_points'],
+                                 marker_color=COLORS['primary'], text=position_stats['total_points'].round(1), textposition='outside'))
+        pos_fig.add_trace(go.Bar(name='Avg Pts/m (x10)', x=position_stats['position'], y=position_stats['points_per_million'] * 10,
+                                 marker_color=COLORS['secondary'], text=position_stats['points_per_million'].round(2), textposition='outside'))
+        pos_fig.update_layout(barmode='group', template='plotly_white', height=350,
+                              margin=dict(t=40, b=40, l=40, r=40),
+                              legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5),
+                              yaxis_title='Value', xaxis_title='Position', font=dict(family='Arial, sans-serif'))
+    else:
+        pos_fig = go.Figure()
+
+    # Value table
+    val_df = df_now[df_now['minutes'] > 1350]
+    home_tbl = prepare_table_data(val_df.nlargest(15, 'points_per_million'), home_value_cols) if len(val_df) > 0 else []
+
+    # Build and return layout
+    return html.Div([
+        html.Div([
+            html.H2("Season Overview", style={'color': COLORS['primary'], 'margin': '0 0 4px 0'}),
+            html.P("Key statistics from the 2025/26 FPL season", style={'color': COLORS['text_light']})
+        ], style={'marginBottom': '24px'}),
+
+        html.Div([
+            html.Div([build_stat_card("Total Managers", f"{total_mgrs:,}", "Competing worldwide")],
+                     style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
+            html.Div([build_stat_card("Current Gameweek",
+                     current_gw_now['name'].replace('Gameweek ', 'GW') if current_gw_now else "N/A",
+                     f"Average: {avg_gw} pts")],
+                     style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
+            html.Div([build_stat_card("Highest GW Score", f"{highest_gw}", "This gameweek", color=COLORS['success'])],
+                     style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
+            html.Div([build_stat_card("Next Deadline",
+                     next_gw_now['name'].replace('Gameweek ', 'GW') if next_gw_now else "N/A",
+                     datetime.fromisoformat(next_gw_now['deadline_time'].replace('Z', '+00:00')).strftime('%d %b, %H:%M') if next_gw_now else "")],
+                     style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
+        ], style={'display': 'flex', 'flexWrap': 'wrap', 'margin': '0 -10px 40px -10px'}),
+
+        html.Div([
+            html.Div([build_stat_card(
+                "Most Captained",
+                most_cap['web_name'] if most_cap is not None else "N/A",
+                f"{most_cap['team_name']} - {most_cap['price']:.1f}m" if most_cap is not None else "Data available after deadline",
+                color=COLORS['accent']
+            )], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
+            html.Div([build_stat_card(
+                "Chips Used This GW",
+                f"{total_chips:,}" if total_chips > 0 else "N/A",
+                chip_sum,
+                color=COLORS['info']
+            )], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
+        ], style={'display': 'flex', 'flexWrap': 'wrap', 'margin': '0 -10px 40px -10px'}),
+
+        html.Div([
+            html.H2("Chip Usage This Gameweek", style={'color': COLORS['primary'], 'margin': '0 0 4px 0'}),
+            html.P("Number of managers activating each chip", style={'color': COLORS['text_light']})
+        ], style={'marginBottom': '24px'}),
+
+        html.Div([dcc.Graph(figure=chip_fig, config={'displayModeBar': False})], style=CARD_STYLE),
+
+        html.Div([
+            html.H2("Player Spotlights", style={'color': COLORS['primary'], 'margin': '0 0 4px 0'}),
+            html.P("Top performers across key metrics", style={'color': COLORS['text_light']})
+        ], style={'marginBottom': '24px'}),
+
+        html.Div([
+            build_player_spotlight(top_scorer_now, "Top Scorer", "Total Points",
+                                   f"{int(top_scorer_now['total_points'])}" if top_scorer_now is not None else "N/A"),
+            build_player_spotlight(most_selected_now, "Most Selected", "Ownership",
+                                   f"{most_selected_now['ownership']:.1f}%" if most_selected_now is not None else "N/A"),
+            build_player_spotlight(best_value_now, "Best Value", "Points/m",
+                                   f"{best_value_now['points_per_million']:.2f}" if best_value_now is not None else "N/A"),
+            build_player_spotlight(top_form_now, "In Form", "Form Rating",
+                                   f"{top_form_now['form']:.1f}" if top_form_now is not None else "N/A"),
+        ], style={'display': 'flex', 'flexWrap': 'wrap', 'gap': '20px', 'marginBottom': '40px'}),
+
+        html.Div([
+            html.H2("Position Breakdown", style={'color': COLORS['primary'], 'margin': '0 0 4px 0'}),
+            html.P("Average points and value by position", style={'color': COLORS['text_light']})
+        ], style={'marginBottom': '24px'}),
+
+        html.Div([dcc.Graph(figure=pos_fig, config={'displayModeBar': False})], style=CARD_STYLE),
+
+        html.Div([
+            html.H2("Value Watch", style={'color': COLORS['primary'], 'margin': '0 0 4px 0'}),
+            html.P("Top 15 value picks (min. 1350 minutes)", style={'color': COLORS['text_light']})
+        ], style={'marginBottom': '24px'}),
+
+        html.Div([
+            dash_table.DataTable(
+                data=home_tbl,
+                columns=[
+                    {'name': 'Player', 'id': 'web_name'},
+                    {'name': 'Team', 'id': 'team_name'},
+                    {'name': 'Pos', 'id': 'position'},
+                    {'name': 'Price', 'id': 'price', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                    {'name': 'Mins', 'id': 'minutes', 'type': 'numeric'},
+                    {'name': 'Points', 'id': 'total_points', 'type': 'numeric'},
+                    {'name': 'Pts/m', 'id': 'points_per_million', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                    {'name': 'Form', 'id': 'form', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                    {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                ],
+                sort_action='native',
+                style_cell=TABLE_STYLE_CELL,
+                style_header=TABLE_STYLE_HEADER,
+                style_data=TABLE_STYLE_DATA,
+                style_data_conditional=[{'if': {'row_index': 'odd'}, 'backgroundColor': '#f9f9f9'}]
+            )
+        ], style=CARD_STYLE)
+    ], style={'padding': '20px 0'})
+
+
 # DEFCON BONUS
 @callback(
     [Output('bonus-scatter', 'figure'), Output('bonus-bar', 'figure'), Output('bonus-table', 'data')],
@@ -2044,7 +2050,7 @@ def update_consistency(position, team, max_price, min_games, min_minutes):
     # Apply price filter
     filtered = filtered[filtered['price'] <= max_price]
 
-    # Apply Min. Minutes filter
+    # Apply min minutes filter
     filtered = filtered[filtered['minutes'] >= min_minutes]
 
     # Apply min games filter
@@ -2080,8 +2086,8 @@ def update_consistency(position, team, max_price, min_games, min_minutes):
         color_discrete_map={'DEF': COLORS['primary'], 'MID': COLORS['accent'], 'FWD': COLORS['info']}
     )
     scatter_fig.add_hline(y=50, line_dash="dash", line_color='#999', annotation_text="50% hit rate")
-    scatter_fig.add_vline(x=10, line_dash="dash", line_color=COLORS['primary'], annotation_text="DEF threshold (10)")
-    scatter_fig.add_vline(x=12, line_dash="dash", line_color=COLORS['danger'], annotation_text="MID/FWD threshold (12)")
+    scatter_fig.add_vline(x=10, line_dash="dash", line_color=COLORS['danger'], annotation_text="DEF threshold (10)")
+    scatter_fig.add_vline(x=12, line_dash="dash", line_color=COLORS['warning'], annotation_text="MID/FWD threshold (12)")
     scatter_fig.update_layout(
         template='plotly_white',
         height=400,
