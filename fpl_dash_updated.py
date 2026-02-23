@@ -2009,7 +2009,8 @@ def update_bonus(position, team, max_price, min_minutes):
                           annotation_text="DEF Threshold (10)", annotation_position="top right")
     scatter_fig.add_hline(y=12, line_dash="dash", line_color=COLORS['warning'],
                           annotation_text="MID/FWD Threshold (12)", annotation_position="bottom right")
-    scatter_fig.update_layout(template='plotly_white', height=400, xaxis_title='Price (£m)', yaxis_title='Defcon per 90')
+    scatter_fig.update_layout(template='plotly_white', height=400, xaxis_title='Price (£m)', yaxis_title='Defcon per 90',
+                              font=dict(family='Arial, sans-serif'))
 
     top_25 = filtered.nlargest(25, 'defcon_per_90')
     bar_fig = go.Figure()
@@ -2020,7 +2021,8 @@ def update_bonus(position, team, max_price, min_minutes):
     ))
     bar_fig.add_hline(y=0, line_color='#333', line_width=2)
     bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
-                          yaxis_title='Distance from Threshold', showlegend=False)
+                          yaxis_title='Distance from Threshold', showlegend=False,
+                          font=dict(family='Arial, sans-serif'))
 
     cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'defcon', 'defcon_per_90', 'defcon_vs_bonus', 'bonus_rate', 'ownership']
     table_data = prepare_table_data(filtered.nlargest(50, 'defcon_per_90'), cols)
@@ -2119,7 +2121,7 @@ def update_defcon(position, team, max_price, min_minutes):
     if len(filtered) > 0:
         max_val = max(filtered['defcon'].max(), filtered['expected_defcon'].max())
         fig.add_trace(go.Scatter(x=[0, max_val], y=[0, max_val], mode='lines', line=dict(dash='dash', color='#999'), name='Expected'))
-    fig.update_layout(template='plotly_white', height=400)
+    fig.update_layout(template='plotly_white', font=dict(family='Arial, sans-serif'), height=400)
 
     cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'defcon', 'defcon_per_90', 'expected_defcon', 'defcon_diff', 'ownership']
     table_data = prepare_table_data(filtered.nlargest(50, 'defcon_per_90'), cols)
@@ -2142,7 +2144,7 @@ def update_xg(position, team, max_price, min_minutes):
     if len(filtered) > 0:
         max_val = max(filtered['goals_scored'].max(), filtered['expected_goals'].max())
         fig.add_trace(go.Scatter(x=[0, max_val], y=[0, max_val], mode='lines', line=dict(dash='dash', color='#999'), name='Expected'))
-    fig.update_layout(template='plotly_white', height=400)
+    fig.update_layout(template='plotly_white', font=dict(family='Arial, sans-serif'), height=400)
 
     cols = ['web_name', 'team_name', 'position', 'price', 'goals_scored', 'expected_goals', 'xg_diff', 'assists', 'expected_assists', 'xa_diff', 'ownership']
     table_data = prepare_table_data(filtered.sort_values('xg_diff').head(50), cols)
@@ -2201,7 +2203,7 @@ def update_cs(position, team, max_price, min_minutes):
 
     fig = px.scatter(filtered, x='gc_per_90', y='cs_per_90', color='team_name', size='minutes',
                      hover_name='web_name', hover_data=['price', 'clean_sheets', 'goals_conceded'])
-    fig.update_layout(template='plotly_white', height=400)
+    fig.update_layout(template='plotly_white', font=dict(family='Arial, sans-serif'), height=400)
 
     cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'clean_sheets', 'cs_per_90', 'goals_conceded', 'gc_per_90', 'ownership']
     table_data = prepare_table_data(filtered.nlargest(50, 'cs_per_90'), cols)
@@ -2287,7 +2289,8 @@ def update_differentials(position, team, max_price, max_own, min_minutes):
         median_ppg = get_data()['df_active'][get_data()['df_active']['minutes'] >= 450]['ppg'].median()
         scatter_fig.add_hline(y=median_ppg, line_dash='dash', line_color='#999',
                               annotation_text=f'Median PPG ({median_ppg:.1f})', annotation_position='top right')
-    scatter_fig.update_layout(template='plotly_white', height=400, xaxis_title='Ownership %', yaxis_title='Points Per Game')
+    scatter_fig.update_layout(template='plotly_white', height=400, xaxis_title='Ownership %', yaxis_title='Points Per Game',
+                              font=dict(family='Arial, sans-serif'))
 
     top_25 = filtered.nlargest(25, 'differential_score')
     bar_fig = go.Figure()
