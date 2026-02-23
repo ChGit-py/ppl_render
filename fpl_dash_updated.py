@@ -1021,7 +1021,7 @@ app.layout = html.Div([
                     # Scatter - Hit Rate vs Avg Defcon
                     html.Div([
                         html.H3("Consistency vs Average Output", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-                        html.P("Compare hit rate (consistency) against average defcon in qualifying games. Top-right = high output AND consistent.", style={'color': COLORS['text_light']}),
+                        html.P("Compare hit rate (consistency) against average defcon in qualifying games. Top right = high output AND consistent.", style={'color': COLORS['text_light']}),
                         dcc.Graph(id='consistency-scatter')
                     ], style=CARD_STYLE),
 
@@ -1343,7 +1343,7 @@ app.layout = html.Div([
 
                     html.Div([
                         html.H3("Clean Sheets vs Goals Conceded", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-                        html.P("Best assets appear in the top-left quadrant (high CS, low GC).", style={'color': COLORS['text_light']}),
+                        html.P("Best assets appear in the top left quadrant (high CS, low GC).", style={'color': COLORS['text_light']}),
                         dcc.Graph(id='cs-chart')
                     ], style=CARD_STYLE),
 
@@ -1427,7 +1427,7 @@ app.layout = html.Div([
                     # Player scatter
                     html.Div([
                         html.H3("Player Value vs Fixture Difficulty", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-                        html.P("Find high-value players with easy fixtures. Best picks are top-left (high points, low FDR).", style={'color': COLORS['text_light']}),
+                        html.P("Find high-value players with easy fixtures. Best picks are top left (high points, low FDR).", style={'color': COLORS['text_light']}),
                         dcc.Graph(id='fdr-scatter')
                     ], style=CARD_STYLE),
 
@@ -1515,7 +1515,7 @@ app.layout = html.Div([
 
                     html.Div([
                         html.H3("PPG vs Ownership", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-                        html.P("Top-left quadrant = high output, low ownership. These are your rank-gainers.",
+                        html.P("Top left quadrant = high output, low ownership. These are your rank-gainers.",
                                style={'color': COLORS['text_light']}),
                         dcc.Graph(id='diff-scatter')
                     ], style=CARD_STYLE),
