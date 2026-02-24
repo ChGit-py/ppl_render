@@ -1343,7 +1343,7 @@ app.layout = html.Div([
 
                     html.Div([
                         html.H3("Clean Sheets vs Goals Conceded", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-                        html.P("Best assets appear in the top-left quadrant (high CS, low GC).", style={'color': COLORS['text_light']}),
+                        html.P("Best assets appear in the top left quadrant (high CS, low GC).", style={'color': COLORS['text_light']}),
                         dcc.Graph(id='cs-chart')
                     ], style=CARD_STYLE),
 
@@ -1515,7 +1515,7 @@ app.layout = html.Div([
 
                     html.Div([
                         html.H3("PPG vs Ownership", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-                        html.P("Top-left quadrant = high output, low ownership. These are your rank gainers.",
+                        html.P("Top left quadrant = high output, low ownership. These are your rank gainers.",
                                style={'color': COLORS['text_light']}),
                         dcc.Graph(id='diff-scatter')
                     ], style=CARD_STYLE),
