@@ -1,6 +1,6 @@
-dash>=2.14.0
-plotly>=5.18.0
-pandas>=2.0.0
-numpy>=1.24.0
-requests>=2.31.0
-gunicorn>=21.0.0
+dash==2.18.2
+plotly==5.24.1
+pandas==2.2.3
+numpy==1.26.4
+requests==2.32.3
+gunicorn==22.0.0
