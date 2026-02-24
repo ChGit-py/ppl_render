@@ -391,7 +391,7 @@ TABLE_STYLE_DATA = {
 }
 
 # =============================================================================
-# FETCH AND PROCESS DATA €” WRAPPED FOR AUTO-REFRESH
+# FETCH AND PROCESS DATA â€” WRAPPED FOR AUTO-REFRESH
 # =============================================================================
 
 import time
@@ -827,7 +827,7 @@ def build_player_spotlight(player, title, metric_label, metric_value):
             'fontSize': '22px',
             'fontWeight': '700'
         }),
-        html.P(f"{player['team_name']} {player['position']}  £{player['price']:.1f}m", style={
+        html.P(f"{player['team_name']} {player['position']}  Â£{player['price']:.1f}m", style={
             'color': COLORS['text_light'],
             'margin': '0 0 16px 0',
             'fontSize': '14px'
@@ -867,7 +867,7 @@ app.layout = html.Div([
             html.Div([
                 html.Span(f"Data as of {current_gw['name'] if current_gw else 'N/A'}",
                           style={'color': 'rgba(255,255,255,0.8)', 'fontSize': '13px'}),
-                html.Span(" · ", style={'color': 'rgba(255,255,255,0.5)', 'fontSize': '13px'}),
+                html.Span(" Â· ", style={'color': 'rgba(255,255,255,0.5)', 'fontSize': '13px'}),
                 html.Span(id='last-updated-text',
                           style={'color': 'rgba(255,255,255,0.6)', 'fontSize': '12px'})
             ])
@@ -893,7 +893,7 @@ app.layout = html.Div([
                         html.P(["Players earn ", html.Strong("2 bonus points"), " when they hit the defcon threshold: ",
                                 html.Strong("10+ for DEF"), " or ", html.Strong("12+ for MID/FWD"), " in a single match."],
                                style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
-                        html.Div([html.Span("Target: 10 defcon/90 (DEF) · 12 defcon/90 (MID/FWD)", style={'backgroundColor': COLORS['secondary'],
+                        html.Div([html.Span("Å½Â¯ Target: 10 defcon/90 (DEF) Â· 12 defcon/90 (MID/FWD)", style={'backgroundColor': COLORS['secondary'],
                                   'color': COLORS['primary'], 'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})])
                     ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
@@ -910,8 +910,8 @@ app.layout = html.Div([
                                              [{'label': t, 'value': t} for t in sorted(df['team_name'].unique())], value='All', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Max. Price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Slider(id='bonus-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
+                                html.Label("Max. Price (Â£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Slider(id='bonus-price', min=4, max=16, step=0.5, value=16, marks={i: f'Â£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
@@ -995,8 +995,8 @@ app.layout = html.Div([
                                              [{'label': t, 'value': t} for t in sorted(df['team_name'].unique())], value='All', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Max. Price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Slider(id='consistency-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
+                                html.Label("Max. Price (Â£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Slider(id='consistency-price', min=4, max=16, step=0.5, value=16, marks={i: f'Â£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Min Games", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
@@ -1021,7 +1021,7 @@ app.layout = html.Div([
                     # Scatter - Hit Rate vs Avg Defcon
                     html.Div([
                         html.H3("Consistency vs Average Output", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-                        html.P("Compare hit rate (consistency) against average defcon in qualifying games. Top right = high output AND consistent.", style={'color': COLORS['text_light']}),
+                        html.P("Compare hit rate (consistency) against average defcon in qualifying games. Top-right = high output AND consistent.", style={'color': COLORS['text_light']}),
                         dcc.Graph(id='consistency-scatter')
                     ], style=CARD_STYLE),
 
@@ -1077,8 +1077,8 @@ app.layout = html.Div([
                                              [{'label': t, 'value': t} for t in sorted(df['team_name'].unique())], value='All', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Max. Price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Slider(id='defcon-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
+                                html.Label("Max. Price (Â£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Slider(id='defcon-price', min=4, max=16, step=0.5, value=16, marks={i: f'Â£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
@@ -1142,8 +1142,8 @@ app.layout = html.Div([
                                              [{'label': t, 'value': t} for t in sorted(df['team_name'].unique())], value='All', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Max. Price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Slider(id='xg-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
+                                html.Label("Max. Price (Â£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Slider(id='xg-price', min=4, max=16, step=0.5, value=16, marks={i: f'Â£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
@@ -1208,8 +1208,8 @@ app.layout = html.Div([
                                              [{'label': t, 'value': t} for t in sorted(df['team_name'].unique())], value='All', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Max. Price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Slider(id='value-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
+                                html.Label("Max. Price (Â£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Slider(id='value-price', min=4, max=16, step=0.5, value=16, marks={i: f'Â£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
@@ -1221,7 +1221,7 @@ app.layout = html.Div([
 
                     html.Div([
                         html.H3("Points vs Price", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-                        html.P("Find the best value players by points returned per £1m invested.", style={'color': COLORS['text_light']}),
+                        html.P("Find the best value players by points returned per Â£1m invested.", style={'color': COLORS['text_light']}),
                         dcc.Graph(id='value-scatter')
                     ], style=CARD_STYLE),
 
@@ -1236,7 +1236,7 @@ app.layout = html.Div([
                                 {'name': 'Pos', 'id': 'position'},
                                 {'name': 'Price', 'id': 'price', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                                 {'name': 'Points', 'id': 'total_points', 'type': 'numeric'},
-                                {'name': 'Pts/£m', 'id': 'points_per_million', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'Pts/Â£m', 'id': 'points_per_million', 'type': 'numeric', 'format': {'specifier': '.2f'}},
                                 {'name': 'Form', 'id': 'form', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                                 {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                             ],
@@ -1267,8 +1267,8 @@ app.layout = html.Div([
                                              [{'label': t, 'value': t} for t in sorted(df['team_name'].unique())], value='All', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Max. Price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Slider(id='form-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
+                                html.Label("Max. Price (Â£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Slider(id='form-price', min=4, max=16, step=0.5, value=16, marks={i: f'Â£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
@@ -1330,8 +1330,8 @@ app.layout = html.Div([
                                              [{'label': t, 'value': t} for t in sorted(df['team_name'].unique())], value='All', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Max. Price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Slider(id='cs-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
+                                html.Label("Max. Price (Â£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Slider(id='cs-price', min=4, max=16, step=0.5, value=16, marks={i: f'Â£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
@@ -1343,7 +1343,7 @@ app.layout = html.Div([
 
                     html.Div([
                         html.H3("Clean Sheets vs Goals Conceded", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-                        html.P("Best assets appear in the top left quadrant (high CS, low GC).", style={'color': COLORS['text_light']}),
+                        html.P("Best assets appear in the top-left quadrant (high CS, low GC).", style={'color': COLORS['text_light']}),
                         dcc.Graph(id='cs-chart')
                     ], style=CARD_STYLE),
 
@@ -1406,8 +1406,8 @@ app.layout = html.Div([
                                              [{'label': t, 'value': t} for t in sorted(df['team_name'].unique())], value='All', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Max. Price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Slider(id='fdr-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
+                                html.Label("Max. Price (Â£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Slider(id='fdr-price', min=4, max=16, step=0.5, value=16, marks={i: f'Â£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Min Minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
@@ -1427,7 +1427,7 @@ app.layout = html.Div([
                     # Player scatter
                     html.Div([
                         html.H3("Player Value vs Fixture Difficulty", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-                        html.P("Find high-value players with easy fixtures. Best picks are top left (high points, low FDR).", style={'color': COLORS['text_light']}),
+                        html.P("Find high-value players with easy fixtures. Best picks are top-left (high points, low FDR).", style={'color': COLORS['text_light']}),
                         dcc.Graph(id='fdr-scatter')
                     ], style=CARD_STYLE),
 
@@ -1497,12 +1497,12 @@ app.layout = html.Div([
                                              [{'label': t, 'value': t} for t in sorted_teams], value='All', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Max. Price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Max. Price (Â£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Slider(id='diff-price', min=4, max=16, step=0.5, value=16, marks={i: f'{i}' for i in [4, 6, 8, 10, 12, 14, 16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Max Ownership %", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Slider(id='diff-max-own', min=5, max=100, step=1, value=5,
+                                dcc.Slider(id='diff-max-own', min=5, max=100, step=1, value=15,
                                            marks={i: f'{i}%' for i in [5, 25, 50, 75, 100]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
@@ -1515,7 +1515,7 @@ app.layout = html.Div([
 
                     html.Div([
                         html.H3("PPG vs Ownership", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-                        html.P("Top left quadrant = high output, low ownership. These are your rank-gainers.",
+                        html.P("Top-left quadrant = high output, low ownership. These are your rank-gainers.",
                                style={'color': COLORS['text_light']}),
                         dcc.Graph(id='diff-scatter')
                     ], style=CARD_STYLE),
@@ -1593,7 +1593,7 @@ app.layout = html.Div([
                                              [{'label': t, 'value': t} for t in sorted_teams], value='All', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Max. Price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Max. Price (Â£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Slider(id='cap-price', min=4, max=16, step=0.5, value=16, marks={i: f'{i}' for i in [4, 6, 8, 10, 12, 14, 16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
@@ -1666,7 +1666,7 @@ app.layout = html.Div([
                         html.H3("Transfer Trends & Price Prediction", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
                         html.P([
                             "Getting ahead of price changes by even ", html.Strong("one day"), " compounds over a season. ",
-                            "Every £0.1m saved means better players later. This tab tracks net transfer velocity and estimates ",
+                            "Every 0.1m saved means better players later. This tab tracks net transfer velocity and estimates ",
                             "which players are closest to a price rise or fall based on transfer-to-ownership ratios."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div([
@@ -1689,7 +1689,7 @@ app.layout = html.Div([
                                              [{'label': t, 'value': t} for t in sorted_teams], value='All', clearable=False)
                             ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Max. Price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Max. Price (Â£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Slider(id='xfer-price', min=4, max=16, step=0.5, value=16, marks={i: f'{i}' for i in [4, 6, 8, 10, 12, 14, 16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
@@ -2009,8 +2009,7 @@ def update_bonus(position, team, max_price, min_minutes):
                           annotation_text="DEF Threshold (10)", annotation_position="top right")
     scatter_fig.add_hline(y=12, line_dash="dash", line_color=COLORS['warning'],
                           annotation_text="MID/FWD Threshold (12)", annotation_position="bottom right")
-    scatter_fig.update_layout(template='plotly_white', height=400, xaxis_title='Price (£m)', yaxis_title='Defcon per 90',
-                              font=dict(family='Arial, sans-serif'))
+    scatter_fig.update_layout(template='plotly_white', height=400, xaxis_title='Price (Â£m)', yaxis_title='Defcon per 90')
 
     top_25 = filtered.nlargest(25, 'defcon_per_90')
     bar_fig = go.Figure()
@@ -2020,9 +2019,7 @@ def update_bonus(position, team, max_price, min_minutes):
         text=top_25['defcon_vs_bonus'].round(2), textposition='outside'
     ))
     bar_fig.add_hline(y=0, line_color='#333', line_width=2)
-    bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
-                          yaxis_title='Distance from Threshold', showlegend=False,
-                          font=dict(family='Arial, sans-serif'))
+    bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45, yaxis_title='Distance from Threshold', showlegend=False)
 
     cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'defcon', 'defcon_per_90', 'defcon_vs_bonus', 'bonus_rate', 'ownership']
     table_data = prepare_table_data(filtered.nlargest(50, 'defcon_per_90'), cols)
@@ -2075,8 +2072,7 @@ def update_consistency(position, team, max_price, min_games, min_minutes):
     bar_fig.add_hline(y=50, line_dash="dash", line_color=COLORS['success'], annotation_text="50% threshold", annotation_position="right")
     bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
                           yaxis_title='Bonus Hit Rate (%)', showlegend=False,
-                          yaxis=dict(range=[0, max(top_25['hit_rate'].max() * 1.15, 55) if len(top_25) > 0 else 100]),
-                          font=dict(family='Arial, sans-serif'))
+                          yaxis=dict(range=[0, max(top_25['hit_rate'].max() * 1.15, 55) if len(top_25) > 0 else 100]))
 
     # Scatter - Hit Rate vs Avg Defcon
     scatter_fig = px.scatter(
@@ -2121,7 +2117,7 @@ def update_defcon(position, team, max_price, min_minutes):
     if len(filtered) > 0:
         max_val = max(filtered['defcon'].max(), filtered['expected_defcon'].max())
         fig.add_trace(go.Scatter(x=[0, max_val], y=[0, max_val], mode='lines', line=dict(dash='dash', color='#999'), name='Expected'))
-    fig.update_layout(template='plotly_white', font=dict(family='Arial, sans-serif'), height=400)
+    fig.update_layout(template='plotly_white', height=400)
 
     cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'defcon', 'defcon_per_90', 'expected_defcon', 'defcon_diff', 'ownership']
     table_data = prepare_table_data(filtered.nlargest(50, 'defcon_per_90'), cols)
@@ -2144,7 +2140,7 @@ def update_xg(position, team, max_price, min_minutes):
     if len(filtered) > 0:
         max_val = max(filtered['goals_scored'].max(), filtered['expected_goals'].max())
         fig.add_trace(go.Scatter(x=[0, max_val], y=[0, max_val], mode='lines', line=dict(dash='dash', color='#999'), name='Expected'))
-    fig.update_layout(template='plotly_white', font=dict(family='Arial, sans-serif'), height=400)
+    fig.update_layout(template='plotly_white', height=400)
 
     cols = ['web_name', 'team_name', 'position', 'price', 'goals_scored', 'expected_goals', 'xg_diff', 'assists', 'expected_assists', 'xa_diff', 'ownership']
     table_data = prepare_table_data(filtered.sort_values('xg_diff').head(50), cols)
@@ -2203,7 +2199,7 @@ def update_cs(position, team, max_price, min_minutes):
 
     fig = px.scatter(filtered, x='gc_per_90', y='cs_per_90', color='team_name', size='minutes',
                      hover_name='web_name', hover_data=['price', 'clean_sheets', 'goals_conceded'])
-    fig.update_layout(template='plotly_white', font=dict(family='Arial, sans-serif'), height=400)
+    fig.update_layout(template='plotly_white', height=400)
 
     cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'clean_sheets', 'cs_per_90', 'goals_conceded', 'gc_per_90', 'ownership']
     table_data = prepare_table_data(filtered.nlargest(50, 'cs_per_90'), cols)
@@ -2217,30 +2213,48 @@ def update_cs(position, team, max_price, min_minutes):
     [Input('fdr-position', 'value'), Input('fdr-team', 'value'), Input('fdr-price', 'value'), Input('fdr-minutes', 'value')]
 )
 def update_fdr(position, team, max_price, min_minutes):
-    filtered = filter_data(position, team, max_price, min_minutes)
-    filtered = filtered.dropna(subset=['avg_fdr_5'])
+    # Team bar chart uses ALL teams (unfiltered) since FDR is team-level
+    data = get_data()
+    all_active = data['df_active'].dropna(subset=['avg_fdr_5'])
 
-    # Team bar chart - aggregate by team
-    team_fdr = filtered.groupby('team_name').agg({
+    # Apply only team filter to the bar chart
+    if team != 'All':
+        all_for_bar = all_active[all_active['team_name'] == team]
+    else:
+        all_for_bar = all_active
+
+    team_fdr = all_for_bar.groupby('team_name').agg({
         'avg_fdr_5': 'first',
         'fixture_string': 'first'
     }).reset_index().sort_values('avg_fdr_5')
 
     bar_fig = go.Figure()
-    bar_fig.add_trace(go.Bar(
-        x=team_fdr['team_name'],
-        y=team_fdr['avg_fdr_5'],
-        marker_color=[COLORS['success'] if x <= 2.6 else (COLORS['warning'] if x <= 3.5 else COLORS['danger']) for x in team_fdr['avg_fdr_5']],
-        text=[f"{x:.2f}" for x in team_fdr['avg_fdr_5']],
-        textposition='outside',
-        hovertemplate='%{x}<br>Avg FDR: %{y:.2f}<br>Fixtures: %{customdata}<extra></extra>',
-        customdata=team_fdr['fixture_string']
-    ))
+    if len(team_fdr) > 0:
+        bar_fig.add_trace(go.Bar(
+            x=team_fdr['team_name'],
+            y=team_fdr['avg_fdr_5'],
+            marker_color=[COLORS['success'] if x <= 2.6 else (COLORS['warning'] if x <= 3.5 else COLORS['danger']) for x in team_fdr['avg_fdr_5']],
+            text=[f"{x:.2f}" for x in team_fdr['avg_fdr_5']],
+            textposition='outside',
+            hovertemplate='%{x}<br>Avg FDR: %{y:.2f}<br>Fixtures: %{customdata}<extra></extra>',
+            customdata=team_fdr['fixture_string']
+        ))
     bar_fig.add_hline(y=3.0, line_dash="dash", line_color='#999', annotation_text="Avg (3.0)", annotation_position="right")
     bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
                           yaxis_title='Average FDR (Next 5 GWs)', showlegend=False,
                           yaxis=dict(range=[0, 5.5]),
-                          font=dict(family='Arial, sans-serif'),)
+                          font=dict(family='Arial, sans-serif'))
+
+    # Player scatter and table use full filters
+    filtered = filter_data(position, team, max_price, min_minutes)
+    filtered = filtered.dropna(subset=['avg_fdr_5'])
+
+    if len(filtered) == 0:
+        empty_fig = go.Figure()
+        empty_fig.add_annotation(text="No players match current filters", xref="paper", yref="paper",
+                                 x=0.5, y=0.5, showarrow=False, font=dict(size=16, color=COLORS['text_light']))
+        empty_fig.update_layout(template='plotly_white', height=400)
+        return bar_fig, empty_fig, []
 
     # Scatter - Total Points vs FDR
     scatter_fig = px.scatter(
@@ -2279,6 +2293,15 @@ def update_differentials(position, team, max_price, max_own, min_minutes):
     filtered = filtered[filtered['ownership'] <= max_own]
     filtered = filtered.dropna(subset=['ppg', 'ownership'])
 
+    # Handle empty data
+    if len(filtered) == 0:
+        empty_fig = go.Figure()
+        empty_fig.add_annotation(text="No players match current filters. Try increasing Max Ownership %.",
+                                 xref="paper", yref="paper",
+                                 x=0.5, y=0.5, showarrow=False, font=dict(size=14, color=COLORS['text_light']))
+        empty_fig.update_layout(template='plotly_white', height=400)
+        return empty_fig, empty_fig, []
+
     scatter_fig = px.scatter(
         filtered, x='ownership', y='ppg', color='position', size='form',
         hover_name='web_name',
@@ -2289,8 +2312,7 @@ def update_differentials(position, team, max_price, max_own, min_minutes):
         median_ppg = get_data()['df_active'][get_data()['df_active']['minutes'] >= 450]['ppg'].median()
         scatter_fig.add_hline(y=median_ppg, line_dash='dash', line_color='#999',
                               annotation_text=f'Median PPG ({median_ppg:.1f})', annotation_position='top right')
-    scatter_fig.update_layout(template='plotly_white', height=400, xaxis_title='Ownership %', yaxis_title='Points Per Game',
-                              font=dict(family='Arial, sans-serif'))
+    scatter_fig.update_layout(template='plotly_white', height=400, xaxis_title='Ownership %', yaxis_title='Points Per Game')
 
     top_25 = filtered.nlargest(25, 'differential_score')
     bar_fig = go.Figure()
@@ -2304,8 +2326,7 @@ def update_differentials(position, team, max_price, max_own, min_minutes):
     ))
     bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
                           yaxis_title='Differential Score', showlegend=False,
-                          yaxis=dict(range=[0, top_25['differential_score'].max() * 1.1]),
-                          font=dict(family='Arial, sans-serif'))
+                          yaxis=dict(range=[0, top_25['differential_score'].max() * 1.1]))
 
     cols = ['web_name', 'team_name', 'position', 'price', 'total_points', 'form', 'ppg',
             'expected_goal_involvements', 'ownership', 'differential_score', 'avg_fdr_5', 'fixture_string']
@@ -2342,8 +2363,7 @@ def update_captain(position, team, max_price, min_minutes):
     ))
     bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
                           yaxis_title='Captain Score', showlegend=False,
-                          yaxis=dict(range=[0, top_20['captain_score'].max() * 1.1]),
-                          font=dict(family='Arial, sans-serif'))
+                          yaxis=dict(range=[0, top_20['captain_score'].max() * 1.1]))
 
     ha_filtered = filtered.dropna(subset=['home_ppg', 'away_ppg'])
     ha_scatter = px.scatter(
@@ -2389,8 +2409,7 @@ def update_transfers(position, team, max_price, min_minutes):
     ))
     risers_fig.update_layout(template='plotly_white', height=380, xaxis_tickangle=-45,
                              yaxis_title='Net Transfers In', showlegend=False,
-                             yaxis=dict(range=[0, risers['net_transfers_gw'].max() * 1.1]),
-                             font=dict(family='Arial, sans-serif'))
+                             yaxis=dict(range=[0, risers['net_transfers_gw'].max() * 1.1]))
 
     fallers = filtered.nsmallest(20, 'net_transfers_gw')
     fallers_fig = go.Figure()
@@ -2404,8 +2423,7 @@ def update_transfers(position, team, max_price, min_minutes):
     ))
     fallers_fig.update_layout(template='plotly_white', height=380, xaxis_tickangle=-45,
                               yaxis_title='Net Transfers Out', showlegend=False,
-                              yaxis=dict(range=[fallers['net_transfers_gw'].min() * 1.1, 0]),
-                              font=dict(family='Arial, sans-serif'))
+                              yaxis=dict(range=[fallers['net_transfers_gw'].min() * 1.1, 0]))
 
     scatter_fig = px.scatter(
         filtered[filtered['ownership'] >= 1],
