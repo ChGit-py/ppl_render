@@ -1344,7 +1344,7 @@ app.layout = html.Div([
                     html.Div([
                         html.H3("Clean Sheets vs Goals Conceded", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
                         html.P("Best assets appear in the top left quadrant (high CS, low GC).", style={'color': COLORS['text_light']}),
-                        html.P("cs = Clean Sheet, gc = Goals Conceded", style={'color': COLORS['text_light']}),
+                        html.P("cs = Clean sheet, gc = Goals conceded", style={'color': COLORS['text_light']}),
                         dcc.Graph(id='cs-chart')
                     ], style=CARD_STYLE),
 
