@@ -923,7 +923,7 @@ app.layout = html.Div([
 
                     html.Div([
                         html.H3("Defcon Per 90 vs Bonus Threshold", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-                        html.P("Red line = DEF threshold (10). Orange line = MID/FWD threshold (12). Players above consistently earn defcon bonuses.", style={'color': COLORS['text_light']}),
+                        html.P("Purple line = DEF threshold (10). Pink line = MID/FWD threshold (12). Players above consistently earn defcon bonuses.", style={'color': COLORS['text_light']}),
                         dcc.Graph(id='bonus-scatter')
                     ], style=CARD_STYLE),
 
