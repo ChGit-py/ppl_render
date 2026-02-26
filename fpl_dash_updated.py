@@ -1502,9 +1502,17 @@ app.layout = html.Div([
                                 dcc.Slider(id='diff-price', min=4, max=16, step=0.5, value=16, marks={i: f'{i}' for i in [4, 6, 8, 10, 12, 14, 16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Max Ownership %", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Slider(id='diff-max-own', min=5, max=100, step=1, value=15,
-                                           marks={i: f'{i}%' for i in [5, 25, 50, 75, 100]})
+                                html.Label("Max Ownership %",
+                                           style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Div([
+                                    dcc.Slider(id='diff-max-own', min=5, max=100, step=1, value=15,
+                                               marks={i: f'{i}%' for i in [5, 25, 50, 75, 100]}),
+                                    html.Span(id='diff-max-own-display', style={
+                                        'marginLeft': '12px', 'fontWeight': '600', 'color': COLORS['primary'],
+                                        'backgroundColor': '#f0f0f0', 'padding': '4px 10px',
+                                        'borderRadius': '6px', 'fontSize': '14px', 'whiteSpace': 'nowrap'
+                                    })
+                                ], style={'display': 'flex', 'alignItems': 'center'})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Min. minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
@@ -2346,6 +2354,12 @@ def update_differentials(position, team, max_price, max_own, min_minutes):
 
     return scatter_fig, bar_fig, table_data
 
+@callback(
+    Output('diff-max-own-display', 'children'),
+    Input('diff-max-own', 'value')
+)
+def update_own_display(value):
+    return f"{value}%"
 
 # --- CAPTAIN Optimiser ---
 @callback(
