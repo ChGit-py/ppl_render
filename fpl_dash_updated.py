@@ -2279,7 +2279,8 @@ def update_fdr(position, team, max_price, min_minutes):
         template='plotly_white',
         height=400,
         xaxis_title='Avg Fixture Difficulty (lower = easier)',
-        yaxis_title='Total Points'
+        yaxis_title='Total Points',
+        font=dict(family='Arial, sans-serif')
     )
 
     # Table - sorted by FDR (ascending = easiest first)
