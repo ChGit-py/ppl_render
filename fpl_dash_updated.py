@@ -2005,9 +2005,9 @@ def update_bonus(position, team, max_price, min_minutes):
     scatter_fig = px.scatter(filtered, x='price', y='defcon_per_90', color='position', size='minutes',
                              hover_name='web_name', hover_data=['team_name', 'defcon', 'defcon_vs_bonus'],
                              color_discrete_map={'DEF': COLORS['primary'], 'MID': COLORS['accent'], 'FWD': COLORS['info']})
-    scatter_fig.add_hline(y=10, line_dash="dash", line_color=COLORS['danger'],
+    scatter_fig.add_hline(y=10, line_dash="dash", line_color=COLORS['primary'],
                           annotation_text="DEF Threshold (10)", annotation_position="top right")
-    scatter_fig.add_hline(y=12, line_dash="dash", line_color=COLORS['warning'],
+    scatter_fig.add_hline(y=12, line_dash="dash", line_color=COLORS['accent'],
                           annotation_text="MID/FWD Threshold (12)", annotation_position="bottom right")
     scatter_fig.update_layout(template='plotly_white', height=400, xaxis_title='Price (£m)', yaxis_title='Defcon per 90')
 
