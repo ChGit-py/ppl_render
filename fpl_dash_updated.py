@@ -999,7 +999,7 @@ app.layout = html.Div([
                                 dcc.Slider(id='consistency-price', min=4, max=16, step=0.5, value=16, marks={i: f'£{i}' for i in [4,6,8,10,12,14,16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Min Games", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Label("Min. games", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Input(id='consistency-games', type='number', value=5, min=1, step=1,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -1478,7 +1478,7 @@ app.layout = html.Div([
                             "to surface the highest-upside differentials."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div([
-                            html.Span("Target: <10% ownership with above-average output",
+                            html.Span("Target: <10% ownership with above average output",
                                       style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
                                              'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
                         ])
@@ -2054,7 +2054,7 @@ def update_consistency(position, team, max_price, min_games, min_minutes):
     # Apply Min. minutes filter
     filtered = filtered[filtered['minutes'] >= min_minutes]
 
-    # Apply min games filter
+    # Apply Min. games filter
     filtered = filtered[filtered['qualifying_games'] >= min_games]
 
     # Bar chart - Top 25 by hit rate
@@ -2093,7 +2093,7 @@ def update_consistency(position, team, max_price, min_games, min_minutes):
     scatter_fig.update_layout(
         template='plotly_white',
         height=400,
-        xaxis_title='Avg Defcon (in 60+ min games)',
+        xaxis_title='Avg Defcon (in 60+ Min. games)',
         yaxis_title='Bonus Hit Rate (%)',
         font=dict(family='Arial, sans-serif')
     )
