@@ -1510,7 +1510,7 @@ app.layout = html.Div([
                                                    marks={i: f'{i}%' for i in [5, 25, 50, 75, 100]}),
                                         style={'flex': '1'}
                                     ),
-                                    dcc.Input(id='diff-max-own-input', type='number', value=15, min=5, max=100, step=1,
+                                    dcc.Input(id='diff-max-own-input', type='number', value=10, min=5, max=100, step=1,
                                               style={'width': '70px', 'marginLeft': '12px', 'padding': '8px',
                                                      'borderRadius': '4px', 'border': '1px solid #ccc'})
                                 ], style={'display': 'flex', 'alignItems': 'center'})
