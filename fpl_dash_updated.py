@@ -1502,9 +1502,18 @@ app.layout = html.Div([
                                 dcc.Slider(id='diff-price', min=4, max=16, step=0.5, value=16, marks={i: f'{i}' for i in [4, 6, 8, 10, 12, 14, 16]})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
-                                html.Label("Max. ownership %", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Slider(id='diff-max-own', min=5, max=100, step=1, value=15,
-                                           marks={i: f'{i}%' for i in [5, 25, 50, 75, 100]})
+                                html.Label("Max. ownership %",
+                                           style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                html.Div([
+                                    html.Div(
+                                        dcc.Slider(id='diff-max-own', min=5, max=100, step=1, value=15,
+                                                   marks={i: f'{i}%' for i in [5, 25, 50, 75, 100]}),
+                                        style={'flex': '1'}
+                                    ),
+                                    dcc.Input(id='diff-max-own-input', type='number', value=15, min=5, max=100, step=1,
+                                              style={'width': '70px', 'marginLeft': '12px', 'padding': '8px',
+                                                     'borderRadius': '4px', 'border': '1px solid #ccc'})
+                                ], style={'display': 'flex', 'alignItems': 'center'})
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Min. minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
@@ -2346,6 +2355,22 @@ def update_differentials(position, team, max_price, max_own, min_minutes):
 
     return scatter_fig, bar_fig, table_data
 
+@callback(
+    Output('diff-max-own-input', 'value'),
+    Input('diff-max-own', 'value')
+)
+def sync_own_input(slider_val):
+    return slider_val
+
+@callback(
+    Output('diff-max-own', 'value'),
+    Input('diff-max-own-input', 'value'),
+    prevent_initial_call=True
+)
+def sync_own_slider(input_val):
+    if input_val is None:
+        return 15
+    return max(5, min(100, input_val))
 
 # --- CAPTAIN Optimiser ---
 @callback(
