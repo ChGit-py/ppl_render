@@ -966,7 +966,7 @@ app.layout = html.Div([
             ]),
 
             # BONUS CONSISTENCY TAB
-            dcc.Tab(label='Def Con Bonus: Consistency', value='bonus-consistency', children=[
+            dcc.Tab(label='Def Con: Consistency', value='bonus-consistency', children=[
                 html.Div([
                     # Explanation Card
                     html.Div([
@@ -1062,7 +1062,7 @@ app.layout = html.Div([
             ]),
 
             # DEFENSIVE CONTRIBUTIONS TAB
-            dcc.Tab(label='Defensive Contributions', value='defcon', children=[
+            dcc.Tab(label='Def Cons', value='defcon', children=[
                 html.Div([
                     html.Div([
                         html.Div([
