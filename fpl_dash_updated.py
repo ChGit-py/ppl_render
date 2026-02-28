@@ -1901,7 +1901,8 @@ def update_home_tab(n):
         pos_fig.update_layout(barmode='group', template='plotly_white', height=350,
                               margin=dict(t=60, b=40, l=40, r=40),
                               legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5),
-                              yaxis_title='Value', xaxis_title='Position', font=dict(family='Arial, sans-serif'))
+                              yaxis_title='Value', xaxis_title='Position', font=dict(family='Arial, sans-serif'),
+                              yaxis=dict(range=[0, position_stats['points_per_million'].max() * 10 * 1.2]))
     else:
         pos_fig = go.Figure()
 
