@@ -859,8 +859,6 @@ app.layout = html.Div([
     html.Div([
         html.Div([
             html.Div([
-                html.Img(src="/assets/premier_league_logo.png",
-                         style={'height': '40px', 'marginRight': '12px'}),
                 html.Span("Fantasy Premier League 2025/26", style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
                                         'padding': '6px 12px', 'borderRadius': '6px', 'fontWeight': '800',
                                         'fontSize': '18px', 'marginRight': '12px'}),
