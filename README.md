@@ -3,7 +3,7 @@ An interactive data visualisation dashboard for Fantasy Premier League (FPL) ana
 
 ## Features
 - **Home**: Season overview with key stats, player spotlights, and top value picks
-- **Def Con Bonus**: Track players hitting the 10+ defensive contribution bonus threshold
+- **Def Con Bonus**: Track players hitting the defensive contribution bonus threshold for their position (10+ for DEF and 12+ for MID/FWD)
 - **Def Con Bonus: Consistency**: Analyse how consistently players achieve defensive contributions
 - **Defensive Contributions**: Compare actual vs expected defensive output
 - **Expected Goals & Assists**: xG and xA analysis with over/underperformance tracking
