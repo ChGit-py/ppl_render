@@ -1899,7 +1899,7 @@ def update_home_tab(n):
         pos_fig.add_trace(go.Bar(name='Avg Pts/m (x10)', x=position_stats['position'], y=position_stats['points_per_million'] * 10,
                                  marker_color=COLORS['secondary'], text=position_stats['points_per_million'].round(2), textposition='outside'))
         pos_fig.update_layout(barmode='group', template='plotly_white', height=350,
-                              margin=dict(t=60, b=40, l=40, r=40),
+                              margin=dict(t=40, b=40, l=40, r=40),
                               legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5),
                               yaxis_title='Value', xaxis_title='Position', font=dict(family='Arial, sans-serif'))
     else:
