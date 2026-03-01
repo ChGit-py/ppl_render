@@ -2033,7 +2033,8 @@ def update_bonus(position, team, max_price, min_minutes):
         text=top_25['defcon_vs_bonus'].round(2), textposition='outside'
     ))
     bar_fig.add_hline(y=0, line_color='#333', line_width=2)
-    bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45, yaxis_title='Distance from Threshold', showlegend=False)
+    bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45, yaxis_title='Distance from Threshold', showlegend=False,
+                          font=dict(family='Arial, sans-serif'))
 
     cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'defcon', 'defcon_per_90', 'defcon_vs_bonus', 'bonus_rate', 'ownership']
     table_data = prepare_table_data(filtered.nlargest(50, 'defcon_per_90'), cols)
