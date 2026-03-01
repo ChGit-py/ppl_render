@@ -2177,6 +2177,7 @@ def update_value(position, team, max_price, min_minutes):
 
     fig = px.scatter(filtered, x='price', y='total_points', color='position', size='ownership',
                      hover_name='web_name', hover_data=['team_name', 'points_per_million', 'form'],
+                     labels={'price': 'Price', 'total_points': 'Total Points'},
                      color_discrete_map={'GKP': '#666', 'DEF': COLORS['primary'], 'MID': COLORS['accent'], 'FWD': COLORS['info']})
     fig.update_layout(template='plotly_white', height=400, font=dict(family='Arial, sans-serif'))
 
