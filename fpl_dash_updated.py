@@ -2200,7 +2200,6 @@ def update_form(position, team, max_price, min_minutes):
     fig = px.bar(top_form, x='web_name', y='form_vs_season', color='form_vs_season',
                  color_continuous_scale=['#dc3545', '#ffc107', '#28a745'], hover_data=['team_name', 'form', 'ppg'])
     fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45, coloraxis_showscale=False,
-                      labels={'web_name': 'Player', 'form_vs_season': 'Form v Season'},
                       font=dict(family='Arial, sans-serif'))
 
     cols = ['web_name', 'team_name', 'position', 'price', 'form', 'ppg', 'form_vs_season', 'ownership']
