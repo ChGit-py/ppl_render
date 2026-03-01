@@ -2216,7 +2216,7 @@ def update_cs(position, team, max_price, min_minutes):
 
     fig = px.scatter(filtered, x='gc_per_90', y='cs_per_90', color='team_name', size='minutes',
                      hover_name='web_name', hover_data=['price', 'clean_sheets', 'goals_conceded'],
-                     labels={'team_name': 'Club', 'gc_per_90': 'Goals Conceded per 90', 'cs_per_90': 'Clean Sheet per 90'})
+                     labels={'team_name': 'Cb', 'gc_per_90': 'Goals Conceded per 90', 'cs_per_90': 'Clean Sheet per 90'})
     fig.update_layout(template='plotly_white', height=400, font=dict(family='Arial, sans-serif'))
 
     cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'clean_sheets', 'cs_per_90', 'goals_conceded', 'gc_per_90', 'ownership']
