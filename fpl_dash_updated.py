@@ -2129,6 +2129,7 @@ def update_defcon(position, team, max_price, min_minutes):
 
     fig = px.scatter(filtered, x='expected_defcon', y='defcon', color='position', size='minutes',
                      hover_name='web_name', hover_data=['team_name', 'price', 'defcon_per_90'],
+                     labels={'expected_defcon': 'Expected Def Con', 'defcon': 'Def Cons'},
                      color_discrete_map={'DEF': COLORS['primary'], 'MID': COLORS['accent'], 'FWD': COLORS['info']})
     if len(filtered) > 0:
         max_val = max(filtered['defcon'].max(), filtered['expected_defcon'].max())
