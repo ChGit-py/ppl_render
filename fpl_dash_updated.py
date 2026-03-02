@@ -1849,6 +1849,14 @@ def update_home_tab(n):
         if len(match) > 0:
             most_cap = match.iloc[0]
 
+    # Most vice-captained
+    most_vice_id = current_gw_now.get('most_vice_captained') if current_gw_now else None
+    most_vice = None
+    if most_vice_id:
+        match = df_now[df_now['id'] == most_vice_id]
+        if len(match) > 0:
+            most_vice = match.iloc[0]
+
     # Chip usage
     chips = current_gw_now.get('chip_plays', []) if current_gw_now else []
     chip_sum = ', '.join(
@@ -1938,6 +1946,12 @@ def update_home_tab(n):
                 most_cap['web_name'] if most_cap is not None else "N/A",
                 f"{most_cap['team_name']} - {most_cap['price']:.1f}m" if most_cap is not None else "Data available after deadline",
                 color=COLORS['accent']
+            )], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
+            html.Div([build_stat_card(
+                "Most Vice-Captained",
+                most_vice['web_name'] if most_vice is not None else "N/A",
+                f"{most_vice['team_name']} - {most_vice['price']:.1f}m" if most_vice is not None else "Data available after deadline",
+                color=COLORS['warning']
             )], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
             html.Div([build_stat_card(
                 "Chips Used This GW",
