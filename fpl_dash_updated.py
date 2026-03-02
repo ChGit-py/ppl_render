@@ -1945,13 +1945,13 @@ def update_home_tab(n):
                 "Most Captained",
                 most_cap['web_name'] if most_cap is not None else "N/A",
                 f"{most_cap['team_name']} - {most_cap['price']:.1f}m" if most_cap is not None else "Data available after deadline",
-                color=COLORS['accent']
+                color=COLORS['primary']
             )], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
             html.Div([build_stat_card(
                 "Most Vice-Captained",
                 most_vice['web_name'] if most_vice is not None else "N/A",
                 f"{most_vice['team_name']} - {most_vice['price']:.1f}m" if most_vice is not None else "Data available after deadline",
-                color=COLORS['warning']
+                color=COLORS['accent']
             )], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
             html.Div([build_stat_card(
                 "Chips Used This GW",
