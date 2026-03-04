@@ -1883,7 +1883,7 @@ app.layout = html.Div([
                                 dcc.Dropdown(
                                     id='sq-objective',
                                     options=[
-                                        {'label': 'Points Per Game (season avg)',  'value': 'ppg'},
+                                        {'label': 'Points Per Game (season average)',  'value': 'ppg'},
                                         {'label': 'Current Form (last 5 GWs)',     'value': 'form'},
                                         {'label': 'Expected Goal Involvements',    'value': 'expected_goal_involvements'},
                                         {'label': 'Total Points (season)',         'value': 'total_points'},
