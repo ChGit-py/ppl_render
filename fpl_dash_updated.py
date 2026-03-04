@@ -2798,7 +2798,7 @@ def build_squad(n_clicks, budget, objective, must_include, must_exclude, min_min
                 html.Div([
                     html.Span(p['team_name'], style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginRight': '10px'}),
                     html.Span(f"£{p['price']:.1f}m", style={'color': COLORS['primary'], 'fontWeight': '600', 'fontSize': '14px', 'marginRight': '10px'}),
-                    html.Span(f"{obj_label}: {score_val:.1f}", style={'color': COLORS['text_light'], 'fontSize': '13px'}),
+                    html.Span(f"{obj_label}: {score_val:.0f}", style={'color': COLORS['text_light'], 'fontSize': '13px'}),
                 ])
             ], style={
                 'display': 'flex', 'justifyContent': 'space-between', 'alignItems': 'center',
