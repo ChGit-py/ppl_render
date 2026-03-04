@@ -799,7 +799,7 @@ def build_stat_card(title, value, subtitle=None, color=COLORS['primary']):
         }),
         html.P(subtitle, style={
             'color': COLORS['text_light'],
-            'fontSize': '13px',
+            'fontSize': '14px',
             'margin': '0'
         }) if subtitle else None
     ], style=STAT_CARD_STYLE)
