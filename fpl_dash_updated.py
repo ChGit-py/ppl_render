@@ -6,12 +6,13 @@ Track Defensive Contributions, Expected Metrics, and Value Picks
 import requests
 import pandas as pd
 import numpy as np
-from dash import Dash, html, dcc, dash_table, callback, Output, Input
+from dash import Dash, html, dcc, dash_table, callback, Output, Input, State
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import pulp
 
 # =============================================================================
 # DATA FETCHING
@@ -842,6 +843,80 @@ def build_player_spotlight(player, title, metric_label, metric_value):
             })
         ])
     ], style={**CARD_STYLE, 'flex': '1', 'minWidth': '220px'})
+
+
+# =============================================================================
+# SQUAD BUILDER HELPER
+# =============================================================================
+
+def build_optimal_squad(df, budget, objective='ppg', must_include=None,
+                        must_exclude=None, min_minutes=0):
+    """
+    Solve a binary integer programme to find the highest-scoring 15-player
+    FPL squad subject to:
+      - 2 GKP, 5 DEF, 5 MID, 3 FWD
+      - Total cost <= budget
+      - Max 3 players per club
+      - Must-include / must-exclude player lists
+    Returns a DataFrame of the selected 15, or None if no solution found.
+    """
+    eligible = df.copy()
+    eligible = eligible.dropna(subset=['price', 'position', 'team_name'])
+
+    must_include = [int(x) for x in (must_include or [])]
+    must_exclude  = [int(x) for x in (must_exclude or [])]
+
+    # Pinned players bypass the minutes filter
+    pinned   = eligible[eligible['id'].isin(must_include)].copy()
+    eligible = eligible[eligible['minutes'] >= (min_minutes or 0)].copy()
+    eligible = pd.concat([eligible, pinned]).drop_duplicates(subset=['id'])
+
+    if must_exclude:
+        eligible = eligible[~eligible['id'].isin(must_exclude)]
+
+    # Blended score
+    eligible['blended'] = (
+        eligible['ppg'].fillna(0) * 0.40 +
+        eligible['form'].fillna(0) * 0.35 +
+        eligible['expected_goal_involvements'].fillna(0) * 2 * 0.25
+    ).round(3)
+
+    obj_col = objective if objective in eligible.columns else 'ppg'
+    eligible[obj_col] = eligible[obj_col].fillna(0)
+    eligible = eligible.reset_index(drop=True)
+
+    prob = pulp.LpProblem("FPL_Squad_Builder", pulp.LpMaximize)
+    x = {i: pulp.LpVariable(f"x_{i}", cat='Binary') for i in eligible.index}
+
+    # Objective
+    prob += pulp.lpSum(x[i] * eligible.loc[i, obj_col] for i in eligible.index)
+
+    # Budget
+    prob += pulp.lpSum(x[i] * eligible.loc[i, 'price'] for i in eligible.index) <= budget
+
+    # Positional quotas
+    for pos, quota in [('GKP', 2), ('DEF', 5), ('MID', 5), ('FWD', 3)]:
+        idx = eligible[eligible['position'] == pos].index
+        prob += pulp.lpSum(x[i] for i in idx) == quota
+
+    # Max 3 per club
+    for team in eligible['team_name'].unique():
+        idx = eligible[eligible['team_name'] == team].index
+        prob += pulp.lpSum(x[i] for i in idx) <= 3
+
+    # Must-include
+    for pid in must_include:
+        idx = eligible[eligible['id'] == pid].index
+        if len(idx) > 0:
+            prob += x[idx[0]] == 1
+
+    prob.solve(pulp.PULP_CBC_CMD(msg=0))
+
+    if pulp.LpStatus[prob.status] != 'Optimal':
+        return None
+
+    selected_idx = [i for i in eligible.index if (x[i].value() or 0) > 0.5]
+    return eligible.loc[selected_idx].copy()
 
 
 # Home page table columns (used by callback)
@@ -1768,6 +1843,125 @@ app.layout = html.Div([
                     ], style=CARD_STYLE)
                 ], style={'padding': '20px 0'})
             ]),
+
+            # =================================================================
+            # SQUAD BUILDER TAB
+            # =================================================================
+            dcc.Tab(label='Squad Builder', value='squad-builder', children=[
+                html.Div([
+
+                    # Explanation
+                    html.Div([
+                        html.H3("Budget Squad Optimiser", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
+                        html.P([
+                            "Set your budget and objective, and the optimiser will find the ",
+                            html.Strong("highest-scoring 15-player squad"),
+                            " that satisfies FPL's rules: ",
+                            html.Strong("2 GKP · 5 DEF · 5 MID · 3 FWD · max 3 per club"), "."
+                        ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
+                        html.Div([
+                            html.Span("Powered by linear programming (PuLP CBC solver)",
+                                      style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
+                                             'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
+                        ])
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+
+                    # Controls
+                    html.Div([
+                        # Row 1: Budget, Objective, Min minutes
+                        html.Div([
+                            html.Div([
+                                html.Label("Budget (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Slider(
+                                    id='sq-budget', min=75, max=105, step=0.5, value=83,
+                                    marks={i: f'£{i}m' for i in range(75, 106, 5)},
+                                    tooltip={"placement": "bottom", "always_visible": True}
+                                )
+                            ], style={'flex': '3', 'minWidth': '280px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Optimise For", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Dropdown(
+                                    id='sq-objective',
+                                    options=[
+                                        {'label': 'Points Per Game (season avg)',  'value': 'ppg'},
+                                        {'label': 'Current Form (last 5 GWs)',     'value': 'form'},
+                                        {'label': 'Expected Goal Involvements',    'value': 'expected_goal_involvements'},
+                                        {'label': 'Total Points (season)',         'value': 'total_points'},
+                                        {'label': 'Blended (PPG + Form + xGI)',   'value': 'blended'},
+                                    ],
+                                    value='ppg', clearable=False
+                                )
+                            ], style={'flex': '2', 'minWidth': '220px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Min. minutes played", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Input(
+                                    id='sq-minutes', type='number', value=450, min=0, step=90,
+                                    style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'}
+                                )
+                            ], style={'flex': '1', 'minWidth': '120px', 'padding': '0 10px'}),
+                        ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-end', 'marginBottom': '20px'}),
+
+                        # Row 2: Must include / Must exclude
+                        html.Div([
+                            html.Div([
+                                html.Label("Must Include (pin players)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Dropdown(
+                                    id='sq-must-include',
+                                    options=[
+                                        {'label': f"{r['web_name']} ({r['team_name']}, {r['position']}, £{r['price']:.1f}m)",
+                                         'value': int(r['id'])}
+                                        for _, r in df_active.sort_values('web_name').iterrows()
+                                    ],
+                                    multi=True,
+                                    placeholder='Search and select players to pin...',
+                                )
+                            ], style={'flex': '1', 'minWidth': '280px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Must Exclude (blacklist players)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Dropdown(
+                                    id='sq-must-exclude',
+                                    options=[
+                                        {'label': f"{r['web_name']} ({r['team_name']}, {r['position']}, £{r['price']:.1f}m)",
+                                         'value': int(r['id'])}
+                                        for _, r in df_active.sort_values('web_name').iterrows()
+                                    ],
+                                    multi=True,
+                                    placeholder='Search and select players to exclude...',
+                                )
+                            ], style={'flex': '1', 'minWidth': '280px', 'padding': '0 10px'}),
+                        ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-end', 'marginBottom': '20px'}),
+
+                        # Build button
+                        html.Div([
+                            html.Button(
+                                "⚡ Build Optimal Squad",
+                                id='sq-build-btn',
+                                n_clicks=0,
+                                style={
+                                    'backgroundColor': COLORS['primary'],
+                                    'color': 'white',
+                                    'border': 'none',
+                                    'padding': '12px 36px',
+                                    'borderRadius': '8px',
+                                    'fontSize': '16px',
+                                    'fontWeight': '700',
+                                    'cursor': 'pointer',
+                                }
+                            )
+                        ], style={'padding': '0 10px'}),
+
+                    ], style=CARD_STYLE),
+
+                    # Results populated by callback
+                    dcc.Loading(
+                        id='sq-loading',
+                        type='circle',
+                        color=COLORS['primary'],
+                        children=[html.Div(id='sq-results')]
+                    ),
+
+                ], style={'padding': '20px 0'})
+            ]),
         ])
     ], style={'maxWidth': '1400px', 'margin': '0 auto', 'padding': '24px 20px',
               'backgroundColor': COLORS['background'], 'minHeight': 'calc(100vh - 60px)'}),
@@ -2511,6 +2705,215 @@ def update_transfers(position, team, max_price, min_minutes):
     return risers_fig, fallers_fig, scatter_fig, table_data
 
 
+# --- SQUAD BUILDER ---
+@callback(
+    Output('sq-results', 'children'),
+    Input('sq-build-btn', 'n_clicks'),
+    [State('sq-budget', 'value'),
+     State('sq-objective', 'value'),
+     State('sq-must-include', 'value'),
+     State('sq-must-exclude', 'value'),
+     State('sq-minutes', 'value')],
+    prevent_initial_call=True
+)
+def build_squad(n_clicks, budget, objective, must_include, must_exclude, min_minutes):
+    data = get_data()
+    df_now = data['df_active'].copy()
+
+    result = build_optimal_squad(
+        df_now,
+        budget=budget or 83,
+        objective=objective or 'ppg',
+        must_include=must_include or [],
+        must_exclude=must_exclude or [],
+        min_minutes=min_minutes or 0
+    )
+
+    if result is None:
+        return html.Div([
+            html.Div([
+                html.P(
+                    "⚠️ No feasible squad found. Try raising the budget, lowering min. minutes, or removing pinned players.",
+                    style={'color': COLORS['danger'], 'fontSize': '15px', 'textAlign': 'center', 'margin': '0'}
+                )
+            ], style=CARD_STYLE)
+        ])
+
+    obj_col = objective if objective in result.columns else 'ppg'
+    obj_labels = {
+        'ppg':                        'Points Per Game',
+        'form':                       'Form',
+        'expected_goal_involvements': 'xGI',
+        'total_points':               'Total Points',
+        'blended':                    'Blended Score',
+    }
+    obj_label = obj_labels.get(objective, objective)
+
+    total_cost  = result['price'].sum()
+    remaining   = budget - total_cost
+    total_score = result[obj_col].sum()
+    teams_used  = result['team_name'].nunique()
+
+    # Summary cards
+    summary = html.Div([
+        html.Div([build_stat_card("Total Cost",   f"£{total_cost:.1f}m", f"£{remaining:.1f}m remaining")],
+                 style={'flex': '1', 'minWidth': '180px', 'padding': '0 10px'}),
+        html.Div([build_stat_card(obj_label,      f"{total_score:.1f}",  "Combined squad total")],
+                 style={'flex': '1', 'minWidth': '180px', 'padding': '0 10px'}),
+        html.Div([build_stat_card("Clubs Used",   str(teams_used),       "Max 3 players per club")],
+                 style={'flex': '1', 'minWidth': '180px', 'padding': '0 10px'}),
+        html.Div([build_stat_card("Squad Size",   "15",                  "2 GKP · 5 DEF · 5 MID · 3 FWD")],
+                 style={'flex': '1', 'minWidth': '180px', 'padding': '0 10px'}),
+    ], style={'display': 'flex', 'flexWrap': 'wrap', 'margin': '0 -10px 24px -10px'})
+
+    # Squad cards by position
+    pos_order  = ['GKP', 'DEF', 'MID', 'FWD']
+    pos_colors = {
+        'GKP': '#e5a823',
+        'DEF': COLORS['primary'],
+        'MID': COLORS['accent'],
+        'FWD': COLORS['info'],
+    }
+
+    pos_cards = []
+    for pos in pos_order:
+        pos_df = result[result['position'] == pos].sort_values(obj_col, ascending=False)
+        if pos_df.empty:
+            continue
+        rows = []
+        for _, p in pos_df.iterrows():
+            score_val = p.get(obj_col, 0)
+            if pd.isna(score_val):
+                score_val = 0
+            rows.append(html.Div([
+                html.Div([
+                    html.Span(pos, style={
+                        'backgroundColor': pos_colors[pos],
+                        'color': 'white' if pos != 'GKP' else COLORS['primary'],
+                        'padding': '2px 8px', 'borderRadius': '4px',
+                        'fontSize': '11px', 'fontWeight': '700', 'marginRight': '8px'
+                    }),
+                    html.Span(p['web_name'], style={'fontWeight': '600', 'fontSize': '15px', 'color': COLORS['text_dark']}),
+                ]),
+                html.Div([
+                    html.Span(p['team_name'], style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginRight': '10px'}),
+                    html.Span(f"£{p['price']:.1f}m", style={'color': COLORS['primary'], 'fontWeight': '600', 'fontSize': '14px', 'marginRight': '10px'}),
+                    html.Span(f"{obj_label}: {score_val:.1f}", style={'color': COLORS['text_light'], 'fontSize': '13px'}),
+                ])
+            ], style={
+                'display': 'flex', 'justifyContent': 'space-between', 'alignItems': 'center',
+                'padding': '10px 0', 'borderBottom': '1px solid #f0f0f0'
+            }))
+        pos_cards.append(html.Div([
+            html.H4(f"{pos}  ({len(pos_df)})", style={'color': pos_colors[pos], 'marginBottom': '12px', 'fontWeight': '700'}),
+            html.Div(rows)
+        ], style={**CARD_STYLE, 'flex': '1', 'minWidth': '300px'}))
+
+    squad_display = html.Div([
+        html.Div([
+            html.H3("Optimal Squad", style={'color': COLORS['primary'], 'margin': '0 0 4px 0'}),
+            html.P(f"Optimised for: {obj_label}", style={'color': COLORS['text_light']})
+        ], style={'marginBottom': '20px'}),
+        html.Div(pos_cards, style={'display': 'flex', 'flexWrap': 'wrap', 'gap': '16px'})
+    ])
+
+    # Score breakdown bar chart
+    result_plot = result.sort_values(['position', obj_col], ascending=[True, False])
+    bar_fig = px.bar(
+        result_plot, x='web_name', y=obj_col, color='position',
+        text=result_plot[obj_col].round(1),
+        hover_data=['team_name', 'price', 'ppg', 'form'],
+        color_discrete_map={
+            'GKP': '#e5a823', 'DEF': COLORS['primary'],
+            'MID': COLORS['accent'], 'FWD': COLORS['info']
+        }
+    )
+    bar_fig.update_traces(textposition='outside')
+    bar_fig.update_layout(
+        template='plotly_white', height=420,
+        xaxis_tickangle=-45, xaxis_title='',
+        yaxis_title=obj_label,
+        yaxis=dict(range=[0, result_plot[obj_col].max() * 1.22]),
+        font=dict(family='Arial, sans-serif'),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5)
+    )
+
+    # Club distribution chart
+    club_counts = result['team_name'].value_counts().reset_index()
+    club_counts.columns = ['team_name', 'count']
+    club_fig = px.bar(
+        club_counts, x='team_name', y='count',
+        color='count', text='count',
+        color_continuous_scale=['#c8e6c9', COLORS['primary']]
+    )
+    club_fig.update_traces(textposition='outside')
+    club_fig.update_layout(
+        template='plotly_white', height=320,
+        xaxis_tickangle=-45, xaxis_title='', yaxis_title='Players Selected',
+        yaxis=dict(range=[0, club_counts['count'].max() + 0.8]),
+        coloraxis_showscale=False, showlegend=False,
+        font=dict(family='Arial, sans-serif')
+    )
+
+    # Full table
+    table_cols_config = [
+        {'name': 'Player',  'id': 'web_name'},
+        {'name': 'Team',    'id': 'team_name'},
+        {'name': 'Pos',     'id': 'position'},
+        {'name': 'Price',   'id': 'price',                      'type': 'numeric', 'format': {'specifier': '.1f'}},
+        {'name': 'Points',  'id': 'total_points',               'type': 'numeric'},
+        {'name': 'PPG',     'id': 'ppg',                        'type': 'numeric', 'format': {'specifier': '.2f'}},
+        {'name': 'Form',    'id': 'form',                       'type': 'numeric', 'format': {'specifier': '.1f'}},
+        {'name': 'xGI',     'id': 'expected_goal_involvements', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+        {'name': 'Own%',    'id': 'ownership',                  'type': 'numeric', 'format': {'specifier': '.1f'}},
+    ]
+    if objective == 'blended' and 'blended' in result.columns:
+        table_cols_config.append(
+            {'name': 'Blended', 'id': 'blended', 'type': 'numeric', 'format': {'specifier': '.2f'}}
+        )
+
+    display_col_ids = [c['id'] for c in table_cols_config if c['id'] in result.columns]
+    table_data = prepare_table_data(
+        result.sort_values(['position', obj_col], ascending=[True, False]),
+        display_col_ids
+    )
+
+    full_table = html.Div([
+        html.H4("Full Squad Details", style={'color': COLORS['primary'], 'marginBottom': '16px'}),
+        dash_table.DataTable(
+            data=table_data,
+            columns=table_cols_config,
+            sort_action='native',
+            style_cell=TABLE_STYLE_CELL,
+            style_header=TABLE_STYLE_HEADER,
+            style_data=TABLE_STYLE_DATA,
+            style_data_conditional=[
+                {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
+                {'if': {'filter_query': '{position} = "GKP"', 'column_id': 'position'}, 'backgroundColor': '#fff8e1', 'fontWeight': '600'},
+                {'if': {'filter_query': '{position} = "DEF"', 'column_id': 'position'}, 'color': COLORS['primary'], 'fontWeight': '600'},
+                {'if': {'filter_query': '{position} = "MID"', 'column_id': 'position'}, 'color': COLORS['accent'],  'fontWeight': '600'},
+                {'if': {'filter_query': '{position} = "FWD"', 'column_id': 'position'}, 'color': COLORS['info'],    'fontWeight': '600'},
+            ]
+        )
+    ], style=CARD_STYLE)
+
+    return html.Div([
+        summary,
+        squad_display,
+        html.Div([
+            html.H3("Score Breakdown", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+            html.P(f"Each player's {obj_label} contribution to the squad total.", style={'color': COLORS['text_light']}),
+            dcc.Graph(figure=bar_fig, config={'displayModeBar': False})
+        ], style=CARD_STYLE),
+        html.Div([
+            html.H3("Club Distribution", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+            html.P("Players selected per club (max 3 enforced by solver).", style={'color': COLORS['text_light']}),
+            dcc.Graph(figure=club_fig, config={'displayModeBar': False})
+        ], style=CARD_STYLE),
+        full_table,
+    ])
+
+
 # =============================================================================
 # RUN
 # =============================================================================
@@ -2525,7 +2928,8 @@ if __name__ == '__main__':
     print(f"  Captain candidates with history: {len(player_histories)}")
     print("  Features: Home, DefCon Bonus, Consistency, Defensive,")
     print("  xG/xA, Value, Form, Clean Sheets, Fixtures,")
-    print("  Differentials, Captain Optimiser, Transfer Trends")
+    print("  Differentials, Captain Optimiser, Transfer Trends,")
+    print("  Squad Builder")
     print("="*60)
     print("\n  Starting server...")
     print("  Open http://127.0.0.1:8053 in your browser")
