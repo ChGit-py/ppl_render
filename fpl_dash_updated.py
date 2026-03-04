@@ -1934,7 +1934,7 @@ app.layout = html.Div([
                         # Build button
                         html.Div([
                             html.Button(
-                                "⚡ Build Optimal Squad",
+                                "Build Optimal Squad",
                                 id='sq-build-btn',
                                 n_clicks=0,
                                 style={
