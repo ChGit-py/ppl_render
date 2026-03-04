@@ -1860,7 +1860,7 @@ app.layout = html.Div([
                             html.Strong("2 GKP · 5 DEF · 5 MID · 3 FWD · max 3 per club"), "."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div([
-                            html.Span("Powered by linear programming",
+                            html.Span("Click on 'Build Optimal Squad' once your parameters have been set",
                                       style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
                                              'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
                         ])
