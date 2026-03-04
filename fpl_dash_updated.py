@@ -2758,7 +2758,7 @@ def build_squad(n_clicks, budget, objective, must_include, must_exclude, min_min
     summary = html.Div([
         html.Div([build_stat_card("Total Cost",   f"£{total_cost:.1f}m", f"£{remaining:.1f}m remaining")],
                  style={'flex': '1', 'minWidth': '180px', 'padding': '0 10px'}),
-        html.Div([build_stat_card(obj_label,      f"{total_score:.1f}",  "Combined squad total")],
+        html.Div([build_stat_card(obj_label,      f"{total_score:,.0f}",  "Combined squad total")],
                  style={'flex': '1', 'minWidth': '180px', 'padding': '0 10px'}),
         html.Div([build_stat_card("Clubs Used",   str(teams_used),       "Max 3 players per club")],
                  style={'flex': '1', 'minWidth': '180px', 'padding': '0 10px'}),
