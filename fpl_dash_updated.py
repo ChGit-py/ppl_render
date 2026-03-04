@@ -1855,7 +1855,7 @@ app.layout = html.Div([
                         html.H3("Budget Squad Optimiser", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
                         html.P([
                             "Set your budget and objective, and the optimiser will find the ",
-                            html.Strong("highest-scoring 15-player squad"),
+                            html.Strong("highest scoring 15 player squad"),
                             " that satisfies FPL's rules: ",
                             html.Strong("2 GKP · 5 DEF · 5 MID · 3 FWD · max 3 per club"), "."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
