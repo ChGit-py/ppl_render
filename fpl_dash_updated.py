@@ -2818,7 +2818,7 @@ def build_squad(n_clicks, budget, objective, must_include, must_exclude, min_min
     ])
 
     # Score breakdown bar chart
-    result_plot = result.sort_values(['position', obj_col], ascending=[True, False])
+    result_plot = result.assign(pos_order=result['position'].map({'GKP': 0, 'DEF': 1, 'MID': 2, 'FWD': 3})).sort_values(['pos_order', obj_col], ascending=[True, False]),
     bar_fig = px.bar(
         result_plot, x='web_name', y=obj_col, color='position',
         text=result_plot[obj_col].round(1),
@@ -2874,7 +2874,7 @@ def build_squad(n_clicks, budget, objective, must_include, must_exclude, min_min
 
     display_col_ids = [c['id'] for c in table_cols_config if c['id'] in result.columns]
     table_data = prepare_table_data(
-        result.sort_values(['position', obj_col], ascending=[True, False]),
+        result.assign(pos_order=result['position'].map({'GKP': 0, 'DEF': 1, 'MID': 2, 'FWD': 3})).sort_values(['pos_order', obj_col], ascending=[True, False]),
         display_col_ids
     )
 
