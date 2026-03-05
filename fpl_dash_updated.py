@@ -1913,13 +1913,7 @@ app.layout = html.Div([
                                     value='ppg', clearable=False
                                 )
                             ], style={'flex': '2', 'minWidth': '220px', 'padding': '0 10px'}),
-                            html.Div([
-                                html.Label("Min. minutes played", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Input(
-                                    id='sq-minutes', type='number', value=450, min=0, step=90,
-                                    style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'}
-                                )
-                            ], style={'flex': '1', 'minWidth': '120px', 'padding': '0 10px'}),
+
                         ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-end', 'marginBottom': '20px'}),
 
                         # Row 2: Must include / Must exclude
@@ -2733,11 +2727,10 @@ def update_transfers(position, team, max_price, min_minutes):
     [State('sq-budget', 'value'),
      State('sq-objective', 'value'),
      State('sq-must-include', 'value'),
-     State('sq-must-exclude', 'value'),
-     State('sq-minutes', 'value')],
+     State('sq-must-exclude', 'value')],
     prevent_initial_call=True
 )
-def build_squad(n_clicks, budget, objective, must_include, must_exclude, min_minutes):
+def build_squad(n_clicks, budget, objective, must_include, must_exclude):
     data = get_data()
     df_now = data['df_active'].copy()
 
@@ -2747,7 +2740,7 @@ def build_squad(n_clicks, budget, objective, must_include, must_exclude, min_min
         objective=objective or 'ppg',
         must_include=must_include or [],
         must_exclude=must_exclude or [],
-        min_minutes=min_minutes or 0
+        min_minutes=0
     )
 
     if result is None:
