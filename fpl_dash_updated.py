@@ -620,6 +620,12 @@ app.index_string = '''
                 -webkit-overflow-scrolling: touch;
                 flex-wrap: nowrap !important;
             }
+            
+            /* Tab labels: left-aligned text */
+            .tab, 
+            .tab--selected {
+                text-align: left !important;
+            }
 
             /* === TABLET & BELOW (768px) === */
             @media (max-width: 768px) {
