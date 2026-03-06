@@ -622,7 +622,8 @@ app.index_string = '''
             }
             
             /* Tab labels: left-aligned text */
-            .tab, .tab--selected {
+            .tab, 
+            .tab--selected {
                 text-align: left !important;
             }
 
