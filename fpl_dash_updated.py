@@ -963,7 +963,7 @@ app.layout = html.Div([
             ]),
 
             # DEFCON BONUS TAB
-            dcc.Tab(label='Def Con Bonus', value='defcon-bonus', children=[
+            dcc.Tab(label='DEFCON Bonus', value='defcon-bonus', children=[
                 html.Div([
                     html.Div([
                         html.H3("Understanding Defensive Contribution Bonuses", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
@@ -1044,7 +1044,7 @@ app.layout = html.Div([
             ]),
 
             # BONUS CONSISTENCY TAB
-            dcc.Tab(label='Def Con: Consistency', value='bonus-consistency', children=[
+            dcc.Tab(label='DEFCON: Consistency', value='bonus-consistency', children=[
                 html.Div([
                     # Explanation Card
                     html.Div([
@@ -1142,7 +1142,7 @@ app.layout = html.Div([
             ]),
 
             # DEFENSIVE CONTRIBUTIONS TAB
-            dcc.Tab(label='Def Cons', value='defcon', children=[
+            dcc.Tab(label='DEFCONS', value='defcon', children=[
                 html.Div([
                     html.Div([
                         html.Div([
@@ -1560,7 +1560,7 @@ app.layout = html.Div([
             # =================================================================
             # OWNERSHIP DIFFERENTIALS TAB
             # =================================================================
-            dcc.Tab(label='Differentials', value='differentials', children=[
+            dcc.Tab(label='Ownership Differentials', value='differentials', children=[
                 html.Div([
                     html.Div([
                         html.H3("Ownership Differentials", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
