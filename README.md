@@ -13,3 +13,5 @@ An interactive data visualisation dashboard for Fantasy Premier League (FPL) ana
 - **Fixture Difficulty**: Plan transfers using upcoming fixture difficulty ratings
 - **Differentials**: Take a look at players with strong underlying stats with low ownership
 - **Captaincy Optimiser**: Which players could be great captaincy picks?
+- **Transfer Trends**: Which players are being bought and sold the most? This movement will more than likely affect their price
+- **Squad Builder**: See what squad the optimiser will build given your selected parameters
