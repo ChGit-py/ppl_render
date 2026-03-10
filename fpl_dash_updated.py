@@ -694,7 +694,7 @@ app.index_string = '''
                 text-align: left !important;
                 white-space: normal !important;
                 overflow: visible !important;
-                min-width: fit-content !important;
+                min-width: 100px !important;
                 padding: 10px 14px !important;
             }
 
