@@ -2551,7 +2551,7 @@ def update_differentials(position, team, max_price, max_own, min_minutes):
     # Handle empty data
     if len(filtered) == 0:
         empty_fig = go.Figure()
-        empty_fig.add_annotation(text="No players match current filters. Try increasing Max Ownership %. or decreasing the value of the min. minutes",
+        empty_fig.add_annotation(text="No players match current filters. Try decreasing the value of the min. minutes",
                                  xref="paper", yref="paper",
                                  x=0.5, y=0.5, showarrow=False, font=dict(size=14, color=COLORS['text_light']))
         empty_fig.update_layout(template='plotly_white', height=400)
