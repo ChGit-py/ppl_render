@@ -612,6 +612,13 @@ app.index_string = '''
                 overflow-x: auto !important;
                 -webkit-overflow-scrolling: touch;
             }
+            
+            /* Tabs: single-line, left-aligned, scrollable */
+            .tab,
+            .tab--selected {
+                text-align: left !important;
+                white-space: nowrap !important;
+            }
 
             /* Tabs: scrollable row */
             .tab-container,
