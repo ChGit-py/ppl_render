@@ -617,7 +617,8 @@ app.index_string = '''
             .tab,
             .tab--selected {
                 text-align: left !important;
-                white-space: nowrap !important;
+                white-space: normal !important;
+                overflow: visible !important;
             }
 
             /* Tabs: scrollable row */
