@@ -2906,7 +2906,7 @@ def update_differentials(position, team, max_price, max_own, min_minutes):
         scatter_fig.add_hline(y=median_ppg, line_dash='dash', line_color='#999',
                               annotation_text=f'Median PPG ({median_ppg:.1f})', annotation_position='top right')
     scatter_fig.update_layout(template='plotly_white', height=400, xaxis_title='Ownership %',
-                              yaxis_title='Points Per Game',
+                              yaxis_title='Points per Game',
                               font=dict(family='Arial, sans-serif'))
 
     top_25 = filtered.nlargest(25, 'differential_score')
