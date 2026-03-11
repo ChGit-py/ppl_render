@@ -874,8 +874,10 @@ def prepare_table_data(dataframe, columns):
         return []
 
 
-def build_stat_card(title, value, subtitle=None, color=COLORS['primary']):
+def build_stat_card(title, value, subtitle=None, color=COLORS['primary'], image_url=None):
     return html.Div([
+        html.Img(src=image_url, style={'width': '50px', 'height': '60px', 'objectFit': 'cover',
+                                        'borderRadius': '6px', 'marginBottom': '8px'}) if image_url else None,
         html.P(title, style={
             'color': COLORS['text_light'],
             'fontSize': '14px',
@@ -2471,13 +2473,15 @@ def update_home_tab(n):
                 "Most Captained",
                 most_cap['web_name'] if most_cap is not None else "N/A",
                 f"{most_cap['team_name']} - {most_cap['price']:.1f}m" if most_cap is not None else "Data available after deadline",
-                color=COLORS['primary']
+                color=COLORS['primary'],
+                image_url=f"https://resources.premierleague.com/premierleague/photos/players/110x140/p{most_cap['photo'].replace('.jpg', '.png')}" if most_cap is not None else None
             )], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
             html.Div([build_stat_card(
                 "Most Vice-Captained",
                 most_vice['web_name'] if most_vice is not None else "N/A",
                 f"{most_vice['team_name']} - {most_vice['price']:.1f}m" if most_vice is not None else "Data available after deadline",
-                color=COLORS['accent']
+                color=COLORS['accent'],
+                image_url=f"https://resources.premierleague.com/premierleague/photos/players/110x140/p{most_vice['photo'].replace('.jpg', '.png')}" if most_vice is not None else None
             )], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
             html.Div([build_stat_card(
                 "Chips Used This GW",
