@@ -204,6 +204,18 @@ def calculate_home_away_splits(player_histories):
     return splits
 
 
+def _safe_val(v):
+    """Convert None / NaN to 0."""
+    if v is None:
+        return 0
+    try:
+        if np.isnan(v):
+            return 0
+    except (TypeError, ValueError):
+        pass
+    return float(v)
+
+
 def compute_captain_score(row, weights=None):
     """
     Weighted captain score combining multiple factors.
@@ -220,13 +232,13 @@ def compute_captain_score(row, weights=None):
             'ownership_inv': 0.05
         }
 
-    form_score = row.get('form', 0) or 0
-    xgi_score = row.get('expected_goal_involvements', 0) or 0
-    ppg_score = row.get('ppg', 0) or 0
-    fdr_inv_score = (6 - (row.get('next_fdr', 3) or 3))
-    bps_score = row.get('bps_per_90', 0) or 0
-    venue_ppg_score = row.get('venue_ppg', 0) or 0
-    own_inv_score = max(0, 100 - (row.get('ownership', 50) or 50)) / 100
+    form_score = _safe_val(row.get('form', 0))
+    xgi_score = _safe_val(row.get('expected_goal_involvements', 0))
+    ppg_score = _safe_val(row.get('ppg', 0))
+    fdr_inv_score = (6 - _safe_val(row.get('next_fdr', 3)))
+    bps_score = _safe_val(row.get('bps_per_90', 0))
+    venue_ppg_score = _safe_val(row.get('venue_ppg', 0))
+    own_inv_score = max(0, 100 - _safe_val(row.get('ownership', 50))) / 100
 
     raw = (
             weights['form'] * form_score +
@@ -2615,6 +2627,15 @@ def update_consistency(position, team, max_price, min_games, min_minutes):
     data = get_data()
     filtered = data['df_active'][data['df_active']['qualifying_games'].notna()].copy()
 
+    # If Phase 2 hasn't loaded yet, show loading message
+    if len(filtered) == 0:
+        loading_fig = go.Figure()
+        loading_fig.add_annotation(text="Player history data is still loading. Please wait a few minutes and refresh.",
+                                   xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
+                                   font=dict(size=14, color=COLORS['text_light']))
+        loading_fig.update_layout(template='plotly_white', height=400)
+        return loading_fig, loading_fig, []
+
     # Apply position filter
     if position != 'All':
         filtered = filtered[filtered['position'] == position]
@@ -2979,6 +3000,14 @@ def update_captain(position, team, max_price, min_minutes):
     filtered = filter_data(position, team, max_price, min_minutes, positions_allowed=['DEF', 'MID', 'FWD'])
     filtered = filtered.dropna(subset=['captain_score'])
     filtered = filtered[filtered['captain_score'] > 0]
+
+    if len(filtered) == 0:
+        empty_fig = go.Figure()
+        empty_fig.add_annotation(text="No captain candidates found. Player history data may still be loading — try again shortly.",
+                                 xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
+                                 font=dict(size=14, color=COLORS['text_light']))
+        empty_fig.update_layout(template='plotly_white', height=400)
+        return empty_fig, empty_fig, []
 
     top_20 = filtered.nlargest(20, 'captain_score')
     bar_fig = go.Figure()
