@@ -2568,7 +2568,7 @@ def update_bonus(position, team, max_price, min_minutes):
                               yaxis_title='Defcon per 90',
                               font=dict(family='Arial, sans-serif'))
 
-    top_25 = filtered.nlargest(25, 'defcon_per_90')
+    top_25 = filtered.nlargest(25, 'defcon_vs_bonus')
     bar_fig = go.Figure()
     bar_fig.add_trace(go.Bar(
         x=top_25['web_name'], y=top_25['defcon_vs_bonus'],
@@ -2583,7 +2583,7 @@ def update_bonus(position, team, max_price, min_minutes):
 
     cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'defcon', 'defcon_per_90', 'defcon_vs_bonus',
             'bonus_rate', 'ownership']
-    table_data = prepare_table_data(filtered.nlargest(50, 'defcon_per_90'), cols)
+    table_data = prepare_table_data(filtered.nlargest(50, 'defcon_vs_bonus'), cols)
 
     return scatter_fig, bar_fig, table_data
 
