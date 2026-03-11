@@ -2757,10 +2757,10 @@ def update_form(position, team, max_price, min_minutes):
     filtered = filtered.dropna(subset=['form_vs_season'])
     top_form = filtered.nlargest(20, 'form_vs_season')
 
-    fig = px.bar(top_form, x='web_name', y='form_vs_season', color='form_vs_season',
-                 color_continuous_scale=['#dc3545', '#ffc107', '#28a745'], hover_data=['team_name', 'form', 'ppg'],
-                 labels={'web_name': 'Player', 'form_vs_season': 'Form vs Season Avg.'})
-    fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45, coloraxis_showscale=False,
+    fig = px.bar(top_form, x='web_name', y='form_vs_season',
+                 hover_data=['team_name', 'form', 'ppg'])
+    fig.update_traces(marker_color=COLORS['success'])
+    fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
                       font=dict(family='Arial, sans-serif'))
 
     cols = ['web_name', 'team_name', 'position', 'price', 'form', 'ppg', 'form_vs_season', 'ownership']
