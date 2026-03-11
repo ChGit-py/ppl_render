@@ -2758,7 +2758,8 @@ def update_form(position, team, max_price, min_minutes):
     top_form = filtered.nlargest(20, 'form_vs_season')
 
     fig = px.bar(top_form, x='web_name', y='form_vs_season',
-                 hover_data=['team_name', 'form', 'ppg'])
+                 hover_data=['team_name', 'form', 'ppg'],
+                 labels={'form_vs_season': 'Form vs Season', 'web_name': 'Player'},)
     fig.update_traces(marker_color=COLORS['success'])
     fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
                       font=dict(family='Arial, sans-serif'))
