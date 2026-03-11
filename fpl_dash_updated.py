@@ -2632,7 +2632,7 @@ def update_consistency(position, team, max_price, min_games, min_minutes):
         hovertemplate='%{x}<br>%{customdata[2]}  %{customdata[3]}<br>Hit Rate: %{y:.1f}%<br>Bonus Games: %{customdata[0]}/%{customdata[1]}<extra></extra>',
         customdata=top_25[['bonus_games', 'qualifying_games', 'position', 'team_name']].values
     ))
-    bar_fig.add_hline(y=50, line_dash="dash", line_color=COLORS['success'], annotation_text="50% threshold",
+    bar_fig.add_hline(y=50, line_dash="dash", line_color=COLORS['warning'], annotation_text="50% threshold",
                       annotation_position="right")
     bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
                           yaxis_title='Bonus Hit Rate (%)', showlegend=False,
