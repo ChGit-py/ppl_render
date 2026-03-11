@@ -2759,7 +2759,7 @@ def update_form(position, team, max_price, min_minutes):
 
     fig = px.bar(top_form, x='web_name', y='form_vs_season',
                  hover_data=['team_name', 'form', 'ppg'],
-                 text='form_vs_season',
+                 text=top_form['form_vs_season'].round(1),
                  labels={'form_vs_season': 'Form vs Season', 'web_name': 'Player'})
     fig.update_traces(marker_color=[COLORS['success'] if x > 0 else COLORS['warning'] for x in top_form['form_vs_season']],
                       textposition='outside')
