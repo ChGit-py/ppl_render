@@ -298,7 +298,7 @@ def process_player_data(data):
 
     df['form'] = pd.to_numeric(df['form'], errors='coerce')
     df['ppg'] = pd.to_numeric(df['points_per_game'], errors='coerce')
-    df['form_vs_season'] = df['form'] - df['ppg']
+    df['form_vs_season'] = (df['form'] - df['ppg']).round(1)
     df['ownership'] = pd.to_numeric(df['selected_by_percent'], errors='coerce')
 
     df['cs_per_90'] = (df['clean_sheets'] / df['minutes_safe']) * 90
@@ -2761,7 +2761,8 @@ def update_form(position, team, max_price, min_minutes):
                  hover_data=['team_name', 'form', 'ppg'],
                  text='form_vs_season',
                  labels={'form_vs_season': 'Form vs Season', 'web_name': 'Player'})
-    fig.update_traces(marker_color=[COLORS['success'] if x > 0 else COLORS['warning'] for x in top_form['form_vs_season']])
+    fig.update_traces(marker_color=[COLORS['success'] if x > 0 else COLORS['warning'] for x in top_form['form_vs_season']],
+                      textposition='outside')
     fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
                       font=dict(family='Arial, sans-serif'))
 
