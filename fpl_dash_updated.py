@@ -900,9 +900,11 @@ def build_stat_card(title, value, subtitle=None, color=COLORS['primary'], image_
     ], style=STAT_CARD_STYLE)
 
 
-def build_player_spotlight(player, title, metric_label, metric_value, image_url=None):
+def build_player_spotlight(player, title, metric_label, metric_value):
     if player is None:
         return html.Div()
+
+    photo_url = f"https://resources.premierleague.com/premierleague25/photos/players/110x140/{int(player['code'])}.png"
 
     text_section = html.Div([
         html.Div([
@@ -938,15 +940,15 @@ def build_player_spotlight(player, title, metric_label, metric_value, image_url=
         ])
     ], style={'flex': '1'})
 
-    image_section = html.Img(src=image_url, style={
+    image_section = html.Img(src=photo_url, style={
         'width': '70px', 'height': '90px', 'objectFit': 'cover',
         'borderRadius': '8px', 'alignSelf': 'center'
-    }) if image_url else None
+    })
 
-    children = [text_section, image_section] if image_section else [text_section]
-
-    return html.Div(children, style={**CARD_STYLE, 'flex': '1', 'minWidth': '220px',
-                                      'display': 'flex', 'justifyContent': 'space-between'})
+    return html.Div([text_section, image_section], style={
+        **CARD_STYLE, 'flex': '1', 'minWidth': '220px',
+        'display': 'flex', 'justifyContent': 'space-between'
+    })
 
 
 # =============================================================================
@@ -2515,17 +2517,13 @@ def update_home_tab(n):
 
         html.Div([
             build_player_spotlight(top_scorer_now, "Top Scorer", "Total Points",
-                                   f"{int(top_scorer_now['total_points'])}" if top_scorer_now is not None else "N/A",
-                                   image_url=f"https://resources.premierleague.com/premierleague25/photos/players/110x140/{top_scorer_now['code']}.png" if top_scorer_now is not None else None),
+                                   f"{int(top_scorer_now['total_points'])}" if top_scorer_now is not None else "N/A"),
             build_player_spotlight(most_selected_now, "Most Selected", "Ownership",
-                                   f"{most_selected_now['ownership']:.1f}%" if most_selected_now is not None else "N/A",
-                                   image_url=f"https://resources.premierleague.com/premierleague25/photos/players/110x140/{most_selected_now['code']}.png" if most_selected_now is not None else None),
+                                   f"{most_selected_now['ownership']:.1f}%" if most_selected_now is not None else "N/A"),
             build_player_spotlight(best_value_now, "Best Value", "Points/m",
-                                   f"{best_value_now['points_per_million']:.2f}" if best_value_now is not None else "N/A",
-                                   image_url=f"https://resources.premierleague.com/premierleague25/photos/players/110x140/{best_value_now['code']}.png" if best_value_now is not None else None),
+                                   f"{best_value_now['points_per_million']:.2f}" if best_value_now is not None else "N/A"),
             build_player_spotlight(top_form_now, "In Form", "Form Rating",
-                                   f"{top_form_now['form']:.1f}" if top_form_now is not None else "N/A",
-                                   image_url=f"https://resources.premierleague.com/premierleague25/photos/players/110x140/{top_form_now['code']}.png" if top_form_now is not None else None),
+                                   f"{top_form_now['form']:.1f}" if top_form_now is not None else "N/A"),
         ], style={'display': 'flex', 'flexWrap': 'wrap', 'gap': '20px', 'marginBottom': '40px'}),
 
         html.Div([
