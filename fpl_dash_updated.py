@@ -3003,7 +3003,7 @@ def update_captain(position, team, max_price, min_minutes):
 
     if len(filtered) == 0:
         empty_fig = go.Figure()
-        empty_fig.add_annotation(text="No captain candidates found. Player history data may still be loading — try again shortly.",
+        empty_fig.add_annotation(text="No captain candidates found. Try reducing the min. minutes",
                                  xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
                                  font=dict(size=14, color=COLORS['text_light']))
         empty_fig.update_layout(template='plotly_white', height=400)
