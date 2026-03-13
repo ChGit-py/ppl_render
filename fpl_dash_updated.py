@@ -12,6 +12,7 @@ import plotly.graph_objects as go
 from datetime import datetime
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import gc
 import pulp
 
 # =============================================================================
@@ -151,8 +152,8 @@ def calculate_bonus_consistency(player_ids, player_thresholds, min_minutes=60):
         }
         return player_id, stats
 
-    # Use threading for faster fetching
-    with ThreadPoolExecutor(max_workers=20) as executor:
+    # Use threading for faster fetching (capped at 8 to limit memory on free tier)
+    with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {executor.submit(process_player, pid): pid for pid in player_ids}
         for future in as_completed(futures):
             player_id, stats = future.result()
@@ -162,7 +163,7 @@ def calculate_bonus_consistency(player_ids, player_thresholds, min_minutes=60):
     return results
 
 
-def fetch_player_history_batch(player_ids, max_workers=20):
+def fetch_player_history_batch(player_ids, max_workers=8):
     """
     Fetch match-by-match history for multiple players in parallel.
     Returns dict of player_id -> list of match dicts.
@@ -583,12 +584,16 @@ def refresh_heavy_data():
         df_active['max_defcon_game'] = df_active['id'].map(lambda x: consistency_data.get(x, {}).get('max_defcon'))
         df_active['min_defcon_game'] = df_active['id'].map(lambda x: consistency_data.get(x, {}).get('min_defcon'))
 
+        # Free consistency data to reclaim memory before next batch
+        del consistency_data, consistency_thresholds, consistency_players
+        gc.collect()
+
         # Home/Away splits
         print("Fetching player histories for captain & home/away analysis...")
         captain_candidates = df_active[
             (df_active['minutes'] >= 450) &
             (df_active['position'].isin(['DEF', 'MID', 'FWD']))
-            ].nlargest(150, 'form')['id'].tolist()
+            ].nlargest(100, 'form')['id'].tolist()
 
         print(f"  Fetching match history for {len(captain_candidates)} captain candidates...")
         player_histories = fetch_player_history_batch(captain_candidates)
@@ -605,6 +610,10 @@ def refresh_heavy_data():
         )
         df_active['ha_diff'] = df_active['home_ppg'] - df_active['away_ppg']
 
+        # Free intermediate data to reclaim memory
+        del home_away_splits, captain_candidates
+        gc.collect()
+
         # Recalculate captain score with full home/away data
         print("Recalculating captain scores with home/away data...")
         df_active['captain_score'] = df_active.apply(compute_captain_score, axis=1)
@@ -616,6 +625,8 @@ def refresh_heavy_data():
             DATA['last_refresh'] = time.time()
             DATA['refreshing'] = False
             DATA['heavy_loaded'] = True
+
+        gc.collect()  # Free old df_active that was just replaced
 
         print(f"  Phase 2 complete at {datetime.now().strftime('%H:%M:%S')}")
         print(
@@ -631,6 +642,7 @@ def refresh_heavy_data():
 def refresh_all_data():
     """Full refresh: Phase 1 then Phase 2 sequentially (used by background timer)."""
     refresh_core_data()
+    gc.collect()  # Free Phase 1 temporaries before heavy Phase 2
     refresh_heavy_data()
 
 
