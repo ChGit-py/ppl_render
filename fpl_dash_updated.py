@@ -709,17 +709,13 @@ def get_data():
 
 
 # --- Initial data load ---
-# Try cache first for instant startup with all tabs populated,
-# then always refresh in the background to get fresh data.
+# Try cache first for instant startup. If no cache, load EVERYTHING
+# synchronously so every tab has data before the server accepts requests.
+# Background thread only handles the periodic 3-hour refresh cycle.
 cache_hit = load_cache()
-if cache_hit:
-    # Cache loaded — all tabs work immediately. Background refresh for freshness.
-    threading.Thread(target=refresh_all_data, daemon=True).start()
-else:
-    # First-ever deploy or cache missing: Phase 1 sync so server can start
-    refresh_core_data()
-    # Phase 2 in background to populate Captain & Consistency tabs
-    threading.Thread(target=refresh_heavy_data, daemon=True).start()
+if not cache_hit:
+    print("  No cache — running full synchronous data load...")
+    refresh_all_data()  # Phase 1 + Phase 2, blocks until complete
 
 # Convenience references for layout building (used once at startup)
 df = DATA['df']
