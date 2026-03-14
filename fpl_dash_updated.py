@@ -13,6 +13,8 @@ from datetime import datetime
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import gc
+import pickle
+import os
 import pulp
 
 # =============================================================================
@@ -424,6 +426,49 @@ DATA = {
 }
 DATA_LOCK = threading.Lock()
 REFRESH_INTERVAL = 3 * 60 * 60  # 3 hours in seconds
+CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fpl_cache.pkl')
+
+# Keys to persist in cache (excludes transient flags like 'refreshing')
+_CACHE_KEYS = [
+    'bootstrap_data', 'df', 'df_active', 'current_gw', 'next_gw',
+    'total_managers', 'fixtures_data', 'teams_df', 'fixture_difficulty',
+    'player_histories', 'sorted_teams', 'next_gw_num', 'last_refresh',
+    'heavy_loaded',
+]
+
+
+def save_cache():
+    """Persist current DATA to disk so next startup is instant."""
+    try:
+        payload = {k: DATA[k] for k in _CACHE_KEYS if k in DATA}
+        with open(CACHE_PATH, 'wb') as f:
+            pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+        size_mb = os.path.getsize(CACHE_PATH) / (1024 * 1024)
+        print(f"  Cache saved ({size_mb:.1f} MB)")
+    except Exception as e:
+        print(f"  Warning: failed to save cache: {e}")
+
+
+def load_cache():
+    """
+    Load cached DATA from disk. Returns True if cache was loaded successfully.
+    """
+    if not os.path.exists(CACHE_PATH):
+        print("  No cache file found — will fetch from API")
+        return False
+    try:
+        with open(CACHE_PATH, 'rb') as f:
+            cached = pickle.load(f)
+        age_hrs = (time.time() - cached.get('last_refresh', 0)) / 3600
+        print(f"  Cache found ({age_hrs:.1f}h old) — loading...")
+        with DATA_LOCK:
+            DATA.update(cached)
+            DATA['refreshing'] = False
+        print(f"  Cache loaded — all tabs ready")
+        return True
+    except Exception as e:
+        print(f"  Warning: failed to load cache: {e}")
+        return False
 
 
 def refresh_core_data():
@@ -628,6 +673,8 @@ def refresh_heavy_data():
 
         gc.collect()  # Free old df_active that was just replaced
 
+        save_cache()
+
         print(f"  Phase 2 complete at {datetime.now().strftime('%H:%M:%S')}")
         print(
             f"  Next refresh after: {datetime.fromtimestamp(DATA['last_refresh'] + REFRESH_INTERVAL).strftime('%H:%M:%S')}")
@@ -662,10 +709,17 @@ def get_data():
 
 
 # --- Initial data load ---
-# Phase 1: Core data loads synchronously (~2-3 seconds) so server can start
-refresh_core_data()
-# Phase 2: Heavy player histories load in background — server is already responsive
-threading.Thread(target=refresh_heavy_data, daemon=True).start()
+# Try cache first for instant startup with all tabs populated,
+# then always refresh in the background to get fresh data.
+cache_hit = load_cache()
+if cache_hit:
+    # Cache loaded — all tabs work immediately. Background refresh for freshness.
+    threading.Thread(target=refresh_all_data, daemon=True).start()
+else:
+    # First-ever deploy or cache missing: Phase 1 sync so server can start
+    refresh_core_data()
+    # Phase 2 in background to populate Captain & Consistency tabs
+    threading.Thread(target=refresh_heavy_data, daemon=True).start()
 
 # Convenience references for layout building (used once at startup)
 df = DATA['df']
