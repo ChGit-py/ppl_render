@@ -1058,8 +1058,8 @@ home_value_cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'tot
 # =============================================================================
 
 app.layout = html.Div([
-    # Auto-refresh interval (checks every 10 minutes)
-    dcc.Interval(id='refresh-interval', interval=10 * 60 * 1000, n_intervals=0),
+    # Auto-refresh interval (checks every 2 minutes; picks up Phase 2 data promptly)
+    dcc.Interval(id='refresh-interval', interval=2 * 60 * 1000, n_intervals=0),
 
     # Header
     html.Div([
@@ -2349,7 +2349,7 @@ app.layout = html.Div([
     Input('refresh-interval', 'n_intervals')
 )
 def update_refresh_status(n):
-    """Check data freshness every 10 minutes. Trigger background refresh if stale."""
+    """Check data freshness every 2 minutes. Trigger background refresh if stale."""
     check_and_refresh()
     last = DATA.get('last_refresh', 0)
     if last > 0:
@@ -2632,9 +2632,10 @@ def update_bonus(position, team, max_price, min_minutes):
 @callback(
     [Output('consistency-bar', 'figure'), Output('consistency-scatter', 'figure'), Output('consistency-table', 'data')],
     [Input('consistency-position', 'value'), Input('consistency-team', 'value'), Input('consistency-price', 'value'),
-     Input('consistency-games', 'value'), Input('consistency-minutes', 'value')]
+     Input('consistency-games', 'value'), Input('consistency-minutes', 'value'),
+     Input('refresh-interval', 'n_intervals')]
 )
-def update_consistency(position, team, max_price, min_games, min_minutes):
+def update_consistency(position, team, max_price, min_games, min_minutes, _n):
     # Filter to players with consistency data
     data = get_data()
     filtered = data['df_active'][data['df_active']['qualifying_games'].notna()].copy()
@@ -3006,9 +3007,9 @@ def sync_own_slider(input_val):
 @callback(
     [Output('cap-bar', 'figure'), Output('cap-ha-scatter', 'figure'), Output('cap-table', 'data')],
     [Input('cap-position', 'value'), Input('cap-team', 'value'), Input('cap-price', 'value'),
-     Input('cap-minutes', 'value')]
+     Input('cap-minutes', 'value'), Input('refresh-interval', 'n_intervals')]
 )
-def update_captain(position, team, max_price, min_minutes):
+def update_captain(position, team, max_price, min_minutes, _n):
     filtered = filter_data(position, team, max_price, min_minutes, positions_allowed=['DEF', 'MID', 'FWD'])
     filtered = filtered.dropna(subset=['captain_score'])
     filtered = filtered[filtered['captain_score'] > 0]
