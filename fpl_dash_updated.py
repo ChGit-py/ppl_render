@@ -1124,7 +1124,7 @@ app.layout = html.Div([
                 html.Span("Analytics Dashboard", style={'color': 'white', 'fontSize': '20px', 'fontWeight': '600'})
             ], style={'display': 'flex', 'alignItems': 'center'}),
             html.Div([
-                html.Span(f"Data as of {current_gw['name'] if current_gw else 'N/A'}",
+                html.Span(id='gw-status-text',
                           style={'color': 'rgba(255,255,255,0.8)', 'fontSize': '13px'}),
                 html.Span(" · ", style={'color': 'rgba(255,255,255,0.5)', 'fontSize': '13px'}),
                 html.Span(id='last-updated-text',
@@ -2395,22 +2395,24 @@ app.layout = html.Div([
 
 # Auto-refresh: update last-updated text and trigger staleness check
 @callback(
-    Output('last-updated-text', 'children'),
+    [Output('gw-status-text', 'children'), Output('last-updated-text', 'children')],
     Input('refresh-interval', 'n_intervals')
 )
 def update_refresh_status(n):
     """Check data freshness every 2 minutes. Trigger background refresh if stale."""
     check_and_refresh()
+    current_gw_now = DATA.get('current_gw')
+    gw_text = f"Data as of {current_gw_now['name']}" if current_gw_now else "N/A"
     last = DATA.get('last_refresh', 0)
     if last > 0:
         refresh_time = datetime.fromtimestamp(last).strftime('%H:%M')
         age_mins = int((time.time() - last) / 60)
         if DATA.get('refreshing', False):
-            return f"Refreshing data..."
+            return gw_text, "Refreshing data..."
         if not DATA.get('heavy_loaded', False):
-            return f"Updated {refresh_time} ({age_mins}m ago) · Loading detailed stats..."
-        return f"Updated {refresh_time} ({age_mins}m ago)"
-    return "Loading..."
+            return gw_text, f"Updated {refresh_time} ({age_mins}m ago) · Loading detailed stats..."
+        return gw_text, f"Updated {refresh_time} ({age_mins}m ago)"
+    return gw_text, "Loading..."
 
 
 def filter_data(position, team, max_price, min_minutes, positions_allowed=None):
