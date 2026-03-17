@@ -2596,7 +2596,7 @@ def update_home_tab(n):
                                    f"{int(top_scorer_now['total_points'])}" if top_scorer_now is not None else "N/A"),
             build_player_spotlight(most_selected_now, "Most Selected", "Ownership",
                                    f"{most_selected_now['ownership']:.1f}%" if most_selected_now is not None else "N/A"),
-            build_player_spotlight(best_value_now, "Best Value", "Points/m",
+            build_player_spotlight(best_value_now, "Best Value", "Points/£m",
                                    f"{best_value_now['points_per_million']:.2f}" if best_value_now is not None else "N/A"),
             build_player_spotlight(top_form_now, "In Form", "Form Rating",
                                    f"{top_form_now['form']:.1f}" if top_form_now is not None else "N/A"),
