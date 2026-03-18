@@ -336,6 +336,18 @@ def process_player_data(data):
     df['bps_per_90'] = (df['bps'] / df['minutes_safe']) * 90
     df['bonus_per_90'] = (df['bonus'] / df['minutes_safe']) * 90
 
+    # Underlying per-90 columns
+    df['xgi_per_90'] = (df['expected_goal_involvements'] / df['minutes_safe'] * 90).round(2)
+    df['xg_per_90'] = (df['expected_goals'] / df['minutes_safe'] * 90).round(2)
+    df['xa_per_90'] = (df['expected_assists'] / df['minutes_safe'] * 90).round(2)
+    df['threat_per_90'] = (df['threat'] / df['minutes_safe'] * 90).round(1)
+    df['creativity_per_90'] = (df['creativity'] / df['minutes_safe'] * 90).round(1)
+    df['ict_per_90'] = (df['ict_index'] / df['minutes_safe'] * 90).round(1)
+    df['gi'] = df['goals_scored'] + df['assists']
+    df['gi_per_90'] = (df['gi'] / df['minutes_safe'] * 90).round(2)
+    df['xgi_diff'] = (df['gi'] - df['expected_goal_involvements']).round(2)
+    df['xgi_diff_per_90'] = (df['gi_per_90'] - df['xgi_per_90']).round(2)
+
     return df
 
 
@@ -1538,6 +1550,100 @@ app.layout = html.Div([
                                  'backgroundColor': '#e8f5e9'},
                                 {'if': {'filter_query': '{xg_diff} > 1', 'column_id': 'xg_diff'},
                                  'backgroundColor': '#fff8e1'}
+                            ]
+                        )
+                    ], style=CARD_STYLE)
+                ], style={'padding': '20px 0'})
+            ]),
+
+            # UNDERLYING NUMBERS TAB
+            dcc.Tab(label='Underlying Numbers', value='underlying', children=[
+                html.Div([
+                    # Explanation
+                    html.Div([
+                        html.H3("Player Underlying Numbers", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
+                        html.P([
+                            "Actual returns are noisy — a player can blank for weeks then bag a hat trick. ",
+                            html.Strong("Underlying numbers"), " (xG, xA, threat, creativity) measure the ",
+                            html.Strong("quality and volume of chances"), " a player is involved in, which is a far better predictor of future points. ",
+                            "Look for players with strong per-90 rates who are ", html.Strong("underperforming their xGI"),
+                            " — they're due a correction upward."
+                        ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
+                        html.Div([
+                            html.Span("All stats normalised per 90 minutes for fair comparison",
+                                      style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
+                                             'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
+                        ])
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+
+                    # Filters
+                    html.Div([
+                        html.Div([
+                            html.Div([
+                                html.Label("Position", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Dropdown(id='under-position', options=[{'label': 'All', 'value': 'All'}] +
+                                             [{'label': p, 'value': p} for p in ['GKP', 'DEF', 'MID', 'FWD']], value='All', clearable=False)
+                            ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Team", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Dropdown(id='under-team', options=[{'label': 'All', 'value': 'All'}] +
+                                             [{'label': t, 'value': t} for t in sorted(df['team_name'].unique())], value='All', clearable=False)
+                            ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Max. price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Slider(id='under-price', min=4, max=16, step=0.5, value=16,
+                                           marks={i: f'£{i}' for i in [4, 6, 8, 10, 12, 14, 16]},
+                                           tooltip={"placement": "bottom", "always_visible": True})
+                            ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Min. minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Input(id='under-minutes', type='number', value=450, min=0, step=50,
+                                          style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
+                            ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
+                        ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-end'})
+                    ], style=CARD_STYLE),
+
+                    # Scatter — xGI/90 vs actual GI/90
+                    html.Div([
+                        html.H3("Actual vs Expected Goal Involvements (per 90)", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+                        html.P("Players below the diagonal are underperforming their underlying numbers — they're due positive regression.",
+                               style={'color': COLORS['text_light']}),
+                        dcc.Graph(id='under-scatter')
+                    ], style=CARD_STYLE),
+
+                    # Table
+                    html.Div([
+                        html.H4("Underlying Numbers Scouting Report", style={'color': COLORS['primary'], 'marginBottom': '16px'}),
+                        dash_table.DataTable(
+                            id='under-table',
+                            data=[],
+                            columns=[
+                                {'name': 'Player', 'id': 'web_name'},
+                                {'name': 'Team', 'id': 'team_name'},
+                                {'name': 'Pos', 'id': 'position'},
+                                {'name': 'Price', 'id': 'price', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                {'name': 'Mins', 'id': 'minutes', 'type': 'numeric', 'format': {'specifier': ','}},
+                                {'name': 'xGI/90', 'id': 'xgi_per_90', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'GI/90', 'id': 'gi_per_90', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'xGI Diff', 'id': 'xgi_diff_per_90', 'type': 'numeric', 'format': {'specifier': '+.2f'}},
+                                {'name': 'xG/90', 'id': 'xg_per_90', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'xA/90', 'id': 'xa_per_90', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'Threat/90', 'id': 'threat_per_90', 'type': 'numeric', 'format': {'specifier': '.0f'}},
+                                {'name': 'Create/90', 'id': 'creativity_per_90', 'type': 'numeric', 'format': {'specifier': '.0f'}},
+                                {'name': 'ICT/90', 'id': 'ict_per_90', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                {'name': 'BPS/90', 'id': 'bps_per_90', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                {'name': 'Form', 'id': 'form', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                            ],
+                            sort_action='native',
+                            page_size=20,
+                            style_cell=TABLE_STYLE_CELL,
+                            style_header=TABLE_STYLE_HEADER,
+                            style_data=TABLE_STYLE_DATA,
+                            style_data_conditional=[
+                                {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
+                                {'if': {'filter_query': '{xgi_diff_per_90} < -0.1', 'column_id': 'xgi_diff_per_90'}, 'backgroundColor': '#e8f5e9'},
+                                {'if': {'filter_query': '{xgi_diff_per_90} > 0.1', 'column_id': 'xgi_diff_per_90'}, 'backgroundColor': '#ffebee'},
                             ]
                         )
                     ], style=CARD_STYLE)
@@ -2821,6 +2927,37 @@ def update_xg(position, team, max_price, min_minutes):
     cols = ['web_name', 'team_name', 'position', 'price', 'goals_scored', 'expected_goals', 'xg_diff', 'assists',
             'expected_assists', 'xa_diff', 'ownership']
     table_data = prepare_table_data(filtered.sort_values('xg_diff').head(50), cols)
+
+    return fig, table_data
+
+
+# UNDERLYING NUMBERS
+@callback(
+    [Output('under-scatter', 'figure'), Output('under-table', 'data')],
+    [Input('under-position', 'value'), Input('under-team', 'value'), Input('under-price', 'value'),
+     Input('under-minutes', 'value')]
+)
+def update_underlying(position, team, max_price, min_minutes):
+    filtered = filter_data(position, team, max_price, min_minutes)
+    filtered = filtered.dropna(subset=['xgi_per_90', 'gi_per_90'])
+
+    # Scatter — actual GI/90 vs xGI/90
+    fig = px.scatter(filtered, x='xgi_per_90', y='gi_per_90', color='position', size='minutes',
+                     hover_name='web_name',
+                     hover_data=['team_name', 'price', 'xgi_diff_per_90', 'threat_per_90', 'creativity_per_90'],
+                     labels={'xgi_per_90': 'Expected GI per 90', 'gi_per_90': 'Actual GI per 90'},
+                     color_discrete_map={'GKP': '#666', 'DEF': COLORS['primary'], 'MID': COLORS['accent'], 'FWD': COLORS['info']})
+    if len(filtered) > 0:
+        max_val = max(filtered['xgi_per_90'].max(), filtered['gi_per_90'].max(), 0.5)
+        fig.add_trace(go.Scatter(x=[0, max_val], y=[0, max_val], mode='lines',
+                                 line=dict(dash='dash', color='#999'), name='Expected'))
+    fig.update_layout(template='plotly_white', height=400, font=dict(family='Arial, sans-serif'))
+
+    # Table — sorted by xGI/90 descending
+    cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'xgi_per_90', 'gi_per_90',
+            'xgi_diff_per_90', 'xg_per_90', 'xa_per_90', 'threat_per_90', 'creativity_per_90',
+            'ict_per_90', 'bps_per_90', 'form', 'ownership']
+    table_data = prepare_table_data(filtered.nlargest(50, 'xgi_per_90'), cols)
 
     return fig, table_data
 
