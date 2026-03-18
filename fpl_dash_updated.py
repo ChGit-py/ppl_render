@@ -1606,7 +1606,7 @@ app.layout = html.Div([
                     # Scatter — xGI/90 vs actual GI/90
                     html.Div([
                         html.H3("Actual vs Expected Goal Involvements (per 90)", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-                        html.P("Players below the diagonal are underperforming their underlying numbers — they're due positive regression.",
+                        html.P("Players below the diagonal are underperforming their underlying numbers",
                                style={'color': COLORS['text_light']}),
                         dcc.Graph(id='under-scatter')
                     ], style=CARD_STYLE),
