@@ -1567,7 +1567,7 @@ app.layout = html.Div([
                             html.Strong("Underlying numbers"), " (xG, xA, threat, creativity) measure the ",
                             html.Strong("quality and volume of chances"), " a player is involved in, which is a far better predictor of future points. ",
                             "Look for players with strong per-90 rates who are ", html.Strong("underperforming their xGI"),
-                            " — they're due a correction upward."
+                            " they're due a correction upward."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div([
                             html.Span("All stats normalised per 90 minutes for fair comparison",
