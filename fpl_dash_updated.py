@@ -1557,13 +1557,13 @@ app.layout = html.Div([
             ]),
 
             # UNDERLYING NUMBERS TAB
-            dcc.Tab(label='Underlying Numbers', value='underlying', children=[
+            dcc.Tab(label='Player Underlying Numbers', value='underlying', children=[
                 html.Div([
                     # Explanation
                     html.Div([
                         html.H3("Player Underlying Numbers", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
                         html.P([
-                            "Actual returns are noisy — a player can blank for weeks then bag a hat trick. ",
+                            "Actual returns are noisy. A player can blank for weeks then bag a hat trick. ",
                             html.Strong("Underlying numbers"), " (xG, xA, threat, creativity) measure the ",
                             html.Strong("quality and volume of chances"), " a player is involved in, which is a far better predictor of future points. ",
                             "Look for players with strong per-90 rates who are ", html.Strong("underperforming their xGI"),
