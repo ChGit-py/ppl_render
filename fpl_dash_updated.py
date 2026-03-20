@@ -1937,7 +1937,7 @@ app.layout = html.Div([
                     html.Div([
                         html.H3("Team Fixture Difficulty (Next 5 GWs)",
                                 style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-                        html.P("Teams sorted by average FDR. Green = easy run, Red = tough run.",
+                        html.P("Teams sorted by average FDR. Green = easy run, Orange = average run and Red = tough run.",
                                style={'color': COLORS['text_light']}),
                         dcc.Graph(id='fdr-team-bar')
                     ], style=CARD_STYLE),
