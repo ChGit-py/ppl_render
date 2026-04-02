@@ -10,6 +10,7 @@ from dash import Dash, html, dcc, dash_table, callback, Output, Input, State
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
+from zoneinfo import ZoneInfo
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import gc
@@ -2511,7 +2512,7 @@ def update_refresh_status(n):
     gw_text = f"Data as of {current_gw_now['name']}" if current_gw_now else "N/A"
     last = DATA.get('last_refresh', 0)
     if last > 0:
-        refresh_time = datetime.fromtimestamp(last).strftime('%H:%M')
+        refresh_time = datetime.fromtimestamp(last, tz=ZoneInfo('Europe/London')).strftime('%H:%M')
         age_mins = int((time.time() - last) / 60)
         if DATA.get('refreshing', False):
             return gw_text, "Refreshing data..."
