@@ -1950,7 +1950,7 @@ app.layout = html.Div([
                         html.H3("Player Value vs Fixture Difficulty",
                                 style={'color': COLORS['primary'], 'marginBottom': '8px'}),
                         html.P(
-                            "Find high-value players with easy fixtures. Best picks are top left (high points, low FDR).",
+                            "Find high value players with easy fixtures. Best picks are top left (high points, low FDR).",
                             style={'color': COLORS['text_light']}),
                         dcc.Graph(id='fdr-scatter')
                     ], style=CARD_STYLE),
