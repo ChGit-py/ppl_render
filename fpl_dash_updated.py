@@ -38,16 +38,18 @@ def fetch_fixtures():
     return response.json()
 
 
-def calculate_fixture_difficulty(fixtures, teams_df, current_gw, num_gameweeks=5):
+def calculate_fixture_difficulty(fixtures, teams_df, current_gw, num_gameweeks=None):
     """
-    Calculate average fixture difficulty for each team over the next N gameweeks.
+    Calculate average fixture difficulty for each team over remaining season fixtures.
+    If num_gameweeks is None, uses all remaining fixtures in the season.
     Returns dict of team_id -> {fixtures: [...], avg_fdr: float}
     """
-    # Get upcoming gameweeks
-    upcoming_gws = list(range(current_gw + 1, current_gw + num_gameweeks + 1))
-
-    # Filter to upcoming fixtures
-    upcoming_fixtures = [f for f in fixtures if f.get('event') in upcoming_gws]
+    # Get upcoming gameweeks - all remaining if num_gameweeks is None
+    if num_gameweeks is None:
+        upcoming_fixtures = [f for f in fixtures if f.get('event') is not None and f['event'] > current_gw]
+    else:
+        upcoming_gws = list(range(current_gw + 1, current_gw + num_gameweeks + 1))
+        upcoming_fixtures = [f for f in fixtures if f.get('event') in upcoming_gws]
 
     # Build team fixture data
     team_fixtures = {}
@@ -102,7 +104,7 @@ def calculate_fixture_difficulty(fixtures, teams_df, current_gw, num_gameweeks=5
         team_fixtures[team_id]['avg_fdr'] = sum(fdr_values) / len(fdr_values) if fdr_values else 3.0
         team_fixtures[team_id]['fixture_count'] = len(fdr_values)
         # Create fixture string for display
-        team_fixtures[team_id]['fixture_string'] = ', '.join(team_fixtures[team_id]['opponents'][:num_gameweeks])
+        team_fixtures[team_id]['fixture_string'] = ', '.join(team_fixtures[team_id]['opponents'])
 
     return team_fixtures
 
@@ -519,7 +521,7 @@ def refresh_core_data():
         fixtures_data = fetch_fixtures()
         teams_df = pd.DataFrame(bootstrap_data['teams'])
         current_gw_num = current_gw['id'] if current_gw else 1
-        fixture_difficulty = calculate_fixture_difficulty(fixtures_data, teams_df, current_gw_num, num_gameweeks=5)
+        fixture_difficulty = calculate_fixture_difficulty(fixtures_data, teams_df, current_gw_num)
         print(f"  Calculated fixture difficulty for {len(fixture_difficulty)} teams")
 
         df_active['avg_fdr_5'] = df_active['team'].map(lambda x: fixture_difficulty.get(x, {}).get('avg_fdr'))
@@ -1891,7 +1893,7 @@ app.layout = html.Div([
                             "FDR ranges from 1 (very easy) to 5 (very hard). Use this tab to see which teams have easier fixtures and potentially target players from those teams."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div([
-                            html.Span("Next 5 Gameweeks", style={'backgroundColor': COLORS['secondary'],
+                            html.Span("Remaining Season", style={'backgroundColor': COLORS['secondary'],
                                                                  'color': COLORS['primary'], 'padding': '8px 16px',
                                                                  'borderRadius': '20px', 'fontWeight': '600'})
                         ])
@@ -1936,7 +1938,7 @@ app.layout = html.Div([
 
                     # Team FDR Chart
                     html.Div([
-                        html.H3("Team Fixture Difficulty (Next 5 GWs)",
+                        html.H3("Team Fixture Difficulty (Remaining Season)",
                                 style={'color': COLORS['primary'], 'marginBottom': '8px'}),
                         html.P("Teams sorted by average FDR. Green = easy run, Orange = average run and Red = tough run.",
                                style={'color': COLORS['text_light']}),
@@ -1970,7 +1972,7 @@ app.layout = html.Div([
                                 {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                                 {'name': 'Avg FDR', 'id': 'avg_fdr_5', 'type': 'numeric',
                                  'format': {'specifier': '.2f'}},
-                                {'name': 'Next 5 Fixtures', 'id': 'fixture_string'},
+                                {'name': 'Remaining Fixtures', 'id': 'fixture_string'},
                             ],
                             sort_action='native',
                             page_size=20,
@@ -2095,7 +2097,7 @@ app.layout = html.Div([
                                  'format': {'specifier': '.2f'}},
                                 {'name': 'Avg FDR', 'id': 'avg_fdr_5', 'type': 'numeric',
                                  'format': {'specifier': '.2f'}},
-                                {'name': 'Next 5', 'id': 'fixture_string'},
+                                {'name': 'Remaining', 'id': 'fixture_string'},
                             ],
                             sort_action='native',
                             page_size=20,
@@ -3071,7 +3073,7 @@ def update_fdr(position, team, max_price, min_minutes):
     bar_fig.add_hline(y=3.0, line_dash="dash", line_color='#999', annotation_text="Avg (3.0)",
                       annotation_position="right")
     bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
-                          yaxis_title='Average FDR (Next 5 GWs)', showlegend=False,
+                          yaxis_title='Average FDR (Remaining Season)', showlegend=False,
                           yaxis=dict(range=[0, 5.5]),
                           font=dict(family='Arial, sans-serif'))
 
