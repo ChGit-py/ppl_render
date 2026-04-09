@@ -1141,7 +1141,7 @@ app.layout = html.Div([
             html.Div([
                 html.Span(id='gw-status-text',
                           style={'color': 'rgba(255,255,255,0.8)', 'fontSize': '13px'}),
-                html.Span(" · ", style={'color': 'rgba(255,255,255,0.5)', 'fontSize': '13px'}),
+                html.Span(" | ", style={'color': 'rgba(255,255,255,0.5)', 'fontSize': '13px'}),
                 html.Span(id='last-updated-text',
                           style={'color': 'rgba(255,255,255,0.6)', 'fontSize': '12px'})
             ])
