@@ -3073,7 +3073,7 @@ def update_fdr(position, team, max_price, min_minutes):
     bar_fig.add_hline(y=3.0, line_dash="dash", line_color='#999', annotation_text="Avg (3.0)",
                       annotation_position="right")
     bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
-                          yaxis_title='Average FDR (Remainder of the seasn)', showlegend=False,
+                          yaxis_title='Average FDR (Remainder of the season)', showlegend=False,
                           yaxis=dict(range=[0, 5.5]),
                           font=dict(family='Arial, sans-serif'))
 
