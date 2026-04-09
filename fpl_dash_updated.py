@@ -1895,57 +1895,58 @@ app.layout = html.Div([
                             html.Strong("red = hard"), "."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '16px'}),
                         html.Div([
-                            html.Span("■", style={'color': '#00ff87', 'fontSize': '18px', 'marginRight': '4px'}),
-                            html.Span("FDR 1 (easiest)", style={'fontSize': '13px', 'marginRight': '16px', 'color': COLORS['text_dark']}),
-                            html.Span("■", style={'color': '#7dde9e', 'fontSize': '18px', 'marginRight': '4px'}),
-                            html.Span("FDR 2", style={'fontSize': '13px', 'marginRight': '16px', 'color': COLORS['text_dark']}),
-                            html.Span("■", style={'color': '#ffc107', 'fontSize': '18px', 'marginRight': '4px'}),
-                            html.Span("FDR 3", style={'fontSize': '13px', 'marginRight': '16px', 'color': COLORS['text_dark']}),
-                            html.Span("■", style={'color': '#ff7043', 'fontSize': '18px', 'marginRight': '4px'}),
-                            html.Span("FDR 4", style={'fontSize': '13px', 'marginRight': '16px', 'color': COLORS['text_dark']}),
-                            html.Span("■", style={'color': '#dc3545', 'fontSize': '18px', 'marginRight': '4px'}),
-                            html.Span("FDR 5 (hardest)", style={'fontSize': '13px', 'marginRight': '16px', 'color': COLORS['text_dark']}),
-                            html.Span("■", style={'color': '#6f42c1', 'fontSize': '18px', 'marginRight': '4px'}),
-                            html.Span("Double GW", style={'fontSize': '13px', 'marginRight': '16px', 'color': COLORS['text_dark']}),
-                            html.Span("■", style={'color': '#d0d0d0', 'fontSize': '18px', 'marginRight': '4px'}),
+                            html.Span("■", style={'color': '#00ff87', 'fontSize': '20px', 'marginRight': '4px'}),
+                            html.Span("FDR 1", style={'fontSize': '13px', 'marginRight': '14px', 'color': COLORS['text_dark']}),
+                            html.Span("■", style={'color': '#7dde9e', 'fontSize': '20px', 'marginRight': '4px'}),
+                            html.Span("FDR 2", style={'fontSize': '13px', 'marginRight': '14px', 'color': COLORS['text_dark']}),
+                            html.Span("■", style={'color': '#ffc107', 'fontSize': '20px', 'marginRight': '4px'}),
+                            html.Span("FDR 3", style={'fontSize': '13px', 'marginRight': '14px', 'color': COLORS['text_dark']}),
+                            html.Span("■", style={'color': '#ff7043', 'fontSize': '20px', 'marginRight': '4px'}),
+                            html.Span("FDR 4", style={'fontSize': '13px', 'marginRight': '14px', 'color': COLORS['text_dark']}),
+                            html.Span("■", style={'color': '#dc3545', 'fontSize': '20px', 'marginRight': '4px'}),
+                            html.Span("FDR 5", style={'fontSize': '13px', 'marginRight': '14px', 'color': COLORS['text_dark']}),
+                            html.Span("■", style={'color': '#6f42c1', 'fontSize': '20px', 'marginRight': '4px'}),
+                            html.Span("Double GW", style={'fontSize': '13px', 'marginRight': '14px', 'color': COLORS['text_dark']}),
+                            html.Span("■", style={'color': '#d0d0d0', 'fontSize': '20px', 'marginRight': '4px'}),
                             html.Span("Blank GW", style={'fontSize': '13px', 'color': COLORS['text_dark']}),
-                        ], style={'marginBottom': '8px'})
+                        ])
                     ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
                     html.Div([
                         html.Div([
-                            html.Div([
-                                html.Label("Sort teams by", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Dropdown(
-                                    id='ticker-sort',
-                                    options=[
-                                        {'label': 'Alphabetical', 'value': 'name'},
-                                        {'label': 'Easiest run-in first (avg FDR)', 'value': 'fdr'},
-                                    ],
-                                    value='name',
-                                    clearable=False
-                                )
-                            ], style={'flex': '1', 'minWidth': '220px', 'padding': '0 10px'}),
-                        ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-end'})
+                            html.Label("Sort teams by", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                            dcc.Dropdown(
+                                id='ticker-sort',
+                                options=[
+                                    {'label': 'Alphabetical', 'value': 'name'},
+                                    {'label': 'Easiest run-in first (avg FDR)', 'value': 'fdr'},
+                                ],
+                                value='name',
+                                clearable=False
+                            )
+                        ], style={'maxWidth': '300px'})
                     ], style=CARD_STYLE),
 
                     html.Div([
-                        html.H3("Fixture Grid — Remaining Season", style={'color': COLORS['primary'], 'marginBottom': '4px'}),
-                        html.P("Opponent shown in each cell (H = home, A = away). Double GW cells show both fixtures.",
+                        html.H3("Fixture Grid — Remaining Season",
+                                style={'color': COLORS['primary'], 'marginBottom': '4px'}),
+                        html.P("Opponent shown in each cell (H = home, A = away). "
+                               "Double GW cells show both fixtures.",
                                style={'color': COLORS['text_light'], 'marginBottom': '12px'}),
                         dcc.Graph(id='ticker-heatmap', config={'displayModeBar': False})
                     ], style=CARD_STYLE),
 
                     html.Div([
-                        html.H4("Blank & Double Gameweek Summary", style={'color': COLORS['primary'], 'marginBottom': '16px'}),
+                        html.H4("Blank & Double Gameweek Summary",
+                                style={'color': COLORS['primary'], 'marginBottom': '16px'}),
                         dash_table.DataTable(
                             id='ticker-summary-table',
                             data=[],
                             columns=[
-                                {'name': 'Team', 'id': 'team_name'},
-                                {'name': 'Double GWs', 'id': 'dgw_count', 'type': 'numeric'},
+                                {'name': 'Team',          'id': 'team_name'},
+                                {'name': 'Double GWs',    'id': 'dgw_count', 'type': 'numeric'},
                                 {'name': 'Double GW Weeks', 'id': 'dgw_gws'},
-                                {'name': 'Blank GWs', 'id': 'bgw_count', 'type': 'numeric'},
+                                {'name': 'Blank GWs',     'id': 'bgw_count', 'type': 'numeric'},
                                 {'name': 'Blank GW Weeks', 'id': 'bgw_gws'},
                             ],
                             sort_action='native',
@@ -3211,34 +3212,33 @@ def update_fdr(position, team, max_price, min_minutes):
 def update_fixture_ticker(sort_by, n):
     data = get_data()
     fixtures_data = data.get('fixtures_data', [])
-    teams_df = data.get('teams_df', pd.DataFrame())
+    teams_df      = data.get('teams_df', pd.DataFrame())
     current_gw_info = data.get('current_gw')
-    current_gw_num = current_gw_info['id'] if current_gw_info else 1
+    current_gw_num  = current_gw_info['id'] if current_gw_info else 1
+
+    def _empty(msg):
+        fig = go.Figure()
+        fig.add_annotation(text=msg, xref='paper', yref='paper',
+                           x=0.5, y=0.5, showarrow=False,
+                           font=dict(size=16, color=COLORS['text_light']))
+        fig.update_layout(template='plotly_white', height=500)
+        return fig, []
 
     if teams_df.empty or not fixtures_data:
-        empty = go.Figure()
-        empty.add_annotation(text="Data loading...", xref="paper", yref="paper",
-                             x=0.5, y=0.5, showarrow=False, font=dict(size=16))
-        empty.update_layout(template='plotly_white', height=500)
-        return empty, []
+        return _empty('Data loading — please wait...')
 
-    # Build lookups from teams_df
     team_id_to_short = dict(zip(teams_df['id'], teams_df['short_name']))
     team_id_to_name  = dict(zip(teams_df['id'], teams_df['name']))
     all_team_ids     = sorted(teams_df['id'].tolist())
 
-    # Remaining fixtures only (event assigned and in the future)
+    # Remaining fixtures only (event assigned and still to come)
     remaining = [
         f for f in fixtures_data
         if f.get('event') is not None and f['event'] > current_gw_num
     ]
 
     if not remaining:
-        empty = go.Figure()
-        empty.add_annotation(text="No remaining fixtures found.", xref="paper", yref="paper",
-                             x=0.5, y=0.5, showarrow=False, font=dict(size=16))
-        empty.update_layout(template='plotly_white', height=400)
-        return empty, []
+        return _empty('No remaining fixtures found.')
 
     remaining_gws = sorted(set(f['event'] for f in remaining))
 
@@ -3253,34 +3253,26 @@ def update_fixture_ticker(sort_by, n):
         a_fdr   = f.get('team_a_difficulty', 3)
         h_short = team_id_to_short.get(home_id, '???')
         a_short = team_id_to_short.get(away_id, '???')
-
         if home_id in team_gw and gw in team_gw[home_id]:
             team_gw[home_id][gw].append({'opponent': a_short, 'venue': 'H', 'fdr': h_fdr})
         if away_id in team_gw and gw in team_gw[away_id]:
             team_gw[away_id][gw].append({'opponent': h_short, 'venue': 'A', 'fdr': a_fdr})
 
-    # Sort teams
     def _avg_fdr(tid):
         vals = [fx['fdr'] for gw in remaining_gws for fx in team_gw[tid][gw]]
         return sum(vals) / len(vals) if vals else 5.0
 
-    if sort_by == 'fdr':
-        sorted_ids = sorted(all_team_ids, key=_avg_fdr)
-    else:
-        sorted_ids = sorted(all_team_ids, key=lambda tid: team_id_to_name[tid])
-
+    sorted_ids   = sorted(all_team_ids, key=(_avg_fdr if sort_by == 'fdr' else lambda t: team_id_to_name[t]))
     sorted_names = [team_id_to_name[tid] for tid in sorted_ids]
 
-    # Build z matrix (0=BGW, 1-5=FDR, 6=DGW) and text matrix
-    # z values in [0, 6]; colorscale is piecewise-constant per integer band
-    z_matrix    = []
-    text_matrix = []
+    # Build matrices
+    # z encoding: 0=BGW  1=FDR1  2=FDR2  3=FDR3  4=FDR4  5=FDR5  6=DGW
+    z_matrix     = []
+    text_matrix  = []
     hover_matrix = []
 
     for tid in sorted_ids:
-        z_row    = []
-        text_row = []
-        hover_row = []
+        z_row = []; text_row = []; hover_row = []
         for gw in remaining_gws:
             fixes = team_gw[tid][gw]
             if len(fixes) == 0:
@@ -3293,30 +3285,36 @@ def update_fixture_ticker(sort_by, n):
                 text_row.append(f"{fx['opponent']} ({fx['venue']})")
                 hover_row.append(f"{fx['opponent']} ({fx['venue']})  FDR {fx['fdr']}")
             else:
-                # Double GW — use z=6 for the purple colour
                 z_row.append(6)
-                parts     = [f"{fx['opponent']} ({fx['venue']})" for fx in fixes]
-                hover_parts = [f"{fx['opponent']} ({fx['venue']}) FDR {fx['fdr']}" for fx in fixes]
-                text_row.append(' / '.join(parts))
-                hover_row.append('DGW: ' + ' + '.join(hover_parts))
+                text_row.append(' / '.join(f"{fx['opponent']} ({fx['venue']})" for fx in fixes))
+                hover_row.append('DGW: ' + '  +  '.join(
+                    f"{fx['opponent']} ({fx['venue']}) FDR {fx['fdr']}" for fx in fixes))
         z_matrix.append(z_row)
         text_matrix.append(text_row)
         hover_matrix.append(hover_row)
 
-    # Piecewise-constant colorscale — each integer band gets a solid colour
-    # Normalised positions: n_start = n/6, n_end = (n+1)/6
-    # 0 = BGW (light grey)   1 = FDR1 (bright green)  2 = FDR2 (soft green)
-    # 3 = FDR3 (amber)       4 = FDR4 (orange-red)    5 = FDR5 (red)
-    # 6 = DGW (purple)
-    band_colours = ['#d0d0d0', '#00ff87', '#7dde9e', '#ffc107', '#ff7043', '#dc3545', '#6f42c1']
-    colorscale   = []
-    for i, colour in enumerate(band_colours):
-        colorscale.append([round(i / 6, 6), colour])
-        colorscale.append([round((i + 0.9999) / 6, 6), colour])
+    # Piecewise-constant colorscale — midpoint boundaries between integer z values.
+    # zmin=0, zmax=6.  Normalised position of integer n is n/6.
+    # Each band is centred on its integer; colour switches at (n + 0.5)/6.
+    # All values guaranteed within [0, 1].
+    colorscale = [
+        [0/6,    '#d0d0d0'],  # 0 BGW  (grey)
+        [0.5/6,  '#d0d0d0'],
+        [0.5/6,  '#00ff87'],  # 1 FDR1 (bright green)
+        [1.5/6,  '#00ff87'],
+        [1.5/6,  '#7dde9e'],  # 2 FDR2 (soft green)
+        [2.5/6,  '#7dde9e'],
+        [2.5/6,  '#ffc107'],  # 3 FDR3 (amber)
+        [3.5/6,  '#ffc107'],
+        [3.5/6,  '#ff7043'],  # 4 FDR4 (orange-red)
+        [4.5/6,  '#ff7043'],
+        [4.5/6,  '#dc3545'],  # 5 FDR5 (red)
+        [5.5/6,  '#dc3545'],
+        [5.5/6,  '#6f42c1'],  # 6 DGW  (purple)
+        [1.0,    '#6f42c1'],
+    ]
 
-    n_teams = len(sorted_ids)
-    n_gws   = len(remaining_gws)
-    height  = max(520, n_teams * 34 + 120)
+    height = max(520, len(sorted_ids) * 34 + 120)
 
     fig = go.Figure(go.Heatmap(
         z=z_matrix,
@@ -3344,14 +3342,13 @@ def update_fixture_ticker(sort_by, n):
         margin=dict(l=110, r=20, t=60, b=10),
     )
 
-    # Summary table — BGW/DGW counts per team
+    # Summary table
     summary_rows = []
     for tid in all_team_ids:
-        name     = team_id_to_name[tid]
-        dgw_gws  = [f"GW{gw}" for gw in remaining_gws if len(team_gw[tid][gw]) >= 2]
-        bgw_gws  = [f"GW{gw}" for gw in remaining_gws if len(team_gw[tid][gw]) == 0]
+        dgw_gws = [f"GW{gw}" for gw in remaining_gws if len(team_gw[tid][gw]) >= 2]
+        bgw_gws = [f"GW{gw}" for gw in remaining_gws if len(team_gw[tid][gw]) == 0]
         summary_rows.append({
-            'team_name': name,
+            'team_name': team_id_to_name[tid],
             'dgw_count': len(dgw_gws),
             'bgw_count': len(bgw_gws),
             'dgw_gws':   ', '.join(dgw_gws) if dgw_gws else '—',
