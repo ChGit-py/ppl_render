@@ -1905,7 +1905,7 @@ app.layout = html.Div([
                             html.Span("FDR 4", style={'fontSize': '13px', 'marginRight': '14px', 'color': COLORS['text_dark']}),
                             html.Span("■", style={'color': '#dc3545', 'fontSize': '20px', 'marginRight': '4px'}),
                             html.Span("FDR 5", style={'fontSize': '13px', 'marginRight': '14px', 'color': COLORS['text_dark']}),
-                            html.Span("■", style={'color': '#6f42c1', 'fontSize': '20px', 'marginRight': '4px'}),
+                            html.Span("■", style={'color': '#00bcd4', 'fontSize': '20px', 'marginRight': '4px'}),
                             html.Span("Double GW", style={'fontSize': '13px', 'marginRight': '14px', 'color': COLORS['text_dark']}),
                             html.Span("■", style={'color': '#d0d0d0', 'fontSize': '20px', 'marginRight': '4px'}),
                             html.Span("Blank GW", style={'fontSize': '13px', 'color': COLORS['text_dark']}),
@@ -1928,7 +1928,7 @@ app.layout = html.Div([
                     ], style=CARD_STYLE),
 
                     html.Div([
-                        html.H3("Fixture Grid — Remaining Season",
+                        html.H3("Fixture Grid: Remainder of the Season",
                                 style={'color': COLORS['primary'], 'marginBottom': '4px'}),
                         html.P("Opponent shown in each cell (H = home, A = away). "
                                "Double GW cells show both fixtures.",
@@ -1936,33 +1936,6 @@ app.layout = html.Div([
                         dcc.Graph(id='ticker-heatmap', config={'displayModeBar': False})
                     ], style=CARD_STYLE),
 
-                    html.Div([
-                        html.H4("Blank & Double Gameweek Summary",
-                                style={'color': COLORS['primary'], 'marginBottom': '16px'}),
-                        dash_table.DataTable(
-                            id='ticker-summary-table',
-                            data=[],
-                            columns=[
-                                {'name': 'Team',          'id': 'team_name'},
-                                {'name': 'Double GWs',    'id': 'dgw_count', 'type': 'numeric'},
-                                {'name': 'Double GW Weeks', 'id': 'dgw_gws'},
-                                {'name': 'Blank GWs',     'id': 'bgw_count', 'type': 'numeric'},
-                                {'name': 'Blank GW Weeks', 'id': 'bgw_gws'},
-                            ],
-                            sort_action='native',
-                            page_size=20,
-                            style_cell=TABLE_STYLE_CELL,
-                            style_header=TABLE_STYLE_HEADER,
-                            style_data=TABLE_STYLE_DATA,
-                            style_data_conditional=[
-                                {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
-                                {'if': {'filter_query': '{dgw_count} > 0', 'column_id': 'dgw_count'},
-                                 'backgroundColor': '#ede7f6', 'color': '#6f42c1', 'fontWeight': '700'},
-                                {'if': {'filter_query': '{bgw_count} > 0', 'column_id': 'bgw_count'},
-                                 'backgroundColor': '#ffebee', 'color': COLORS['danger'], 'fontWeight': '700'},
-                            ]
-                        )
-                    ], style=CARD_STYLE)
                 ], style={'padding': '20px 0'})
             ]),
 
@@ -3206,7 +3179,7 @@ def update_fdr(position, team, max_price, min_minutes):
 
 # --- FIXTURE TICKER ---
 @callback(
-    [Output('ticker-heatmap', 'figure'), Output('ticker-summary-table', 'data')],
+    [Output('ticker-heatmap', 'figure')],
     [Input('ticker-sort', 'value'), Input('refresh-interval', 'n_intervals')]
 )
 def update_fixture_ticker(sort_by, n):
@@ -3222,7 +3195,7 @@ def update_fixture_ticker(sort_by, n):
                            x=0.5, y=0.5, showarrow=False,
                            font=dict(size=16, color=COLORS['text_light']))
         fig.update_layout(template='plotly_white', height=500)
-        return fig, []
+        return [fig]
 
     if teams_df.empty or not fixtures_data:
         return _empty('Data loading — please wait...')
@@ -3310,8 +3283,8 @@ def update_fixture_ticker(sort_by, n):
         [4.5/6,  '#ff7043'],
         [4.5/6,  '#dc3545'],  # 5 FDR5 (red)
         [5.5/6,  '#dc3545'],
-        [5.5/6,  '#6f42c1'],  # 6 DGW  (purple)
-        [1.0,    '#6f42c1'],
+        [5.5/6,  '#00bcd4'],  # 6 DGW  (cyan — distinct from FDR scale, readable with dark text)
+        [1.0,    '#00bcd4'],
     ]
 
     height = max(520, len(sorted_ids) * 34 + 120)
@@ -3342,21 +3315,7 @@ def update_fixture_ticker(sort_by, n):
         margin=dict(l=110, r=20, t=60, b=10),
     )
 
-    # Summary table
-    summary_rows = []
-    for tid in all_team_ids:
-        dgw_gws = [f"GW{gw}" for gw in remaining_gws if len(team_gw[tid][gw]) >= 2]
-        bgw_gws = [f"GW{gw}" for gw in remaining_gws if len(team_gw[tid][gw]) == 0]
-        summary_rows.append({
-            'team_name': team_id_to_name[tid],
-            'dgw_count': len(dgw_gws),
-            'bgw_count': len(bgw_gws),
-            'dgw_gws':   ', '.join(dgw_gws) if dgw_gws else '—',
-            'bgw_gws':   ', '.join(bgw_gws) if bgw_gws else '—',
-        })
-
-    summary_rows.sort(key=lambda r: (-r['dgw_count'], r['bgw_count'], r['team_name']))
-    return fig, summary_rows
+    return [fig]
 
 
 # --- OWNERSHIP DIFFERENTIALS ---
