@@ -787,18 +787,32 @@ app.index_string = '''
                 padding: 10px 14px !important;
             }
 
-            /* Tabs: scrollable row */
+            /* Tabs: scrollable row — never wrap or squish */
             .tab-container,
-            .tab-parent {
+            .tab-parent,
+            .react-tabs__tab-list,
+            [role="tablist"] {
                 overflow-x: auto !important;
+                overflow-y: hidden !important;
                 -webkit-overflow-scrolling: touch;
                 flex-wrap: nowrap !important;
+                display: flex !important;
+                scrollbar-width: thin;
             }
 
-            /* Tab labels: left-aligned text */
-            .tab, 
-            .tab--selected {
-                text-align: left !important;
+            /* Each tab: fixed comfortable width, never shrink */
+            .tab,
+            .tab--selected,
+            .react-tabs__tab {
+                flex-shrink: 0 !important;
+                white-space: normal !important;
+                min-width: 110px !important;
+                max-width: 140px !important;
+                text-align: center !important;
+                padding: 10px 12px !important;
+                font-size: 13px !important;
+                line-height: 1.3 !important;
+                box-sizing: border-box !important;
             }
 
             /* === TABLET & BELOW (768px) === */
@@ -1152,7 +1166,9 @@ app.layout = html.Div([
 
     # Main Content
     html.Div([
-        dcc.Tabs(id='main-tabs', value='home', children=[
+        dcc.Tabs(id='main-tabs', value='home',
+                 style={'overflowX': 'auto', 'flexWrap': 'nowrap'},
+                 children=[
 
             # HOME TAB
             dcc.Tab(label='Home', value='home', children=[
