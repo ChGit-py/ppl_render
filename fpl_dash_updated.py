@@ -1661,8 +1661,8 @@ app.layout = html.Div([
                             style_data=TABLE_STYLE_DATA,
                             style_data_conditional=[
                                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
-                                {'if': {'filter_query': '{xgi_diff_per_90} < -0.1', 'column_id': 'xgi_diff_per_90'}, 'backgroundColor': '#e8f5e9'},
-                                {'if': {'filter_query': '{xgi_diff_per_90} > 0.1', 'column_id': 'xgi_diff_per_90'}, 'backgroundColor': '#ffebee'},
+                                {'if': {'filter_query': '{xgi_diff_per_90} < -0.1', 'column_id': 'xgi_diff_per_90'}, 'backgroundColor': '#ffebee'},
+                                {'if': {'filter_query': '{xgi_diff_per_90} > 0.1', 'column_id': 'xgi_diff_per_90'}, 'backgroundColor': '#e8f5e9'},
                             ]
                         )
                     ], style=CARD_STYLE)
