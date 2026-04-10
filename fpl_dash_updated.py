@@ -1904,7 +1904,7 @@ app.layout = html.Div([
                         html.P([
                             "Every team's remaining fixtures at a glance. ",
                             html.Strong("Blanks"), " (grey) = no fixture that gameweek. ",
-                            html.Strong("Doubles"), " (purple) = two fixtures in one gameweek. ",
+                            html.Strong("Doubles"), " (cyan) = two fixtures in one gameweek. ",
                             "Single fixtures are colour-coded by FDR: ",
                             html.Strong("green = easy"), ", ",
                             html.Strong("amber = medium"), ", ",
