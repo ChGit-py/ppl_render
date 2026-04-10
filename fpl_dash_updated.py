@@ -810,9 +810,10 @@ app.index_string = '''
                 max-width: 140px !important;
                 text-align: center !important;
                 padding: 10px 12px !important;
-                font-size: 13px !important;
+                font-size: 14px !important;
                 line-height: 1.3 !important;
                 box-sizing: border-box !important;
+                font-weight: 500 !important;
             }
 
             /* === TABLET & BELOW (768px) === */
