@@ -797,8 +797,6 @@ app.index_string = '''
                 min-width: 230px;
                 background: #ffffff;
                 border-right: 1px solid #e0e0e0;
-                display: flex;
-                flex-direction: column;
                 position: sticky;
                 top: 64px;
                 height: calc(100vh - 64px);
