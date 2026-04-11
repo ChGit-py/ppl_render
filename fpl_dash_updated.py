@@ -810,11 +810,11 @@ app.index_string = '''
 
             /* Group label */
             .nav-group-label {
-                font-size: 10px;
+                font-size: 12px;
                 font-weight: 700;
                 text-transform: uppercase;
                 letter-spacing: 1px;
-                color: #999;
+                color: #37003c;
                 padding: 18px 20px 6px 20px;
                 margin: 0;
             }
