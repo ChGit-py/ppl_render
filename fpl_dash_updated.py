@@ -811,7 +811,7 @@ app.index_string = '''
 
             /* Group label */
             .nav-group-label {
-                font-size: 10px;
+                font-size: 13px;
                 font-weight: 700;
                 text-transform: uppercase;
                 letter-spacing: 1px;
