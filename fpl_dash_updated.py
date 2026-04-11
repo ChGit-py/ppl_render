@@ -853,13 +853,6 @@ app.index_string = '''
                 font-weight: 700;
             }
 
-            .nav-item .nav-icon {
-                font-size: 15px;
-                width: 20px;
-                text-align: center;
-                flex-shrink: 0;
-            }
-
             /* --- Content area --- */
             #content-area {
                 flex: 1;
@@ -1241,47 +1234,47 @@ app.layout = html.Div([
             children=[
                 # OVERVIEW
                 html.P('Overview', className='nav-group-label'),
-                html.Button([html.Span('🏠', className='nav-icon'), 'Home'],
+                html.Button('Home',
                             id='nav-home', className='nav-item active', n_clicks=0),
 
                 # DEFENSIVE
                 html.P('Defensive', className='nav-group-label'),
-                html.Button([html.Span('⭐', className='nav-icon'), 'DEFCON Bonus'],
+                html.Button('DEFCON Bonus',
                             id='nav-defcon-bonus', className='nav-item', n_clicks=0),
-                html.Button([html.Span('📊', className='nav-icon'), 'DEFCON: Consistency'],
+                html.Button('DEFCON: Consistency',
                             id='nav-bonus-consistency', className='nav-item', n_clicks=0),
-                html.Button([html.Span('🔢', className='nav-icon'), 'DEFCONS'],
+                html.Button('DEFCONS',
                             id='nav-defcon', className='nav-item', n_clicks=0),
-                html.Button([html.Span('🧤', className='nav-icon'), 'Clean Sheets'],
+                html.Button('Clean Sheets',
                             id='nav-cs', className='nav-item', n_clicks=0),
 
                 # ATTACKING
                 html.P('Attacking', className='nav-group-label'),
-                html.Button([html.Span('⚽', className='nav-icon'), 'xG & Assists'],
+                html.Button('xG & Assists',
                             id='nav-xg', className='nav-item', n_clicks=0),
-                html.Button([html.Span('📈', className='nav-icon'), 'Underlying Numbers'],
+                html.Button('Underlying Numbers',
                             id='nav-underlying', className='nav-item', n_clicks=0),
 
                 # VALUE & FORM
                 html.P('Value & Form', className='nav-group-label'),
-                html.Button([html.Span('💰', className='nav-icon'), 'Value Analysis'],
+                html.Button('Value Analysis',
                             id='nav-value', className='nav-item', n_clicks=0),
-                html.Button([html.Span('🔥', className='nav-icon'), 'Form Tracker'],
+                html.Button('Form Tracker',
                             id='nav-form', className='nav-item', n_clicks=0),
 
                 # PLANNING
                 html.P('Planning', className='nav-group-label'),
-                html.Button([html.Span('📅', className='nav-icon'), 'Fixture Ticker'],
+                html.Button('Fixture Ticker',
                             id='nav-fixture-ticker', className='nav-item', n_clicks=0),
-                html.Button([html.Span('📉', className='nav-icon'), 'Fixture Difficulty'],
+                html.Button('Fixture Difficulty',
                             id='nav-fixtures', className='nav-item', n_clicks=0),
-                html.Button([html.Span('🎯', className='nav-icon'), 'Differentials'],
+                html.Button('Differentials',
                             id='nav-differentials', className='nav-item', n_clicks=0),
-                html.Button([html.Span('👑', className='nav-icon'), 'Captain Optimiser'],
+                html.Button('Captain Optimiser',
                             id='nav-captain', className='nav-item', n_clicks=0),
-                html.Button([html.Span('🔄', className='nav-icon'), 'Transfer Trends'],
+                html.Button('Transfer Trends',
                             id='nav-transfers', className='nav-item', n_clicks=0),
-                html.Button([html.Span('🏗', className='nav-icon'), 'Squad Builder'],
+                html.Button('Squad Builder',
                             id='nav-squad-builder', className='nav-item', n_clicks=0),
             ]
         ),
