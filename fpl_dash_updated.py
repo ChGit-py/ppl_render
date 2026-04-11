@@ -6,7 +6,7 @@ Track Defensive Contributions, Expected Metrics, and Value Picks
 import requests
 import pandas as pd
 import numpy as np
-from dash import Dash, html, dcc, dash_table, callback, Output, Input, State
+from dash import Dash, html, dcc, dash_table, callback, Output, Input, State, ctx
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
@@ -769,69 +769,163 @@ app.index_string = '''
         {%favicon%}
         {%css%}
         <style>
-            /* === ALWAYS ACTIVE (all screen sizes) === */
+            /* ================================================================
+               BASE — all screen sizes
+            ================================================================ */
 
-            /* Make tables horizontally scrollable */
+            * { box-sizing: border-box; }
+
+            /* Horizontal scroll for tables */
             .dash-spreadsheet-container {
                 overflow-x: auto !important;
                 -webkit-overflow-scrolling: touch;
             }
 
-            /* Tabs: single-line, left-aligned, scrollable */
-            .tab,
-            .tab--selected {
-                text-align: left !important;
-                white-space: normal !important;
-                overflow: visible !important;
-                min-width: 100px !important;
-                padding: 10px 14px !important;
+            /* ================================================================
+               SIDEBAR LAYOUT
+            ================================================================ */
+
+            #app-body {
+                display: flex;
+                min-height: calc(100vh - 64px);
+                position: relative;
             }
 
-            /* Tabs: scrollable row — never wrap or squish */
-            .tab-container,
-            .tab-parent,
-            .react-tabs__tab-list,
-            [role="tablist"] {
-                overflow-x: auto !important;
-                overflow-y: hidden !important;
-                -webkit-overflow-scrolling: touch;
-                flex-wrap: nowrap !important;
-                display: flex !important;
-                scrollbar-width: thin;
+            /* --- Sidebar --- */
+            #sidebar {
+                width: 230px;
+                min-width: 230px;
+                background: #ffffff;
+                border-right: 1px solid #e0e0e0;
+                display: flex;
+                flex-direction: column;
+                position: sticky;
+                top: 64px;
+                height: calc(100vh - 64px);
+                overflow-y: auto;
+                overflow-x: hidden;
+                z-index: 500;
+                transition: transform 0.28s ease;
+                flex-shrink: 0;
+                padding-bottom: 24px;
             }
 
-            /* Each tab: fixed comfortable width, never shrink */
-            .tab,
-            .tab--selected,
-            .react-tabs__tab {
-                flex-shrink: 0 !important;
-                white-space: normal !important;
-                min-width: 110px !important;
-                max-width: 140px !important;
-                text-align: center !important;
-                padding: 10px 12px !important;
-                font-size: 14px !important;
-                line-height: 1.3 !important;
-                box-sizing: border-box !important;
-                font-weight: 500 !important;
+            /* Group label */
+            .nav-group-label {
+                font-size: 10px;
+                font-weight: 700;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+                color: #999;
+                padding: 18px 20px 6px 20px;
+                margin: 0;
             }
 
-            /* === TABLET & BELOW (768px) === */
-            @media (max-width: 768px) {
+            /* Nav item button */
+            .nav-item {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                width: 100%;
+                background: none;
+                border: none;
+                border-left: 3px solid transparent;
+                padding: 9px 16px 9px 17px;
+                font-size: 13.5px;
+                font-family: Arial, sans-serif;
+                font-weight: 500;
+                color: #444;
+                cursor: pointer;
+                text-align: left;
+                transition: background 0.15s, color 0.15s, border-color 0.15s;
+                line-height: 1.3;
+            }
 
-                /* Charts: fill available width */
+            .nav-item:hover {
+                background: #f5f5f5;
+                color: #37003c;
+            }
+
+            .nav-item.active {
+                background: #f0e6f6;
+                color: #37003c;
+                border-left-color: #37003c;
+                font-weight: 700;
+            }
+
+            .nav-item .nav-icon {
+                font-size: 15px;
+                width: 20px;
+                text-align: center;
+                flex-shrink: 0;
+            }
+
+            /* --- Content area --- */
+            #content-area {
+                flex: 1;
+                min-width: 0;
+                padding: 24px 20px;
+                background: #f5f5f5;
+            }
+
+            /* --- Mobile overlay --- */
+            #sidebar-overlay {
+                display: none;
+                position: fixed;
+                inset: 0;
+                background: rgba(0,0,0,0.45);
+                z-index: 499;
+            }
+
+            /* --- Hamburger button (hidden on desktop) --- */
+            #hamburger-btn {
+                display: none;
+                background: none;
+                border: none;
+                color: white;
+                font-size: 22px;
+                cursor: pointer;
+                padding: 4px 10px 4px 0;
+                line-height: 1;
+            }
+
+            /* ================================================================
+               TABLET & BELOW  (≤ 900px)
+            ================================================================ */
+            @media (max-width: 900px) {
+
+                #hamburger-btn { display: block; }
+
+                #sidebar {
+                    position: fixed;
+                    top: 0;
+                    left: 0;
+                    height: 100vh;
+                    transform: translateX(-100%);
+                    z-index: 600;
+                    box-shadow: 4px 0 16px rgba(0,0,0,0.18);
+                }
+
+                #sidebar.sidebar-open {
+                    transform: translateX(0);
+                }
+
+                #sidebar-overlay.overlay-open {
+                    display: block;
+                }
+
+                #content-area {
+                    padding: 12px 8px;
+                }
+
                 .js-plotly-plot,
                 .js-plotly-plot .plotly,
                 .js-plotly-plot .plotly .main-svg {
                     width: 100% !important;
                 }
 
-                /* Filter rows: stack vertically */
-                .dash-dropdown {
-                    min-width: 100% !important;
-                }
+                .dash-dropdown { min-width: 100% !important; }
 
-                /* Force flex containers to wrap and go full width */
                 [style*="display: flex"] > div[style*="minWidth"] {
                     min-width: 100% !important;
                     flex: 1 1 100% !important;
@@ -840,37 +934,22 @@ app.index_string = '''
                     margin-bottom: 10px;
                 }
 
-                /* Stat cards: 2 per row */
                 [style*="margin: 0 -10px"] > div {
                     flex: 1 1 45% !important;
                     min-width: 45% !important;
                 }
 
-                /* Player spotlight cards: full width stack */
                 [style*="gap: 20px"] > div {
                     flex: 1 1 100% !important;
                     min-width: 100% !important;
                 }
 
-                /* Card padding reduction */
-                [style*="padding: 24px"] {
-                    padding: 16px !important;
-                }
+                [style*="padding: 24px"] { padding: 16px !important; }
 
-                /* Reduce heading sizes */
                 h2 { font-size: 22px !important; }
                 h3 { font-size: 18px !important; }
                 h4 { font-size: 16px !important; }
 
-                /* Tab labels: compact */
-                .tab,
-                .tab--selected {
-                    font-size: 11px !important;
-                    padding: 8px 6px !important;
-                    white-space: nowrap !important;
-                }
-
-                /* Table cells: tighter */
                 .dash-cell,
                 .dash-spreadsheet-container td {
                     padding: 8px 6px !important;
@@ -882,42 +961,25 @@ app.index_string = '''
                     font-size: 11px !important;
                 }
 
-                /* Slider: add breathing room */
                 .rc-slider {
                     margin-left: 8px !important;
                     margin-right: 8px !important;
                 }
-
-                /* Main content: reduce side padding */
-                [style*="padding: 24px 20px"] {
-                    padding: 12px 8px !important;
-                }
-
-                /* Header: tighter */
-                [style*="padding: 16px 0"] {
-                    padding: 10px 0 !important;
-                }
             }
 
-            /* === PHONE (480px and below) === */
+            /* ================================================================
+               PHONE  (≤ 480px)
+            ================================================================ */
             @media (max-width: 480px) {
                 h2 { font-size: 18px !important; }
                 h3 { font-size: 16px !important; }
                 h4 { font-size: 14px !important; }
 
-                .tab,
-                .tab--selected {
-                    font-size: 10px !important;
-                    padding: 6px 4px !important;
-                }
-
-                /* Stat cards: stack to 1 per row on very small screens */
                 [style*="margin: 0 -10px"] > div {
                     flex: 1 1 100% !important;
                     min-width: 100% !important;
                 }
 
-                /* Table font even smaller */
                 .dash-cell,
                 .dash-spreadsheet-container td {
                     padding: 6px 4px !important;
@@ -929,10 +991,7 @@ app.index_string = '''
                     font-size: 10px !important;
                 }
 
-                /* Chart height: reduce on tiny screens */
-                .js-plotly-plot {
-                    max-height: 300px !important;
-                }
+                .js-plotly-plot { max-height: 300px !important; }
             }
         </style>
     </head>
@@ -1138,13 +1197,17 @@ home_value_cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'tot
 # =============================================================================
 
 app.layout = html.Div([
-    # Auto-refresh interval (checks every 2 minutes; picks up Phase 2 data promptly)
+    # Interval + stores
     dcc.Interval(id='refresh-interval', interval=2 * 60 * 1000, n_intervals=0),
+    dcc.Store(id='active-page', data='home'),
+    dcc.Store(id='sidebar-open', data=False),
 
     # Header
     html.Div([
         html.Div([
             html.Div([
+                # Hamburger (visible on mobile only via CSS)
+                html.Button('☰', id='hamburger-btn', n_clicks=0),
                 html.Img(src="/assets/premier_league_logo.png",
                          style={'height': '40px', 'marginRight': '12px'}),
                 html.Span("Fantasy Premier League 2025/26",
@@ -1161,23 +1224,78 @@ app.layout = html.Div([
                           style={'color': 'rgba(255,255,255,0.6)', 'fontSize': '12px'})
             ])
         ], style={'display': 'flex', 'justifyContent': 'space-between', 'alignItems': 'center',
-                  'maxWidth': '1400px', 'margin': '0 auto', 'padding': '0 20px'})
-    ], style={'backgroundColor': COLORS['primary'], 'padding': '16px 0', 'position': 'sticky',
+                  'maxWidth': '100%', 'margin': '0 auto', 'padding': '0 20px'})
+    ], style={'backgroundColor': COLORS['primary'], 'padding': '12px 0', 'position': 'sticky',
               'top': '0', 'zIndex': '1000', 'boxShadow': '0 2px 8px rgba(0,0,0,0.15)'}),
 
-    # Main Content
+    # Body: sidebar + content
     html.Div([
-        dcc.Tabs(id='main-tabs', value='home',
-                 style={'overflowX': 'auto', 'flexWrap': 'nowrap'},
-                 children=[
 
-            # HOME TAB
-            dcc.Tab(label='Home', value='home', children=[
+        # Mobile overlay
+        html.Div(id='sidebar-overlay', n_clicks=0),
+
+        # Sidebar nav
+        html.Div(
+            id='sidebar',
+            className='sidebar',
+            children=[
+                # OVERVIEW
+                html.P('Overview', className='nav-group-label'),
+                html.Button([html.Span('🏠', className='nav-icon'), 'Home'],
+                            id='nav-home', className='nav-item active', n_clicks=0),
+
+                # DEFENSIVE
+                html.P('Defensive', className='nav-group-label'),
+                html.Button([html.Span('⭐', className='nav-icon'), 'DEFCON Bonus'],
+                            id='nav-defcon-bonus', className='nav-item', n_clicks=0),
+                html.Button([html.Span('📊', className='nav-icon'), 'DEFCON: Consistency'],
+                            id='nav-bonus-consistency', className='nav-item', n_clicks=0),
+                html.Button([html.Span('🔢', className='nav-icon'), 'DEFCONS'],
+                            id='nav-defcon', className='nav-item', n_clicks=0),
+                html.Button([html.Span('🧤', className='nav-icon'), 'Clean Sheets'],
+                            id='nav-cs', className='nav-item', n_clicks=0),
+
+                # ATTACKING
+                html.P('Attacking', className='nav-group-label'),
+                html.Button([html.Span('⚽', className='nav-icon'), 'xG & Assists'],
+                            id='nav-xg', className='nav-item', n_clicks=0),
+                html.Button([html.Span('📈', className='nav-icon'), 'Underlying Numbers'],
+                            id='nav-underlying', className='nav-item', n_clicks=0),
+
+                # VALUE & FORM
+                html.P('Value & Form', className='nav-group-label'),
+                html.Button([html.Span('💰', className='nav-icon'), 'Value Analysis'],
+                            id='nav-value', className='nav-item', n_clicks=0),
+                html.Button([html.Span('🔥', className='nav-icon'), 'Form Tracker'],
+                            id='nav-form', className='nav-item', n_clicks=0),
+
+                # PLANNING
+                html.P('Planning', className='nav-group-label'),
+                html.Button([html.Span('📅', className='nav-icon'), 'Fixture Ticker'],
+                            id='nav-fixture-ticker', className='nav-item', n_clicks=0),
+                html.Button([html.Span('📉', className='nav-icon'), 'Fixture Difficulty'],
+                            id='nav-fixtures', className='nav-item', n_clicks=0),
+                html.Button([html.Span('🎯', className='nav-icon'), 'Differentials'],
+                            id='nav-differentials', className='nav-item', n_clicks=0),
+                html.Button([html.Span('👑', className='nav-icon'), 'Captain Optimiser'],
+                            id='nav-captain', className='nav-item', n_clicks=0),
+                html.Button([html.Span('🔄', className='nav-icon'), 'Transfer Trends'],
+                            id='nav-transfers', className='nav-item', n_clicks=0),
+                html.Button([html.Span('🏗', className='nav-icon'), 'Squad Builder'],
+                            id='nav-squad-builder', className='nav-item', n_clicks=0),
+            ]
+        ),
+
+        # Content area — all pages live here, show/hide via callback
+        html.Div(id='content-area', children=[
+
+            # HOME PAGE
+            html.Div(id='page-home', style={'display': 'block'}, children=[
                 html.Div(id='home-content')
             ]),
 
-            # DEFCON BONUS TAB
-            dcc.Tab(label='DEFCON Bonus', value='defcon-bonus', children=[
+            # DEFCON BONUS PAGE
+            html.Div(id='page-defcon-bonus', style={'display': 'none'}, children=[
                 html.Div([
                     html.Div([
                         html.H3("Understanding Defensive Contribution Bonuses",
@@ -1283,7 +1401,8 @@ app.layout = html.Div([
             ]),
 
             # BONUS CONSISTENCY TAB
-            dcc.Tab(label='DEFCON: Consistency', value='bonus-consistency', children=[
+            # BONUS CONSISTENCY PAGE
+            html.Div(id='page-bonus-consistency', style={'display': 'none'}, children=[
                 html.Div([
                     # Explanation Card
                     html.Div([
@@ -1408,7 +1527,8 @@ app.layout = html.Div([
             ]),
 
             # DEFENSIVE CONTRIBUTIONS TAB
-            dcc.Tab(label='DEFCONS', value='defcon', children=[
+            # DEFCONS PAGE
+            html.Div(id='page-defcon', style={'display': 'none'}, children=[
                 html.Div([
                     html.Div([
                         html.Div([
@@ -1493,7 +1613,8 @@ app.layout = html.Div([
             ]),
 
             # XG TAB
-            dcc.Tab(label='Expected Goals & Assists', value='xg', children=[
+            # XG PAGE
+            html.Div(id='page-xg', style={'display': 'none'}, children=[
                 html.Div([
                     html.Div([
                         html.Div([
@@ -1577,7 +1698,8 @@ app.layout = html.Div([
             ]),
 
             # UNDERLYING NUMBERS TAB
-            dcc.Tab(label='Player Underlying Numbers', value='underlying', children=[
+            # UNDERLYING NUMBERS PAGE
+            html.Div(id='page-underlying', style={'display': 'none'}, children=[
                 html.Div([
                     # Explanation
                     html.Div([
@@ -1671,7 +1793,8 @@ app.layout = html.Div([
             ]),
 
             # VALUE TAB
-            dcc.Tab(label='Value Analysis', value='value', children=[
+            # VALUE PAGE
+            html.Div(id='page-value', style={'display': 'none'}, children=[
                 html.Div([
                     html.Div([
                         html.Div([
@@ -1744,7 +1867,8 @@ app.layout = html.Div([
             ]),
 
             # FORM TAB
-            dcc.Tab(label='Form Tracker', value='form', children=[
+            # FORM PAGE
+            html.Div(id='page-form', style={'display': 'none'}, children=[
                 html.Div([
                     html.Div([
                         html.Div([
@@ -1823,7 +1947,8 @@ app.layout = html.Div([
             ]),
 
             # CLEAN SHEETS TAB
-            dcc.Tab(label='Clean Sheets', value='cs', children=[
+            # CLEAN SHEETS PAGE
+            html.Div(id='page-cs', style={'display': 'none'}, children=[
                 html.Div([
                     html.Div([
                         html.Div([
@@ -1898,7 +2023,8 @@ app.layout = html.Div([
             ]),
 
             # FIXTURE TICKER TAB
-            dcc.Tab(label='Fixture Ticker', value='fixture-ticker', children=[
+            # FIXTURE TICKER PAGE
+            html.Div(id='page-fixture-ticker', style={'display': 'none'}, children=[
                 html.Div([
                     html.Div([
                         html.H3("Team Fixture Ticker", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
@@ -1957,7 +2083,8 @@ app.layout = html.Div([
             ]),
 
             # FIXTURE DIFFICULTY TAB
-            dcc.Tab(label='Fixture Difficulty', value='fixtures', children=[
+            # FIXTURE DIFFICULTY PAGE
+            html.Div(id='page-fixtures', style={'display': 'none'}, children=[
                 html.Div([
                     # Explanation Card
                     html.Div([
@@ -2072,7 +2199,8 @@ app.layout = html.Div([
             # =================================================================
             # OWNERSHIP DIFFERENTIALS TAB
             # =================================================================
-            dcc.Tab(label='Ownership Differentials', value='differentials', children=[
+            # OWNERSHIP DIFFERENTIALS PAGE
+            html.Div(id='page-differentials', style={'display': 'none'}, children=[
                 html.Div([
                     html.Div([
                         html.H3("Ownership Differentials", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
@@ -2195,7 +2323,8 @@ app.layout = html.Div([
             # =================================================================
             # CAPTAIN OPTIMISER TAB
             # =================================================================
-            dcc.Tab(label='Captain Optimiser', value='captain', children=[
+            # CAPTAIN OPTIMISER PAGE
+            html.Div(id='page-captain', style={'display': 'none'}, children=[
                 html.Div([
                     html.Div([
                         html.H3("Captain Pick Optimiser", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
@@ -2316,7 +2445,8 @@ app.layout = html.Div([
             # =================================================================
             # TRANSFER TRENDS TAB
             # =================================================================
-            dcc.Tab(label='Transfer Trends', value='transfers', children=[
+            # TRANSFER TRENDS PAGE
+            html.Div(id='page-transfers', style={'display': 'none'}, children=[
                 html.Div([
                     html.Div([
                         html.H3("Transfer Trends & Price Prediction",
@@ -2442,7 +2572,8 @@ app.layout = html.Div([
             # =================================================================
             # SQUAD BUILDER TAB
             # =================================================================
-            dcc.Tab(label='Squad Builder', value='squad-builder', children=[
+            # SQUAD BUILDER PAGE
+            html.Div(id='page-squad-builder', style={'display': 'none'}, children=[
                 html.Div([
 
                     # Explanation
@@ -2559,9 +2690,10 @@ app.layout = html.Div([
 
                 ], style={'padding': '20px 0'})
             ]),
-        ])
-    ], style={'maxWidth': '1400px', 'margin': '0 auto', 'padding': '24px 20px',
-              'backgroundColor': COLORS['background'], 'minHeight': 'calc(100vh - 60px)'}),
+
+        ]),  # end content-area
+
+    ], id='app-body'),  # end app-body (sidebar + content)
 
     # Footer
     html.Div([
@@ -2578,7 +2710,78 @@ app.layout = html.Div([
 # CALLBACKS
 # =============================================================================
 
-# Auto-refresh: update last-updated text and trigger staleness check
+# All page values in order
+ALL_PAGES = [
+    'home', 'defcon-bonus', 'bonus-consistency', 'defcon',
+    'xg', 'underlying', 'value', 'form', 'cs',
+    'fixture-ticker', 'fixtures', 'differentials',
+    'captain', 'transfers', 'squad-builder',
+]
+
+# --- NAV: clicks → active-page store ---
+@callback(
+    Output('active-page', 'data'),
+    [Input(f'nav-{p}', 'n_clicks') for p in ALL_PAGES],
+    prevent_initial_call=True
+)
+def set_active_page(*_):
+    if ctx.triggered_id:
+        return ctx.triggered_id[4:]  # strip 'nav-' prefix
+    return 'home'
+
+
+# --- PAGES: active-page store → show/hide each page div ---
+@callback(
+    [Output(f'page-{p}', 'style') for p in ALL_PAGES],
+    Input('active-page', 'data')
+)
+def show_active_page(active):
+    return [
+        {'display': 'block'} if p == active else {'display': 'none'}
+        for p in ALL_PAGES
+    ]
+
+
+# --- NAV ITEMS: highlight active nav button ---
+@callback(
+    [Output(f'nav-{p}', 'className') for p in ALL_PAGES],
+    Input('active-page', 'data')
+)
+def highlight_nav(active):
+    return [
+        'nav-item active' if p == active else 'nav-item'
+        for p in ALL_PAGES
+    ]
+
+
+# --- SIDEBAR: toggle open/closed on mobile ---
+@callback(
+    Output('sidebar-open', 'data'),
+    [Input('hamburger-btn', 'n_clicks'),
+     Input('sidebar-overlay', 'n_clicks'),
+     Input('active-page', 'data')],
+    State('sidebar-open', 'data'),
+    prevent_initial_call=True
+)
+def toggle_sidebar(hamburger_clicks, overlay_clicks, active_page, is_open):
+    trigger = ctx.triggered_id
+    if trigger == 'hamburger-btn':
+        return not is_open
+    return False  # overlay click or page navigation → close
+
+
+@callback(
+    [Output('sidebar', 'className'),
+     Output('sidebar-overlay', 'className')],
+    Input('sidebar-open', 'data')
+)
+def apply_sidebar_classes(is_open):
+    if is_open:
+        return 'sidebar sidebar-open', 'overlay-open'
+    return 'sidebar', ''
+
+
+
 @callback(
     [Output('gw-status-text', 'children'), Output('last-updated-text', 'children')],
     Input('refresh-interval', 'n_intervals')
