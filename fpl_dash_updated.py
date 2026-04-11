@@ -789,6 +789,7 @@ app.index_string = '''
                 display: flex;
                 min-height: calc(100vh - 64px);
                 position: relative;
+                overflow-x: hidden;
             }
 
             /* --- Sidebar --- */
@@ -859,10 +860,10 @@ app.index_string = '''
                 background: #f5f5f5;
             }
 
-            /* --- Mobile overlay --- */
+            /* --- Mobile overlay: covers app-body, not the header --- */
             #sidebar-overlay {
                 display: none;
-                position: fixed;
+                position: absolute;
                 inset: 0;
                 background: rgba(0,0,0,0.45);
                 z-index: 499;
@@ -887,11 +888,17 @@ app.index_string = '''
 
                 #hamburger-btn { display: block; }
 
+                /* app-body is the positioning context for the drawer */
+                #app-body {
+                    overflow: hidden;
+                }
+
                 #sidebar {
-                    position: fixed;
+                    position: absolute;
                     top: 0;
                     left: 0;
-                    height: 100vh;
+                    height: 100%;
+                    overflow-y: auto;
                     transform: translateX(-100%);
                     z-index: 600;
                     box-shadow: 4px 0 16px rgba(0,0,0,0.18);
