@@ -787,9 +787,9 @@ app.index_string = '''
 
             #app-body {
                 display: flex;
-                min-height: calc(100vh - 64px);
+                height: calc(100vh - 64px);
                 position: relative;
-                overflow-x: hidden;
+                overflow: hidden;
             }
 
             /* --- Sidebar --- */
@@ -798,9 +798,7 @@ app.index_string = '''
                 min-width: 230px;
                 background: #ffffff;
                 border-right: 1px solid #e0e0e0;
-                position: sticky;
-                top: 64px;
-                height: calc(100vh - 64px);
+                height: 100%;
                 overflow-y: auto;
                 overflow-x: hidden;
                 z-index: 500;
@@ -856,6 +854,8 @@ app.index_string = '''
             #content-area {
                 flex: 1;
                 min-width: 0;
+                height: 100%;
+                overflow-y: auto;
                 padding: 24px 20px;
                 background: #f5f5f5;
             }
@@ -887,11 +887,6 @@ app.index_string = '''
             @media (max-width: 900px) {
 
                 #hamburger-btn { display: block; }
-
-                /* app-body is the positioning context for the drawer */
-                #app-body {
-                    overflow: hidden;
-                }
 
                 #sidebar {
                     position: absolute;
@@ -2938,7 +2933,7 @@ def update_home_tab(n):
                                       next_gw_now['name'].replace('Gameweek ', 'GW') if next_gw_now else "N/A",
                                       datetime.fromisoformat(
                                           next_gw_now['deadline_time'].replace('Z', '+00:00')).strftime(
-                                          '%d %b, %H:%M') if next_gw_now else "")],
+                                          '%a %d %b, %H:%M') if next_gw_now else "")],
                      style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
         ], style={'display': 'flex', 'flexWrap': 'wrap', 'margin': '0 -10px 40px -10px'}),
 
