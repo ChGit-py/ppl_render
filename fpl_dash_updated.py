@@ -1251,7 +1251,7 @@ app.layout = html.Div([
 
                 # ATTACKING
                 html.P('Attacking', className='nav-group-label'),
-                html.Button('xG & Assists',
+                html.Button('Expected Goals & Assists',
                             id='nav-xg', className='nav-item', n_clicks=0),
                 html.Button('Underlying Numbers',
                             id='nav-underlying', className='nav-item', n_clicks=0),
@@ -1400,7 +1400,7 @@ app.layout = html.Div([
                 html.Div([
                     # Explanation Card
                     html.Div([
-                        html.H3("DefCon Bonus Consistency Analysis",
+                        html.H3("DEFCON Bonus Consistency Analysis",
                                 style={'color': COLORS['primary'], 'marginBottom': '12px'}),
                         html.P([
                             "This shows how ", html.Strong("consistently"),
