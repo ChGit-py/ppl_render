@@ -1212,7 +1212,7 @@ app.layout = html.Div([
                           style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
                                  'padding': '6px 12px', 'borderRadius': '6px', 'fontWeight': '800',
                                  'fontSize': '18px', 'marginRight': '12px'}),
-                html.Span("Analytics Dashboard", style={'color': 'white', 'fontSize': '20px', 'fontWeight': '600'})
+                html.Span("Analytics Hub", style={'color': 'white', 'fontSize': '20px', 'fontWeight': '600'})
             ], style={'display': 'flex', 'alignItems': 'center'}),
             html.Div([
                 html.Span(id='gw-status-text',
