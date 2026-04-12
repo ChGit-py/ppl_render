@@ -765,7 +765,7 @@ app.index_string = '''
 <html>
     <head>
         {%metas%}
-        <title>FPL Analytics Dashboard</title>
+        <title>FPL Analytics Hub</title>
         {%favicon%}
         {%css%}
         <style>
@@ -3974,7 +3974,7 @@ def build_squad(n_clicks, budget, objective, must_include, must_exclude):
 
 if __name__ == '__main__':
     print("\n" + "=" * 60)
-    print("  Fantasy Premier League Analytics Dashboard")
+    print("  Fantasy Premier League Analytics Hub")
     print("=" * 60)
     print(f"  Current Gameweek: {current_gw['name'] if current_gw else 'N/A'}")
     print(f"  Players loaded: {len(df)}")
