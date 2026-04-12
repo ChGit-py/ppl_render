@@ -1408,7 +1408,7 @@ app.layout = html.Div([
                             "A player averaging the threshold per 90 minutes might be inconsistent (20 one week, 0 the next) vs someone who reliably hits it every game."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div([
-                            html.Span("Based on games with 60+ minutes played",
+                            html.Span("Based on games with a minimum of 60 minutes played",
                                       style={'backgroundColor': COLORS['secondary'],
                                              'color': COLORS['primary'], 'padding': '8px 16px', 'borderRadius': '20px',
                                              'fontWeight': '600'})
