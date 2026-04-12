@@ -6,7 +6,7 @@ Track Defensive Contributions, Expected Metrics, and Value Picks
 import requests
 import pandas as pd
 import numpy as np
-from dash import Dash, html, dcc, dash_table, callback, Output, Input, State, ctx
+from dash import Dash, html, dcc, dash_table, callback, Output, Input, State, ctx, clientside_callback
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
@@ -1193,6 +1193,7 @@ app.layout = html.Div([
     # Interval + stores
     dcc.Interval(id='refresh-interval', interval=2 * 60 * 1000, n_intervals=0),
     dcc.Store(id='active-page', data='home'),
+    dcc.Store(id='active-page-local'),
     dcc.Store(id='sidebar-open', data=False),
 
     # Header
@@ -2715,12 +2716,45 @@ ALL_PAGES = [
 @callback(
     Output('active-page', 'data'),
     [Input(f'nav-{p}', 'n_clicks') for p in ALL_PAGES],
+    Input('active-page-local', 'data'),
     prevent_initial_call=True
 )
-def set_active_page(*_):
+def set_active_page(*args):
+    # Last arg is the localStorage value (from active-page-local)
+    local_val = args[-1]
+    if ctx.triggered_id == 'active-page-local':
+        # On load: restore from localStorage if valid
+        return local_val if local_val in ALL_PAGES else 'home'
     if ctx.triggered_id:
         return ctx.triggered_id[4:]  # strip 'nav-' prefix
     return 'home'
+
+
+# --- Read saved page from localStorage on load ---
+clientside_callback(
+    """
+    function() {
+        var page = localStorage.getItem('fpl_active_page');
+        return page || 'home';
+    }
+    """,
+    Output('active-page-local', 'data'),
+    Input('active-page-local', 'id'),
+)
+
+# --- Write active page to localStorage whenever it changes ---
+clientside_callback(
+    """
+    function(page) {
+        if (page) {
+            localStorage.setItem('fpl_active_page', page);
+        }
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output('active-page', 'id'),
+    Input('active-page', 'data'),
+)
 
 
 # --- PAGES: active-page store → show/hide each page div ---
