@@ -1264,7 +1264,7 @@ app.layout = html.Div([
                             id='nav-form', className='nav-item', n_clicks=0),
 
                 # PLANNING
-                html.P('Planning', className='nav-group-label'),
+                html.P('Squad Planning', className='nav-group-label'),
                 html.Button('Fixture Ticker',
                             id='nav-fixture-ticker', className='nav-item', n_clicks=0),
                 html.Button('Fixture Difficulty',
