@@ -3550,7 +3550,7 @@ def update_fixture_ticker(sort_by, n):
         hovertemplate='<b>%{y}</b>  %{x}<br>%{customdata}<extra></extra>',
         xgap=2,
         ygap=2,
-        textfont=dict(size=9, color='#333333'),
+        textfont=dict(size=14, color='#333333'),
     ))
 
     fig.update_layout(
