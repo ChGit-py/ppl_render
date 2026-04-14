@@ -1269,6 +1269,10 @@ app.layout = html.Div([
                             id='nav-fixture-ticker', className='nav-item', n_clicks=0),
                 html.Button('Fixture Difficulty',
                             id='nav-fixtures', className='nav-item', n_clicks=0),
+                html.Button('Clean Sheet Probability',
+                            id='nav-cs-prob', className='nav-item', n_clicks=0),
+                html.Button('Expected Points',
+                            id='nav-xpoints', className='nav-item', n_clicks=0),
                 html.Button('Differentials',
                             id='nav-differentials', className='nav-item', n_clicks=0),
                 html.Button('Captain Optimiser',
@@ -2191,6 +2195,191 @@ app.layout = html.Div([
             ]),
 
             # =================================================================
+            # CLEAN SHEET PROBABILITY PAGE
+            # =================================================================
+            html.Div(id='page-cs-prob', style={'display': 'none'}, children=[
+                html.Div([
+                    html.Div([
+                        html.H3("Clean Sheet Probability", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
+                        html.P([
+                            "Probability of each team keeping a clean sheet in their next fixture, ",
+                            "based on recent defensive form and opponent attack strength. ",
+                            "Drives the defensive xP model."
+                        ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
+                        html.Div([
+                            html.Span("Model basis", style={'fontWeight': '600', 'marginRight': '12px',
+                                                            'color': COLORS['text_dark'], 'fontSize': '14px'}),
+                            dcc.RadioItems(
+                                id='cs-prob-model',
+                                options=[
+                                    {'label': ' Recent form (last 5 GWs)', 'value': 'recent'},
+                                    {'label': ' Season average', 'value': 'season'},
+                                    {'label': ' Blended (50/50)', 'value': 'blend'},
+                                ],
+                                value='blend',
+                                inline=True,
+                                style={'fontSize': '14px'},
+                                inputStyle={'marginRight': '4px', 'marginLeft': '16px'}
+                            )
+                        ], style={'display': 'flex', 'alignItems': 'center', 'flexWrap': 'wrap'})
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+
+                    html.Div([
+                        html.H3("Clean Sheet Probability by Team", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+                        html.P("Teams sorted by CS probability for their next fixture. Green = high probability, red = low.",
+                               style={'color': COLORS['text_light']}),
+                        dcc.Graph(id='cs-prob-bar')
+                    ], style=CARD_STYLE),
+
+                    html.Div([
+                        html.H4("Clean Sheet Probability Rankings", style={'color': COLORS['primary'], 'marginBottom': '16px'}),
+                        dash_table.DataTable(
+                            id='cs-prob-table',
+                            data=[],
+                            columns=[
+                                {'name': 'Team', 'id': 'team_name'},
+                                {'name': 'Next Opponent', 'id': 'opponent'},
+                                {'name': 'Venue', 'id': 'venue'},
+                                {'name': 'FDR', 'id': 'fdr', 'type': 'numeric'},
+                                {'name': 'GC/90 (Recent)', 'id': 'gc_per90_recent', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'GC/90 (Season)', 'id': 'gc_per90_season', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'Opp xG/90', 'id': 'opp_xg_per90', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'CS Probability', 'id': 'cs_prob', 'type': 'numeric', 'format': {'specifier': '.1%'}},
+                            ],
+                            sort_action='native',
+                            page_size=20,
+                            style_cell=TABLE_STYLE_CELL,
+                            style_header=TABLE_STYLE_HEADER,
+                            style_data=TABLE_STYLE_DATA,
+                            style_data_conditional=[
+                                {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
+                                {'if': {'filter_query': '{cs_prob} >= 0.55', 'column_id': 'cs_prob'}, 'backgroundColor': '#e8f5e9'},
+                                {'if': {'filter_query': '{cs_prob} >= 0.4 && {cs_prob} < 0.55', 'column_id': 'cs_prob'}, 'backgroundColor': '#fff8e1'},
+                                {'if': {'filter_query': '{cs_prob} < 0.4', 'column_id': 'cs_prob'}, 'backgroundColor': '#ffebee'},
+                                {'if': {'filter_query': '{venue} = H', 'column_id': 'venue'}, 'color': COLORS['success'], 'fontWeight': '600'},
+                                {'if': {'filter_query': '{venue} = A', 'column_id': 'venue'}, 'color': COLORS['danger'], 'fontWeight': '600'},
+                            ]
+                        )
+                    ], style=CARD_STYLE)
+                ], style={'padding': '20px 0'})
+            ]),
+
+            # =================================================================
+            # EXPECTED POINTS PAGE
+            # =================================================================
+            html.Div(id='page-xpoints', style={'display': 'none'}, children=[
+                html.Div([
+                    html.Div([
+                        html.H3("Expected Points (xP)", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
+                        html.P([
+                            "Projected points per player based on form, xGI, fixture difficulty, home/away splits, ",
+                            "minutes played, and clean sheet probability for defenders and goalkeepers."
+                        ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
+                        html.Div([
+                            html.Div([
+                                html.Span("Gameweek", style={'fontWeight': '600', 'marginRight': '12px',
+                                                             'color': COLORS['text_dark'], 'fontSize': '14px'}),
+                                dcc.Dropdown(
+                                    id='xp-gw-select',
+                                    options=[],
+                                    value=None,
+                                    clearable=False,
+                                    style={'width': '160px', 'display': 'inline-block', 'verticalAlign': 'middle'}
+                                ),
+                            ], style={'display': 'flex', 'alignItems': 'center', 'marginRight': '24px', 'flexWrap': 'wrap'}),
+                            html.Div([
+                                html.Span("CS model", style={'fontWeight': '600', 'marginRight': '12px',
+                                                             'color': COLORS['text_dark'], 'fontSize': '14px'}),
+                                dcc.RadioItems(
+                                    id='xp-cs-model',
+                                    options=[
+                                        {'label': ' Recent', 'value': 'recent'},
+                                        {'label': ' Season', 'value': 'season'},
+                                        {'label': ' Blended', 'value': 'blend'},
+                                    ],
+                                    value='blend',
+                                    inline=True,
+                                    style={'fontSize': '14px'},
+                                    inputStyle={'marginRight': '4px', 'marginLeft': '12px'}
+                                )
+                            ], style={'display': 'flex', 'alignItems': 'center', 'flexWrap': 'wrap'}),
+                        ], style={'display': 'flex', 'flexWrap': 'wrap', 'gap': '16px'})
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+
+                    html.Div([
+                        html.Div([
+                            html.Div([
+                                html.Label("Position", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Dropdown(id='xp-position',
+                                             options=[{'label': 'All', 'value': 'All'}] +
+                                                     [{'label': p, 'value': p} for p in ['GKP', 'DEF', 'MID', 'FWD']],
+                                             value='All', clearable=False)
+                            ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Team", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Dropdown(id='xp-team',
+                                             options=[{'label': 'All', 'value': 'All'}] +
+                                                     [{'label': t, 'value': t} for t in sorted_teams],
+                                             value='All', clearable=False)
+                            ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Max price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Slider(id='xp-price', min=4, max=16, step=0.5, value=16,
+                                           marks={i: f'£{i}' for i in [4, 6, 8, 10, 12, 14, 16]})
+                            ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Min minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Input(id='xp-minutes', type='number', value=450, min=0, step=50,
+                                          style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
+                            ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
+                        ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-end'})
+                    ], style=CARD_STYLE),
+
+                    html.Div([
+                        html.H3("Top 20 Players by xP", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+                        html.P("Expected points for the selected gameweek, sorted highest to lowest.",
+                               style={'color': COLORS['text_light']}),
+                        dcc.Graph(id='xp-bar')
+                    ], style=CARD_STYLE),
+
+                    html.Div([
+                        html.H4("Expected Points Rankings", style={'color': COLORS['primary'], 'marginBottom': '16px'}),
+                        dash_table.DataTable(
+                            id='xp-table',
+                            data=[],
+                            columns=[
+                                {'name': 'Player', 'id': 'web_name'},
+                                {'name': 'Team', 'id': 'team_name'},
+                                {'name': 'Pos', 'id': 'position'},
+                                {'name': 'Price', 'id': 'price', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                {'name': 'xP', 'id': 'xp', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'Form', 'id': 'form', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                {'name': 'xGI', 'id': 'expected_goal_involvements', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'Next', 'id': 'opponent'},
+                                {'name': 'Venue', 'id': 'venue'},
+                                {'name': 'FDR', 'id': 'fdr', 'type': 'numeric'},
+                                {'name': 'CS Prob', 'id': 'cs_prob', 'type': 'numeric', 'format': {'specifier': '.1%'}},
+                                {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                {'name': 'xP/£m', 'id': 'xp_per_mil', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                            ],
+                            sort_action='native',
+                            page_size=20,
+                            style_cell=TABLE_STYLE_CELL,
+                            style_header=TABLE_STYLE_HEADER,
+                            style_data=TABLE_STYLE_DATA,
+                            style_data_conditional=[
+                                {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
+                                {'if': {'filter_query': '{fdr} <= 2', 'column_id': 'fdr'}, 'backgroundColor': '#e8f5e9'},
+                                {'if': {'filter_query': '{fdr} >= 4', 'column_id': 'fdr'}, 'backgroundColor': '#ffebee'},
+                                {'if': {'filter_query': '{venue} = H', 'column_id': 'venue'}, 'color': COLORS['success'], 'fontWeight': '600'},
+                                {'if': {'filter_query': '{venue} = A', 'column_id': 'venue'}, 'color': COLORS['danger'], 'fontWeight': '600'},
+                            ]
+                        )
+                    ], style=CARD_STYLE)
+                ], style={'padding': '20px 0'})
+            ]),
+
+            # =================================================================
             # OWNERSHIP DIFFERENTIALS TAB
             # =================================================================
             # OWNERSHIP DIFFERENTIALS PAGE
@@ -2708,7 +2897,7 @@ app.layout = html.Div([
 ALL_PAGES = [
     'home', 'defcon-bonus', 'bonus-consistency', 'defcon',
     'xg', 'underlying', 'value', 'form', 'cs',
-    'fixture-ticker', 'fixtures', 'differentials',
+    'fixture-ticker', 'fixtures', 'cs-prob', 'xpoints', 'differentials',
     'captain', 'transfers', 'squad-builder',
 ]
 
@@ -3563,6 +3752,366 @@ def update_fixture_ticker(sort_by, n):
     )
 
     return [fig]
+
+
+# --- CLEAN SHEET PROBABILITY ---
+@callback(
+    [Output('cs-prob-bar', 'figure'), Output('cs-prob-table', 'data')],
+    Input('cs-prob-model', 'value'),
+    Input('refresh-interval', 'n_intervals')
+)
+def update_cs_prob(model, n):
+    data = get_data()
+    df_a = data.get('df_active', pd.DataFrame())
+    fixtures_data = data.get('fixtures_data', [])
+    teams_df = data.get('teams_df', pd.DataFrame())
+    current_gw_info = data.get('current_gw')
+    current_gw_num = current_gw_info['id'] if current_gw_info else 1
+    next_gw_num = current_gw_num + 1
+
+    if df_a.empty or teams_df.empty:
+        empty = go.Figure()
+        empty.add_annotation(text="Data loading...", xref='paper', yref='paper', x=0.5, y=0.5, showarrow=False)
+        empty.update_layout(template='plotly_white', height=400)
+        return empty, []
+
+    team_id_to_name = dict(zip(teams_df['id'], teams_df['name']))
+
+    # Next fixture per team
+    next_fixtures = [f for f in fixtures_data if f.get('event') == next_gw_num]
+    team_next = {}
+    for f in next_fixtures:
+        team_next[f['team_h']] = {'opponent_id': f['team_a'], 'venue': 'H', 'fdr': f.get('team_h_difficulty', 3)}
+        team_next[f['team_a']] = {'opponent_id': f['team_h'], 'venue': 'A', 'fdr': f.get('team_a_difficulty', 3)}
+
+    # Goals conceded per 90 — recent (last 5 GWs) and season
+    # Aggregate from df_active at team level (GKP rows have clean_sheets and goals_conceded)
+    gkp_df = df_a[df_a['position'] == 'GKP'].copy()
+    team_gc = gkp_df.groupby('team').agg(
+        gc_season=('goals_conceded', 'mean'),
+        mins_season=('minutes', 'mean')
+    ).reset_index()
+
+    # Season GC/90
+    team_gc['gc_per90_season'] = (team_gc['gc_season'] / team_gc['mins_season'].replace(0, np.nan) * 90).round(2)
+
+    # Recent form: use player_histories if available, else fall back to season
+    player_histories = data.get('player_histories', {})
+
+    def get_recent_gc_per90(team_id):
+        """Average GC/90 across GKP players on this team over last 5 games."""
+        gkps = gkp_df[gkp_df['team'] == team_id]['id'].tolist()
+        all_recent = []
+        for pid in gkps:
+            hist = player_histories.get(pid, [])
+            recent = [g for g in hist if g.get('minutes', 0) > 0][-5:]
+            all_recent.extend(recent)
+        if not all_recent:
+            row = team_gc[team_gc['team'] == team_id]
+            return float(row['gc_per90_season'].values[0]) if len(row) > 0 else 1.5
+        total_gc = sum(g.get('goals_conceded', 0) for g in all_recent)
+        total_mins = sum(g.get('minutes', 0) for g in all_recent)
+        return (total_gc / total_mins * 90) if total_mins > 0 else 1.5
+
+    # Opponent attack strength: xG conceded per 90 (using their GC as proxy)
+    def get_opp_xg_per90(opp_team_id):
+        """Proxy opponent attack with their average goals scored per 90."""
+        opp_players = df_a[df_a['team'] == opp_team_id]
+        total_goals = opp_players['goals_scored'].sum()
+        total_mins = opp_players['minutes'].max()
+        if pd.isna(total_mins) or total_mins == 0:
+            return 1.2
+        return round(total_goals / total_mins * 90, 2)
+
+    # CS probability model: logistic-style mapping from expected goals against
+    def cs_probability(xga, venue):
+        """Convert expected goals against to CS probability. Home advantage adds ~5%."""
+        home_boost = 0.05 if venue == 'H' else 0.0
+        # Poisson approximation: P(0 goals) ≈ e^(-xga)
+        prob = np.exp(-xga) + home_boost
+        return float(np.clip(prob, 0.05, 0.92))
+
+    rows = []
+    for team_id, fix in team_next.items():
+        team_name = team_id_to_name.get(team_id, 'Unknown')
+        opp_name = team_id_to_name.get(fix['opponent_id'], 'Unknown')
+
+        gc_recent = get_recent_gc_per90(team_id)
+        row = team_gc[team_gc['team'] == team_id]
+        gc_season = float(row['gc_per90_season'].values[0]) if len(row) > 0 else 1.5
+        opp_xg = get_opp_xg_per90(fix['opponent_id'])
+
+        if model == 'recent':
+            defensive_strength = gc_recent
+        elif model == 'season':
+            defensive_strength = gc_season
+        else:  # blend
+            defensive_strength = (gc_recent + gc_season) / 2
+
+        # Expected goals against = blend of own defensive weakness and opponent attack
+        xga = (defensive_strength * 0.5) + (opp_xg * 0.5)
+        prob = cs_probability(xga, fix['venue'])
+
+        rows.append({
+            'team_name': team_name,
+            'opponent': opp_name,
+            'venue': fix['venue'],
+            'fdr': fix['fdr'],
+            'gc_per90_recent': round(gc_recent, 2),
+            'gc_per90_season': round(gc_season, 2),
+            'opp_xg_per90': opp_xg,
+            'cs_prob': prob,
+            'team_id': team_id,
+        })
+
+    if not rows:
+        empty = go.Figure()
+        empty.add_annotation(text="No upcoming fixture data available.", xref='paper', yref='paper',
+                             x=0.5, y=0.5, showarrow=False)
+        empty.update_layout(template='plotly_white', height=400)
+        return empty, []
+
+    prob_df = pd.DataFrame(rows).sort_values('cs_prob', ascending=False)
+
+    bar_fig = go.Figure()
+    bar_fig.add_trace(go.Bar(
+        x=prob_df['team_name'],
+        y=prob_df['cs_prob'],
+        marker_color=[
+            COLORS['success'] if p >= 0.55 else (COLORS['warning'] if p >= 0.4 else COLORS['danger'])
+            for p in prob_df['cs_prob']
+        ],
+        text=[f"{p:.0%}" for p in prob_df['cs_prob']],
+        textposition='outside',
+        hovertemplate='<b>%{x}</b><br>CS Prob: %{y:.1%}<br>vs %{customdata[0]} (%{customdata[1]})<extra></extra>',
+        customdata=prob_df[['opponent', 'venue']].values
+    ))
+    bar_fig.add_hline(y=0.5, line_dash='dash', line_color='#999', annotation_text='50%')
+    bar_fig.update_layout(
+        template='plotly_white', height=420, xaxis_tickangle=-45,
+        yaxis=dict(tickformat='.0%', range=[0, 1.05]),
+        yaxis_title='Clean Sheet Probability',
+        showlegend=False, font=dict(family='Arial, sans-serif')
+    )
+
+    table_cols = ['team_name', 'opponent', 'venue', 'fdr', 'gc_per90_recent', 'gc_per90_season', 'opp_xg_per90', 'cs_prob']
+    table_data = prepare_table_data(prob_df, table_cols)
+    return bar_fig, table_data
+
+
+# --- EXPECTED POINTS ---
+@callback(
+    Output('xp-gw-select', 'options'),
+    Output('xp-gw-select', 'value'),
+    Input('refresh-interval', 'n_intervals')
+)
+def populate_xp_gw_options(n):
+    data = get_data()
+    fixtures_data = data.get('fixtures_data', [])
+    current_gw_info = data.get('current_gw')
+    current_gw_num = current_gw_info['id'] if current_gw_info else 1
+    remaining_gws = sorted(set(
+        f['event'] for f in fixtures_data
+        if f.get('event') is not None and f['event'] > current_gw_num
+    ))[:6]  # next 6 GWs max
+    options = [{'label': f'GW{gw}', 'value': gw} for gw in remaining_gws]
+    default = remaining_gws[0] if remaining_gws else None
+    return options, default
+
+
+@callback(
+    [Output('xp-bar', 'figure'), Output('xp-table', 'data')],
+    [Input('xp-gw-select', 'value'),
+     Input('xp-cs-model', 'value'),
+     Input('xp-position', 'value'),
+     Input('xp-team', 'value'),
+     Input('xp-price', 'value'),
+     Input('xp-minutes', 'value'),
+     Input('refresh-interval', 'n_intervals')]
+)
+def update_xp(selected_gw, cs_model, position, team, max_price, min_minutes, n):
+    data = get_data()
+    df_a = data.get('df_active', pd.DataFrame())
+    fixtures_data = data.get('fixtures_data', [])
+    teams_df = data.get('teams_df', pd.DataFrame())
+    player_histories = data.get('player_histories', {})
+    current_gw_info = data.get('current_gw')
+    current_gw_num = current_gw_info['id'] if current_gw_info else 1
+
+    def _empty(msg):
+        fig = go.Figure()
+        fig.add_annotation(text=msg, xref='paper', yref='paper', x=0.5, y=0.5,
+                           showarrow=False, font=dict(size=14, color=COLORS['text_light']))
+        fig.update_layout(template='plotly_white', height=400)
+        return fig, []
+
+    if df_a.empty or selected_gw is None:
+        return _empty('Select a gameweek above.')
+
+    team_id_to_name = dict(zip(teams_df['id'], teams_df['name']))
+
+    # Fixtures for selected GW
+    gw_fixtures = [f for f in fixtures_data if f.get('event') == selected_gw]
+    team_fixture = {}
+    for f in gw_fixtures:
+        team_fixture[f['team_h']] = {'opponent_id': f['team_a'], 'venue': 'H', 'fdr': f.get('team_h_difficulty', 3)}
+        team_fixture[f['team_a']] = {'opponent_id': f['team_h'], 'venue': 'A', 'fdr': f.get('team_a_difficulty', 3)}
+
+    # Build CS probability for selected GW (reuse same logic)
+    gkp_df = df_a[df_a['position'] == 'GKP'].copy()
+    team_gc = gkp_df.groupby('team').agg(
+        gc_season=('goals_conceded', 'mean'),
+        mins_season=('minutes', 'mean')
+    ).reset_index()
+    team_gc['gc_per90_season'] = (team_gc['gc_season'] / team_gc['mins_season'].replace(0, np.nan) * 90)
+
+    def get_recent_gc(team_id):
+        gkps = gkp_df[gkp_df['team'] == team_id]['id'].tolist()
+        all_recent = []
+        for pid in gkps:
+            hist = player_histories.get(pid, [])
+            recent = [g for g in hist if g.get('minutes', 0) > 0][-5:]
+            all_recent.extend(recent)
+        if not all_recent:
+            row = team_gc[team_gc['team'] == team_id]
+            return float(row['gc_per90_season'].values[0]) if len(row) > 0 else 1.5
+        total_gc = sum(g.get('goals_conceded', 0) for g in all_recent)
+        total_mins = sum(g.get('minutes', 0) for g in all_recent)
+        return (total_gc / total_mins * 90) if total_mins > 0 else 1.5
+
+    def get_opp_xg(opp_id):
+        opp = df_a[df_a['team'] == opp_id]
+        total_goals = opp['goals_scored'].sum()
+        total_mins = opp['minutes'].max()
+        if pd.isna(total_mins) or total_mins == 0:
+            return 1.2
+        return total_goals / total_mins * 90
+
+    def team_cs_prob(team_id, venue):
+        fix = team_fixture.get(team_id)
+        if not fix:
+            return 0.3
+        gc_recent = get_recent_gc(team_id)
+        row = team_gc[team_gc['team'] == team_id]
+        gc_season = float(row['gc_per90_season'].values[0]) if len(row) > 0 else 1.5
+        opp_xg = get_opp_xg(fix['opponent_id'])
+        if cs_model == 'recent':
+            def_str = gc_recent
+        elif cs_model == 'season':
+            def_str = gc_season
+        else:
+            def_str = (gc_recent + gc_season) / 2
+        xga = (def_str * 0.5) + (opp_xg * 0.5)
+        home_boost = 0.05 if venue == 'H' else 0.0
+        return float(np.clip(np.exp(-xga) + home_boost, 0.05, 0.92))
+
+    # Filter players
+    filtered = df_a.copy()
+    if position != 'All':
+        filtered = filtered[filtered['position'] == position]
+    if team != 'All':
+        filtered = filtered[filtered['team_name'] == team]
+    filtered = filtered[filtered['price'] <= max_price]
+    filtered = filtered[filtered['minutes'] >= min_minutes]
+
+    # Only players with a fixture in selected GW
+    filtered = filtered[filtered['team'].isin(team_fixture.keys())]
+
+    if filtered.empty:
+        return _empty('No players match current filters for this gameweek.')
+
+    # Build xP for each player
+    xp_rows = []
+    for _, row in filtered.iterrows():
+        fix = team_fixture.get(row['team'], {})
+        venue = fix.get('venue', 'H')
+        fdr = fix.get('fdr', 3)
+        opp_id = fix.get('opponent_id')
+        opp_name = team_id_to_name.get(opp_id, '') if opp_id else ''
+
+        # Availability factor (mins proxy)
+        avail = min(row.get('minutes', 0) / (current_gw_num * 90 + 1), 1.0)
+
+        # Home/away PPG
+        if venue == 'H':
+            venue_ppg = row.get('home_ppg') or row.get('ppg') or 0
+        else:
+            venue_ppg = row.get('away_ppg') or row.get('ppg') or 0
+        venue_ppg = 0 if pd.isna(venue_ppg) else venue_ppg
+
+        form = 0 if pd.isna(row.get('form')) else float(row.get('form', 0))
+        xgi = 0 if pd.isna(row.get('expected_goal_involvements')) else float(row.get('expected_goal_involvements', 0))
+        ppg = 0 if pd.isna(row.get('ppg')) else float(row.get('ppg', 0))
+        fdr_factor = (6 - fdr) / 5  # 1.0 = easiest, 0.2 = hardest
+
+        cs_prob = team_cs_prob(row['team'], venue)
+        pos = row['position']
+
+        # Base xP: weighted combination
+        base_xp = (
+            form * 0.30 +
+            venue_ppg * 0.25 +
+            ppg * 0.20 +
+            (xgi / max(current_gw_num, 1) * 38) * 0.15 +  # xGI rate scaled
+            fdr_factor * 2 * 0.10
+        )
+
+        # CS bonus for GKP/DEF
+        if pos == 'GKP':
+            cs_bonus = cs_prob * 6   # 6pts for CS
+        elif pos == 'DEF':
+            cs_bonus = cs_prob * 6
+        else:
+            cs_bonus = 0
+
+        # Appearance points (2 for 60+ mins, scaled)
+        appearance = 2 * avail
+
+        xp = round((base_xp + cs_bonus * 0.4 + appearance) * avail, 2)
+
+        xp_rows.append({
+            'web_name': row['web_name'],
+            'team_name': row['team_name'],
+            'position': pos,
+            'price': row['price'],
+            'xp': xp,
+            'form': form,
+            'expected_goal_involvements': round(xgi, 2),
+            'opponent': opp_name,
+            'venue': venue,
+            'fdr': fdr,
+            'cs_prob': cs_prob if pos in ['GKP', 'DEF'] else None,
+            'ownership': row.get('ownership'),
+            'xp_per_mil': round(xp / row['price'], 2) if row['price'] > 0 else 0,
+        })
+
+    xp_df = pd.DataFrame(xp_rows).sort_values('xp', ascending=False)
+
+    top20 = xp_df.head(20)
+    bar_fig = go.Figure()
+    bar_fig.add_trace(go.Bar(
+        x=top20['web_name'],
+        y=top20['xp'],
+        marker_color=[
+            {'GKP': '#666', 'DEF': COLORS['primary'], 'MID': COLORS['accent'], 'FWD': COLORS['info']}.get(p, COLORS['primary'])
+            for p in top20['position']
+        ],
+        text=[f"{v:.1f}" for v in top20['xp']],
+        textposition='outside',
+        hovertemplate='<b>%{x}</b><br>xP: %{y:.2f}<br>%{customdata[0]} vs %{customdata[1]} (%{customdata[2]})<extra></extra>',
+        customdata=top20[['position', 'opponent', 'venue']].values
+    ))
+    bar_fig.update_layout(
+        template='plotly_white', height=420, xaxis_tickangle=-45,
+        yaxis_title='Expected Points', showlegend=False,
+        yaxis=dict(range=[0, top20['xp'].max() * 1.15] if len(top20) > 0 else [0, 10]),
+        font=dict(family='Arial, sans-serif')
+    )
+
+    table_cols = ['web_name', 'team_name', 'position', 'price', 'xp', 'form',
+                  'expected_goal_involvements', 'opponent', 'venue', 'fdr', 'cs_prob', 'ownership', 'xp_per_mil']
+    table_data = prepare_table_data(xp_df, table_cols)
+    return bar_fig, table_data
 
 
 # --- OWNERSHIP DIFFERENTIALS ---
