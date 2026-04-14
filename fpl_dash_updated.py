@@ -3557,8 +3557,8 @@ def update_fixture_ticker(sort_by, n):
         template='plotly_white',
         height=height,
         font=dict(family='Arial, sans-serif', size=12),
-        xaxis=dict(side='top', tickangle=0, fixedrange=True, tickfont=dict(size=10)),
-        yaxis=dict(autorange='reversed', fixedrange=True, tickfont=dict(size=11)),
+        xaxis=dict(side='top', tickangle=0, fixedrange=True, tickfont=dict(size=12)),
+        yaxis=dict(autorange='reversed', fixedrange=True, tickfont=dict(size=12)),
         margin=dict(l=110, r=20, t=60, b=10),
     )
 
