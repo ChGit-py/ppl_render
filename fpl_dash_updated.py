@@ -534,7 +534,10 @@ def refresh_core_data():
         # Next fixture venue & FDR
         print("Computing next-fixture data...")
         next_gw_num = current_gw_num + 1
-        next_gw_fixtures = [f for f in fixtures_data if f.get('event') == next_gw_num]
+        next_gw_fixtures = sorted(
+            [f for f in fixtures_data if f.get('event') == next_gw_num],
+            key=lambda f: f.get('kickoff_time') or ''
+        )
 
         team_next_fixture = {}
         for f in next_gw_fixtures:
