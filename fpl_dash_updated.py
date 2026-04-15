@@ -545,8 +545,10 @@ def refresh_core_data():
                 'id'].values else 'Unknown'
             away_name = teams_df[teams_df['id'] == f['team_a']]['name'].values[0] if f['team_a'] in teams_df[
                 'id'].values else 'Unknown'
-            team_next_fixture[f['team_h']] = {'opponent': away_name, 'venue': 'H', 'fdr': f.get('team_h_difficulty', 3)}
-            team_next_fixture[f['team_a']] = {'opponent': home_name, 'venue': 'A', 'fdr': f.get('team_a_difficulty', 3)}
+            if f['team_h'] not in team_next_fixture:
+                team_next_fixture[f['team_h']] = {'opponent': away_name, 'venue': 'H', 'fdr': f.get('team_h_difficulty', 3)}
+            if f['team_a'] not in team_next_fixture:
+                team_next_fixture[f['team_a']] = {'opponent': home_name, 'venue': 'A', 'fdr': f.get('team_a_difficulty', 3)}
 
         df_active['next_opponent'] = df_active['team'].map(lambda x: team_next_fixture.get(x, {}).get('opponent', ''))
         df_active['next_venue'] = df_active['team'].map(lambda x: team_next_fixture.get(x, {}).get('venue', ''))
