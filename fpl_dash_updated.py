@@ -2388,7 +2388,7 @@ app.layout = html.Div([
                     html.Div([
                         html.H3("Home vs Away PPG", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
                         html.P(
-                            "Players above the diagonal perform better at home. Use this alongside next fixture venue.",
+                            "Players above the diagonal perform better at home. Use this alongside next fixture venue. Only the top 150 in form players will have Home and Away PPG.",
                             style={'color': COLORS['text_light']}),
                         dcc.Graph(id='cap-ha-scatter')
                     ], style=CARD_STYLE),
