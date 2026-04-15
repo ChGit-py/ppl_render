@@ -3696,7 +3696,8 @@ def update_captain(position, team, max_price, min_minutes, _n):
         max_val = max(ha_filtered['home_ppg'].max(), ha_filtered['away_ppg'].max(), 1)
         ha_scatter.add_trace(go.Scatter(x=[0, max_val], y=[0, max_val], mode='lines',
                                         line=dict(dash='dash', color='#999'), name='Equal'))
-    ha_scatter.update_layout(template='plotly_white', height=400, xaxis_title='Away PPG', yaxis_title='Home PPG')
+    ha_scatter.update_layout(template='plotly_white', height=400, xaxis_title='Away PPG', yaxis_title='Home PPG',
+                             font=dict(family='Arial, sans-serif'))
 
     cols = ['web_name', 'team_name', 'position', 'price', 'captain_score', 'form', 'ppg',
             'expected_goal_involvements', 'next_opponent', 'next_venue', 'next_fdr',
