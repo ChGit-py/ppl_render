@@ -1205,7 +1205,7 @@ app.layout = html.Div([
         # Landing nav
         html.Div([
             html.Div([
-                html.Span("FPL Room", style={
+                html.Span("Fantasy Premier League Room", style={
                     'color': 'white', 'fontSize': '24px', 'fontWeight': '800',
                     'letterSpacing': '-0.5px'
                 }),
