@@ -1233,7 +1233,7 @@ app.layout = html.Div([
                     'fontWeight': '900', 'margin': '8px 0 0 0',
                     'lineHeight': '1', 'letterSpacing': '-2px'
                 }),
-                html.P("Data-driven FPL analysis. Every gameweek.", style={
+                html.P("Data driven FPL analysis. Every gameweek.", style={
                     'color': 'rgba(255,255,255,0.75)',
                     'fontSize': 'clamp(16px, 2.5vw, 22px)',
                     'margin': '24px 0 48px 0', 'fontWeight': '400', 'lineHeight': '1.5'
