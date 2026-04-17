@@ -1195,91 +1195,6 @@ home_value_cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'tot
 # =============================================================================
 
 app.layout = html.Div([
-    dcc.Location(id='url', refresh=False),
-
-    # =========================================================================
-    # LANDING PAGE
-    # =========================================================================
-    html.Div(id='landing-page', children=[
-
-        # Landing nav
-        html.Div([
-            html.Div([
-                html.Span("Fantasy Premier League Room", style={
-                    'color': 'white', 'fontSize': '24px', 'fontWeight': '800',
-                    'letterSpacing': '-0.5px'
-                }),
-            ], style={
-                'maxWidth': '1200px', 'margin': '0 auto', 'padding': '0 32px',
-                'display': 'flex', 'alignItems': 'center', 'height': '64px'
-            }),
-        ], style={
-            'backgroundColor': COLORS['primary'],
-            'position': 'sticky', 'top': '0', 'zIndex': '100',
-            'boxShadow': '0 2px 8px rgba(0,0,0,0.2)'
-        }),
-
-        # Hero
-        html.Div([
-            html.Div([
-                html.Span("FPL", style={
-                    'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
-                    'padding': '4px 14px', 'borderRadius': '6px', 'fontWeight': '800',
-                    'fontSize': '16px', 'letterSpacing': '1px', 'marginBottom': '24px',
-                    'display': 'inline-block'
-                }),
-                html.H1("Room", style={
-                    'color': 'white', 'fontSize': 'clamp(48px, 8vw, 96px)',
-                    'fontWeight': '900', 'margin': '8px 0 0 0',
-                    'lineHeight': '1', 'letterSpacing': '-2px'
-                }),
-                html.P("Data driven FPL analysis. Every gameweek.", style={
-                    'color': 'rgba(255,255,255,0.75)',
-                    'fontSize': 'clamp(16px, 2.5vw, 22px)',
-                    'margin': '24px 0 48px 0', 'fontWeight': '400', 'lineHeight': '1.5'
-                }),
-                html.A(
-                    html.Button("Enter the Room →", style={
-                        'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
-                        'border': 'none', 'padding': '16px 40px', 'fontSize': '18px',
-                        'fontWeight': '800', 'borderRadius': '8px', 'cursor': 'pointer',
-                        'letterSpacing': '0.3px',
-                    }),
-                    href='/dashboard'
-                ),
-            ], style={'maxWidth': '640px'}),
-        ], style={
-            'backgroundColor': COLORS['primary'],
-            'minHeight': 'calc(100vh - 64px)',
-            'padding': '120px 32px',
-            'maxWidth': '1200px', 'margin': '0 auto',
-        }),
-
-        # Features placeholder
-        html.Div([
-            html.Div([
-                html.H2("Built for serious FPL managers.", style={
-                    'color': COLORS['primary'], 'fontSize': 'clamp(24px, 4vw, 40px)',
-                    'fontWeight': '800', 'marginBottom': '16px', 'letterSpacing': '-0.5px'
-                }),
-                html.P("More features and details coming soon.",
-                       style={'color': COLORS['text_light'], 'fontSize': '16px'}),
-            ], style={'maxWidth': '1200px', 'margin': '0 auto', 'padding': '80px 32px'}),
-        ], style={'backgroundColor': '#f5f5f5', 'borderTop': f"4px solid {COLORS['secondary']}"}),
-
-        # Landing footer
-        html.Div([
-            html.P("FPL Room",
-                   style={'color': 'rgba(255,255,255,0.6)', 'fontSize': '13px', 'margin': '0'})
-        ], style={'backgroundColor': COLORS['primary'], 'padding': '24px', 'textAlign': 'center'})
-
-    ], style={'display': 'block', 'fontFamily': 'Arial, sans-serif'}),
-
-    # =========================================================================
-    # DASHBOARD
-    # =========================================================================
-    html.Div(id='dashboard-page', style={'display': 'none'}, children=[
-
     # Interval + stores
     dcc.Interval(id='refresh-interval', interval=2 * 60 * 1000, n_intervals=0),
     dcc.Store(id='active-page', data='home'),
@@ -1298,7 +1213,7 @@ app.layout = html.Div([
                           style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
                                  'padding': '6px 12px', 'borderRadius': '6px', 'fontWeight': '800',
                                  'fontSize': '18px', 'marginRight': '12px'}),
-                html.Span("FPL Room", style={'color': 'white', 'fontSize': '20px', 'fontWeight': '600'})
+                html.Span("Analytics Hub", style={'color': 'white', 'fontSize': '20px', 'fontWeight': '600'})
             ], style={'display': 'flex', 'alignItems': 'center'}),
             html.Div([
                 html.Span(id='gw-status-text',
@@ -2473,7 +2388,7 @@ app.layout = html.Div([
                     html.Div([
                         html.H3("Home vs Away PPG", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
                         html.P(
-                            "Players above the diagonal perform better at home. Use this alongside next fixture venue.",
+                            "Players above the diagonal perform better at home. Use this alongside next fixture venue. Only the top 150 in form players will have Home and Away PPG.",
                             style={'color': COLORS['text_light']}),
                         dcc.Graph(id='cap-ha-scatter')
                     ], style=CARD_STYLE),
@@ -2781,32 +2696,18 @@ app.layout = html.Div([
 
     # Footer
     html.Div([
-        html.P(["FPL Room  ·  Data from ",
+        html.P(["Built for analytical Fantasy Premier League decision making  Data from ",
                 html.A("Official FPL API", href="https://fantasy.premierleague.com", target="_blank",
                        style={'color': COLORS['secondary']})],
                style={'color': 'rgba(255,255,255,0.7)', 'fontSize': '13px', 'margin': '0'})
     ], style={'backgroundColor': COLORS['primary'], 'padding': '20px', 'textAlign': 'center'})
 
-    ]),  # end dashboard-page
-
-], style={'fontFamily': 'Arial, sans-serif', 'margin': '0', 'padding': '0'})
+], style={'fontFamily': 'Arial, sans-serif', 'backgroundColor': COLORS['background'], 'margin': '0', 'padding': '0'})
 
 
 # =============================================================================
 # CALLBACKS
 # =============================================================================
-
-# --- URL ROUTING: show landing or dashboard based on pathname ---
-@callback(
-    Output('landing-page', 'style'),
-    Output('dashboard-page', 'style'),
-    Input('url', 'pathname')
-)
-def route_page(pathname):
-    if pathname and pathname.startswith('/dashboard'):
-        return {'display': 'none'}, {'display': 'block', 'fontFamily': 'Arial, sans-serif',
-                                      'backgroundColor': COLORS['background'], 'margin': '0', 'padding': '0'}
-    return {'display': 'block', 'fontFamily': 'Arial, sans-serif'}, {'display': 'none'}
 
 # All page values in order
 ALL_PAGES = [
