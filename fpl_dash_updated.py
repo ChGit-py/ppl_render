@@ -1687,7 +1687,7 @@ app.layout = html.Div([
                             style_data_conditional=[
                                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                                 {'if': {'filter_query': '{xg_diff} < -1', 'column_id': 'xg_diff'},
-                                 'backgroundColor': '#fff8e1'},
+                                 'backgroundColor': '#FF8282'},
                                 {'if': {'filter_query': '{xg_diff} > 1', 'column_id': 'xg_diff'},
                                  'backgroundColor': '#e8f5e9'}
                             ]
