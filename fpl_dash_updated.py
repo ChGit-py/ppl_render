@@ -1688,6 +1688,8 @@ app.layout = html.Div([
                                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                                 {'if': {'filter_query': '{xg_diff} < -1', 'column_id': 'xg_diff'},
                                  'backgroundColor': '#FF8282'},
+                                {'if': {'filter_query': '{xg_diff} >= -1 && {xg_diff} <= 1', 'column_id': 'xg_diff'},
+                                 'backgroundColor': '#FFB938'},
                                 {'if': {'filter_query': '{xg_diff} > 1', 'column_id': 'xg_diff'},
                                  'backgroundColor': '#e8f5e9'}
                             ]
