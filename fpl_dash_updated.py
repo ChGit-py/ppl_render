@@ -2950,10 +2950,6 @@ def update_home_tab(n):
     else:
         pos_fig = go.Figure()
 
-    # Value table
-    val_df = df_now[df_now['minutes'] > 1350]
-    home_tbl = prepare_table_data(val_df.nlargest(15, 'points_per_million'), home_value_cols) if len(val_df) > 0 else []
-
     # Build and return layout
     return html.Div([
         html.Div([
@@ -3030,33 +3026,6 @@ def update_home_tab(n):
         ], style={'marginBottom': '24px'}),
 
         html.Div([dcc.Graph(figure=pos_fig, config={'displayModeBar': False})], style=CARD_STYLE),
-
-        html.Div([
-            html.H2("Value Watch", style={'color': COLORS['primary'], 'margin': '0 0 4px 0'}),
-            html.P("Top 15 value picks (min. 1350 minutes)", style={'color': COLORS['text_light']})
-        ], style={'marginBottom': '24px'}),
-
-        html.Div([
-            dash_table.DataTable(
-                data=home_tbl,
-                columns=[
-                    {'name': 'Player', 'id': 'web_name'},
-                    {'name': 'Team', 'id': 'team_name'},
-                    {'name': 'Pos', 'id': 'position'},
-                    {'name': 'Price', 'id': 'price', 'type': 'numeric', 'format': {'specifier': '.1f'}},
-                    {'name': 'Mins', 'id': 'minutes', 'type': 'numeric', 'format': {'specifier': ','}},
-                    {'name': 'Points', 'id': 'total_points', 'type': 'numeric'},
-                    {'name': 'Pts/m', 'id': 'points_per_million', 'type': 'numeric', 'format': {'specifier': '.2f'}},
-                    {'name': 'Form', 'id': 'form', 'type': 'numeric', 'format': {'specifier': '.1f'}},
-                    {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
-                ],
-                sort_action='native',
-                style_cell=TABLE_STYLE_CELL,
-                style_header=TABLE_STYLE_HEADER,
-                style_data=TABLE_STYLE_DATA,
-                style_data_conditional=[{'if': {'row_index': 'odd'}, 'backgroundColor': '#f9f9f9'}]
-            )
-        ], style=CARD_STYLE),
 
         # RANK DISTRIBUTION TOOL
         html.Div([
