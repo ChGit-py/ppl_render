@@ -3056,8 +3056,156 @@ def update_home_tab(n):
                 style_data=TABLE_STYLE_DATA,
                 style_data_conditional=[{'if': {'row_index': 'odd'}, 'backgroundColor': '#f9f9f9'}]
             )
+        ], style=CARD_STYLE),
+
+        # RANK DISTRIBUTION TOOL
+        html.Div([
+            html.H2("Rank Congestion Tool", style={'color': COLORS['primary'], 'margin': '0 0 4px 0'}),
+            html.P("Enter two overall ranks to see the points gap between them and how congested that band is.",
+                   style={'color': COLORS['text_light']})
+        ], style={'marginBottom': '24px'}),
+
+        html.Div([
+            html.Div([
+                html.Div([
+                    html.Label("Your rank", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                    dcc.Input(id='rank-your', type='number', value=444000, min=1, step=1,
+                              style={'width': '100%', 'padding': '10px', 'borderRadius': '6px',
+                                     'border': '1px solid #ccc', 'fontSize': '15px'})
+                ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
+                html.Div([
+                    html.Label("Rival rank", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                    dcc.Input(id='rank-rival', type='number', value=22000, min=1, step=1,
+                              style={'width': '100%', 'padding': '10px', 'borderRadius': '6px',
+                                     'border': '1px solid #ccc', 'fontSize': '15px'})
+                ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
+                html.Div([
+                    html.Label("\u00a0", style={'display': 'block', 'marginBottom': '6px'}),
+                    html.Button("Check Gap", id='rank-check-btn', n_clicks=0,
+                                style={
+                                    'backgroundColor': COLORS['primary'], 'color': 'white',
+                                    'border': 'none', 'padding': '10px 24px', 'borderRadius': '6px',
+                                    'fontWeight': '600', 'fontSize': '15px', 'cursor': 'pointer',
+                                    'width': '100%'
+                                })
+                ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
+            ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-end',
+                      'marginBottom': '20px'}),
+
+            html.Div(id='rank-result')
+
         ], style=CARD_STYLE)
+
     ], style={'padding': '20px 0'})
+
+
+# RANK CONGESTION TOOL
+@callback(
+    Output('rank-result', 'children'),
+    Input('rank-check-btn', 'n_clicks'),
+    State('rank-your', 'value'),
+    State('rank-rival', 'value'),
+    prevent_initial_call=True
+)
+def check_rank_gap(n_clicks, your_rank, rival_rank):
+    if not your_rank or not rival_rank:
+        return html.P("Please enter both ranks.", style={'color': COLORS['danger']})
+
+    def fetch_rank_points(rank):
+        try:
+            page = ((rank - 1) // 50) + 1
+            url = f"https://fantasy.premierleague.com/api/leagues-classic/314/standings/?page_standings={page}"
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            standings = data.get('standings', {}).get('results', [])
+            for entry in standings:
+                if entry.get('rank') == rank:
+                    return entry.get('total', None), entry.get('entry_name', f'Rank {rank}')
+            if standings:
+                closest = min(standings, key=lambda x: abs(x.get('rank', 0) - rank))
+                return closest.get('total', None), closest.get('entry_name', f'Rank {rank}')
+            return None, None
+        except Exception as e:
+            print(f"Error fetching rank {rank}: {e}")
+            return None, None
+
+    your_points, your_name = fetch_rank_points(your_rank)
+    rival_points, rival_name = fetch_rank_points(rival_rank)
+
+    if your_points is None or rival_points is None:
+        return html.P("Could not fetch rank data. Please try again.",
+                      style={'color': COLORS['danger'], 'marginTop': '12px'})
+
+    gap = abs(rival_points - your_points)
+    rank_gap = abs(your_rank - rival_rank)
+    pts_per_1k_ranks = round((gap / rank_gap) * 1000, 1) if rank_gap > 0 else 0
+    higher_rank = rival_rank if rival_rank < your_rank else your_rank
+    lower_rank = your_rank if rival_rank < your_rank else rival_rank
+    higher_pts = rival_points if rival_rank < your_rank else your_points
+    lower_pts = your_points if rival_rank < your_rank else rival_points
+
+    return html.Div([
+        html.Div([
+            html.Div([
+                html.P("Your Points", style={'color': COLORS['text_light'], 'fontSize': '13px',
+                                             'marginBottom': '4px', 'textTransform': 'uppercase',
+                                             'letterSpacing': '0.5px', 'fontWeight': '600'}),
+                html.H3(f"{your_points:,}", style={'color': COLORS['primary'], 'margin': '0',
+                                                    'fontSize': '28px', 'fontWeight': '700'}),
+                html.P(f"Rank {your_rank:,}", style={'color': COLORS['text_light'], 'fontSize': '13px',
+                                                      'margin': '4px 0 0 0'}),
+            ], style={**STAT_CARD_STYLE, 'flex': '1', 'minWidth': '160px', 'minHeight': 'auto', 'padding': '16px'}),
+
+            html.Div([
+                html.P("Points Gap", style={'color': COLORS['text_light'], 'fontSize': '13px',
+                                            'marginBottom': '4px', 'textTransform': 'uppercase',
+                                            'letterSpacing': '0.5px', 'fontWeight': '600'}),
+                html.H3(f"{gap:,} pts", style={'color': COLORS['accent'], 'margin': '0',
+                                                'fontSize': '28px', 'fontWeight': '700'}),
+                html.P(f"across {rank_gap:,} rank places", style={'color': COLORS['text_light'],
+                                                                    'fontSize': '13px', 'margin': '4px 0 0 0'}),
+            ], style={**STAT_CARD_STYLE, 'flex': '1', 'minWidth': '160px', 'minHeight': 'auto', 'padding': '16px'}),
+
+            html.Div([
+                html.P("Congestion", style={'color': COLORS['text_light'], 'fontSize': '13px',
+                                            'marginBottom': '4px', 'textTransform': 'uppercase',
+                                            'letterSpacing': '0.5px', 'fontWeight': '600'}),
+                html.H3(f"{pts_per_1k_ranks} pts", style={'color': COLORS['success'], 'margin': '0',
+                                                           'fontSize': '28px', 'fontWeight': '700'}),
+                html.P("per 1,000 rank places", style={'color': COLORS['text_light'],
+                                                        'fontSize': '13px', 'margin': '4px 0 0 0'}),
+            ], style={**STAT_CARD_STYLE, 'flex': '1', 'minWidth': '160px', 'minHeight': 'auto', 'padding': '16px'}),
+
+            html.Div([
+                html.P("Rival Points", style={'color': COLORS['text_light'], 'fontSize': '13px',
+                                              'marginBottom': '4px', 'textTransform': 'uppercase',
+                                              'letterSpacing': '0.5px', 'fontWeight': '600'}),
+                html.H3(f"{rival_points:,}", style={'color': COLORS['primary'], 'margin': '0',
+                                                     'fontSize': '28px', 'fontWeight': '700'}),
+                html.P(f"Rank {rival_rank:,}", style={'color': COLORS['text_light'], 'fontSize': '13px',
+                                                       'margin': '4px 0 0 0'}),
+            ], style={**STAT_CARD_STYLE, 'flex': '1', 'minWidth': '160px', 'minHeight': 'auto', 'padding': '16px'}),
+        ], style={'display': 'flex', 'flexWrap': 'wrap', 'gap': '16px', 'marginBottom': '20px'}),
+
+        html.Div([
+            html.P([
+                f"Between rank {higher_rank:,} ({higher_pts:,} pts) and rank {lower_rank:,} ({lower_pts:,} pts), ",
+                f"there are ",
+                html.Strong(f"{gap:,} points"),
+                f" separating {rank_gap:,} managers. ",
+                f"That's roughly ",
+                html.Strong(f"{pts_per_1k_ranks} points per 1,000 rank places"),
+                f" — ",
+                html.Strong(
+                    "very congested — one good gameweek could move you significantly." if pts_per_1k_ranks < 5
+                    else "moderately spread — consistent performance needed." if pts_per_1k_ranks < 15
+                    else "spread out — a big gap to close."
+                )
+            ], style={'color': COLORS['text_dark'], 'fontSize': '14px', 'lineHeight': '1.6', 'margin': '0'})
+        ], style={'backgroundColor': '#f8f9fa', 'padding': '16px', 'borderRadius': '8px',
+                  'borderLeft': f"4px solid {COLORS['secondary']}"})
+    ])
 
 
 # DEFCON BONUS
