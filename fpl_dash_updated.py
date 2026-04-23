@@ -1320,7 +1320,7 @@ app.layout = html.Div([
                         ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                         html.Div([
                             html.Label("\u00a0", style={'display': 'block', 'marginBottom': '6px'}),
-                            html.Button("Check Gap", id='rank-check-btn', n_clicks=0,
+                            html.Button("Analyse", id='rank-check-btn', n_clicks=0,
                                         style={
                                             'backgroundColor': COLORS['primary'], 'color': 'white',
                                             'border': 'none', 'padding': '10px 24px', 'borderRadius': '6px',
