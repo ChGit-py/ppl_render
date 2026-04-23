@@ -1290,7 +1290,48 @@ app.layout = html.Div([
 
             # HOME PAGE
             html.Div(id='page-home', style={'display': 'block'}, children=[
-                html.Div(id='home-content')
+                html.Div(id='home-content'),
+
+                # RANK CONGESTION TOOL — static so interval never resets it
+                html.Div([
+                    html.H2("Rank Congestion Tool",
+                            style={'color': COLORS['primary'], 'margin': '0 0 4px 0'}),
+                    html.P("Enter two overall ranks to see the points gap between them and how congested that band is.",
+                           style={'color': COLORS['text_light']})
+                ], style={'marginBottom': '24px', 'padding': '20px 0 0 0'}),
+
+                html.Div([
+                    html.Div([
+                        html.Div([
+                            html.Label("Your rank",
+                                       style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                            dcc.Input(id='rank-your', type='number', value=None, min=1, step=1,
+                                      placeholder='e.g. 444000',
+                                      style={'width': '100%', 'padding': '10px', 'borderRadius': '6px',
+                                             'border': '1px solid #ccc', 'fontSize': '15px'})
+                        ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
+                        html.Div([
+                            html.Label("Rival rank",
+                                       style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                            dcc.Input(id='rank-rival', type='number', value=None, min=1, step=1,
+                                      placeholder='e.g. 22000',
+                                      style={'width': '100%', 'padding': '10px', 'borderRadius': '6px',
+                                             'border': '1px solid #ccc', 'fontSize': '15px'})
+                        ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
+                        html.Div([
+                            html.Label("\u00a0", style={'display': 'block', 'marginBottom': '6px'}),
+                            html.Button("Check Gap", id='rank-check-btn', n_clicks=0,
+                                        style={
+                                            'backgroundColor': COLORS['primary'], 'color': 'white',
+                                            'border': 'none', 'padding': '10px 24px', 'borderRadius': '6px',
+                                            'fontWeight': '600', 'fontSize': '15px', 'cursor': 'pointer',
+                                            'width': '100%'
+                                        })
+                        ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
+                    ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-end',
+                              'marginBottom': '20px'}),
+                    html.Div(id='rank-result')
+                ], style=CARD_STYLE),
             ]),
 
             # DEFCON BONUS PAGE
@@ -3026,44 +3067,6 @@ def update_home_tab(n):
         ], style={'marginBottom': '24px'}),
 
         html.Div([dcc.Graph(figure=pos_fig, config={'displayModeBar': False})], style=CARD_STYLE),
-
-        # RANK DISTRIBUTION TOOL
-        html.Div([
-            html.H2("Rank Congestion Tool", style={'color': COLORS['primary'], 'margin': '0 0 4px 0'}),
-            html.P("Enter two overall ranks to see the points gap between them and how congested that band is.",
-                   style={'color': COLORS['text_light']})
-        ], style={'marginBottom': '24px'}),
-
-        html.Div([
-            html.Div([
-                html.Div([
-                    html.Label("Your rank", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                    dcc.Input(id='rank-your', type='number', value=444000, min=1, step=1,
-                              style={'width': '100%', 'padding': '10px', 'borderRadius': '6px',
-                                     'border': '1px solid #ccc', 'fontSize': '15px'})
-                ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
-                html.Div([
-                    html.Label("Rival rank", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                    dcc.Input(id='rank-rival', type='number', value=22000, min=1, step=1,
-                              style={'width': '100%', 'padding': '10px', 'borderRadius': '6px',
-                                     'border': '1px solid #ccc', 'fontSize': '15px'})
-                ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
-                html.Div([
-                    html.Label("\u00a0", style={'display': 'block', 'marginBottom': '6px'}),
-                    html.Button("Check Gap", id='rank-check-btn', n_clicks=0,
-                                style={
-                                    'backgroundColor': COLORS['primary'], 'color': 'white',
-                                    'border': 'none', 'padding': '10px 24px', 'borderRadius': '6px',
-                                    'fontWeight': '600', 'fontSize': '15px', 'cursor': 'pointer',
-                                    'width': '100%'
-                                })
-                ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
-            ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-end',
-                      'marginBottom': '20px'}),
-
-            html.Div(id='rank-result')
-
-        ], style=CARD_STYLE)
 
     ], style={'padding': '20px 0'})
 
