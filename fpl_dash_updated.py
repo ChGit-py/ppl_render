@@ -2075,9 +2075,9 @@ app.layout = html.Div([
                             html.Strong("Blanks"), " (grey) = no fixture that gameweek. ",
                             html.Strong("Doubles"), " (cyan) = two fixtures in one gameweek. ",
                             "Single fixtures are colour-coded by FDR: ",
-                            html.Strong("green = easy"), ", ",
-                            html.Strong("amber = medium"), ", ",
-                            html.Strong("red = hard"), "."
+                            html.Strong("Green = easy"), ", ",
+                            html.Strong("Amber = medium"), ", ",
+                            html.Strong("Red = hard"), "."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '16px'}),
                         html.Div([
                             html.Span("■", style={'color': '#00ff87', 'fontSize': '20px', 'marginRight': '4px'}),
