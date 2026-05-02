@@ -2113,7 +2113,7 @@ app.layout = html.Div([
                     ], style=CARD_STYLE),
 
                     html.Div([
-                        html.H3("Fixture Grid: Remainder of the Season",
+                        html.H3("Fixture Ticker: Remainder of the Season",
                                 style={'color': COLORS['primary'], 'marginBottom': '4px'}),
                         html.P("Opponent shown in each cell (H = home, A = away). "
                                "Double GW cells show both fixtures.",
