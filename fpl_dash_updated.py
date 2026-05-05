@@ -188,6 +188,127 @@ def fetch_player_history_batch(player_ids, max_workers=8):
 
 
 # =============================================================================
+# MY SQUAD: TEAM ENTRY & PICKS FETCHING
+# =============================================================================
+
+def fetch_team_entry(team_id):
+    """Fetch manager entry data: name, overall rank, bank, team value, total points."""
+    try:
+        response = requests.get(f"{FPL_BASE_URL}/entry/{team_id}/", timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        print(f"Error fetching team entry {team_id}: {e}")
+        return None
+
+
+def fetch_team_picks(team_id, gw):
+    """Fetch a manager's 15 picks for a specific gameweek."""
+    try:
+        response = requests.get(f"{FPL_BASE_URL}/entry/{team_id}/event/{gw}/picks/", timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        print(f"Error fetching picks for team {team_id}, GW {gw}: {e}")
+        return None
+
+
+def get_squad_fixture_flags(team_ids, fixtures_data, current_gw_num, num_gws=5):
+    """
+    For each team_id in squad, return a string listing any BGW/DGW in the next N GWs.
+    Returns dict of team_id -> flag string (e.g. 'GW32: BGW, GW34: DGW')
+    """
+    upcoming_gws = list(range(current_gw_num + 1, current_gw_num + num_gws + 1))
+    result = {}
+    for tid in team_ids:
+        flags = []
+        for gw in upcoming_gws:
+            count = sum(
+                1 for f in fixtures_data
+                if f.get('event') == gw and (f['team_h'] == tid or f['team_a'] == tid)
+            )
+            if count == 0:
+                flags.append(f'GW{gw}: BGW')
+            elif count >= 2:
+                flags.append(f'GW{gw}: DGW')
+        result[tid] = ', '.join(flags) if flags else ''
+    return result
+
+
+def build_squad_transfer_suggestions(squad_df, df_active, bank_m, current_gw_num, fixture_difficulty):
+    """
+    Identify the 3 weakest squad players and suggest top 3 replacements each.
+    Weakness score = avg_fdr_5 (high=bad) - form (high=good) + status penalty.
+    Returns list of dicts: {player, sell_reason, alternatives: [...]}
+    """
+    status_penalty = {'a': 0, 'd': 1.5, 'i': 3.0, 's': 3.0, 'n': 3.0, 'u': 3.0}
+
+    squad_with_data = squad_df.copy()
+    squad_with_data['avg_fdr_5'] = squad_with_data['team'].map(
+        lambda x: fixture_difficulty.get(x, {}).get('avg_fdr', 3.0)
+    )
+    squad_with_data['form_safe'] = pd.to_numeric(squad_with_data['form'], errors='coerce').fillna(0)
+    squad_with_data['status_pen'] = squad_with_data['status'].map(
+        lambda x: status_penalty.get(x, 0)
+    )
+    squad_with_data['weakness'] = (
+        squad_with_data['avg_fdr_5'].fillna(3.0) * 0.5
+        - squad_with_data['form_safe'] * 0.3
+        + squad_with_data['status_pen']
+    )
+
+    # Only consider starters for transfer suggestions (pick_position 1-11)
+    starters = squad_with_data[squad_with_data['pick_position'] <= 11].nlargest(3, 'weakness')
+
+    squad_ids = set(squad_df['id'].tolist())
+    suggestions = []
+
+    for _, player in starters.iterrows():
+        pos = player['position']
+        selling_price = player.get('selling_price', player['price'])
+        budget = selling_price + bank_m  # total available for replacement
+
+        # Find best alternatives: same position, not in squad, within budget, 450+ mins
+        alternatives = df_active[
+            (df_active['position'] == pos) &
+            (~df_active['id'].isin(squad_ids)) &
+            (df_active['price'] <= budget) &
+            (df_active['minutes'] >= 450)
+        ].copy()
+
+        alternatives['avg_fdr_5'] = alternatives['team'].map(
+            lambda x: fixture_difficulty.get(x, {}).get('avg_fdr', 3.0)
+        )
+        alternatives['alt_score'] = (
+            pd.to_numeric(alternatives['form'], errors='coerce').fillna(0) * 0.4
+            + pd.to_numeric(alternatives['ppg'], errors='coerce').fillna(0) * 0.4
+            - alternatives['avg_fdr_5'].fillna(3.0) * 0.2
+        )
+
+        top_alts = alternatives.nlargest(3, 'alt_score')[
+            ['web_name', 'team_name', 'price', 'form', 'ppg', 'avg_fdr_5', 'ownership']
+        ].to_dict('records')
+
+        reason_parts = []
+        if player['avg_fdr_5'] >= 3.5:
+            reason_parts.append(f"tough fixtures (avg FDR {player['avg_fdr_5']:.1f})")
+        if player['form_safe'] < 3:
+            reason_parts.append(f"low form ({player['form_safe']:.1f})")
+        if player['status'] not in ('a', None):
+            reason_parts.append(f"fitness concern ({player.get('status_label', player['status'])})")
+        reason = '; '.join(reason_parts) if reason_parts else 'weakest fixture run'
+
+        suggestions.append({
+            'player': player,
+            'reason': reason,
+            'budget': budget,
+            'alternatives': top_alts,
+        })
+
+    return suggestions
+
+
+# =============================================================================
 # RANK GAINS: CAPTAIN & TRANSFER HELPER FUNCTIONS
 # =============================================================================
 
@@ -1200,6 +1321,7 @@ app.layout = html.Div([
     dcc.Store(id='active-page', data='home'),
     dcc.Store(id='active-page-local'),
     dcc.Store(id='sidebar-open', data=False),
+    dcc.Store(id='my-squad-store', data=None),
 
     # Header
     html.Div([
@@ -1280,6 +1402,8 @@ app.layout = html.Div([
                             id='nav-captain', className='nav-item', n_clicks=0),
                 html.Button('Transfer Trends',
                             id='nav-transfers', className='nav-item', n_clicks=0),
+                html.Button('My Squad',
+                            id='nav-my-squad', className='nav-item', n_clicks=0),
                 html.Button('Squad Builder',
                             id='nav-squad-builder', className='nav-item', n_clicks=0),
             ]
@@ -2615,6 +2739,78 @@ app.layout = html.Div([
             # SQUAD BUILDER TAB
             # =================================================================
             # SQUAD BUILDER PAGE
+            # MY SQUAD PAGE
+            html.Div(id='page-my-squad', style={'display': 'none'}, children=[
+                html.Div([
+
+                    # Header explanation card
+                    html.Div([
+                        html.H3("My Squad Analyser", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
+                        html.P([
+                            "Enter your FPL team ID to see your current squad with form, fixture difficulty, "
+                            "injury flags, and personalised transfer suggestions."
+                        ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '16px'}),
+                        html.Div([
+                            html.Label("FPL Team ID",
+                                       style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                            html.Div([
+                                dcc.Input(
+                                    id='squad-team-id-input',
+                                    type='number',
+                                    placeholder='e.g. 1234567',
+                                    debounce=False,
+                                    style={
+                                        'padding': '10px 14px',
+                                        'borderRadius': '6px',
+                                        'border': f'2px solid {COLORS["primary"]}',
+                                        'fontSize': '16px',
+                                        'width': '200px',
+                                        'marginRight': '12px',
+                                    }
+                                ),
+                                html.Button(
+                                    "Load My Squad",
+                                    id='squad-load-btn',
+                                    n_clicks=0,
+                                    style={
+                                        'backgroundColor': COLORS['primary'],
+                                        'color': 'white',
+                                        'border': 'none',
+                                        'padding': '10px 28px',
+                                        'borderRadius': '6px',
+                                        'fontSize': '15px',
+                                        'fontWeight': '700',
+                                        'cursor': 'pointer',
+                                    }
+                                ),
+                            ], style={'display': 'flex', 'alignItems': 'center', 'flexWrap': 'wrap', 'gap': '8px'}),
+                        ]),
+                        html.P([
+                            "Find your team ID in the FPL website URL: ",
+                            html.Code(
+                                "fantasy.premierleague.com/entry/{YOUR_ID}/event/...",
+                                style={'backgroundColor': '#f0f0f0', 'padding': '2px 6px',
+                                       'borderRadius': '4px', 'fontSize': '13px'}
+                            )
+                        ], style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginTop': '12px', 'marginBottom': '0'}),
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+
+                    # Dynamic squad content populated by callback
+                    dcc.Loading(
+                        id='my-squad-loading',
+                        type='circle',
+                        color=COLORS['primary'],
+                        children=[html.Div(id='my-squad-content',
+                                           children=[html.P("Enter your team ID above to get started.",
+                                                            style={'color': COLORS['text_light'],
+                                                                   'textAlign': 'center',
+                                                                   'padding': '40px 0',
+                                                                   'fontSize': '15px'})])]
+                    ),
+
+                ], style={'padding': '20px 0'})
+            ]),
+
             html.Div(id='page-squad-builder', style={'display': 'none'}, children=[
                 html.Div([
 
@@ -2757,7 +2953,7 @@ ALL_PAGES = [
     'home', 'defcon-bonus', 'bonus-consistency', 'defcon',
     'xg', 'underlying', 'value', 'form', 'cs',
     'fixture-ticker', 'fixtures', 'differentials',
-    'captain', 'transfers', 'squad-builder',
+    'captain', 'transfers', 'my-squad', 'squad-builder',
 ]
 
 # --- NAV: clicks → active-page store ---
@@ -4128,6 +4324,331 @@ def build_squad(n_clicks, budget, objective, must_include, must_exclude):
                          style={'fontSize': '12px', 'color': COLORS['text_light'], 'whiteSpace': 'pre-wrap'})
             ], style=CARD_STYLE)
         ])
+
+
+# =============================================================================
+# MY SQUAD CALLBACK
+# =============================================================================
+
+STATUS_LABELS = {
+    'a': ('✓ Fit', COLORS['success']),
+    'd': ('⚠ Doubt', COLORS['warning']),
+    'i': ('✗ Injured', COLORS['danger']),
+    's': ('✗ Suspended', COLORS['danger']),
+    'n': ('✗ N/A', COLORS['danger']),
+    'u': ('✗ N/A', COLORS['danger']),
+}
+
+
+@callback(
+    Output('my-squad-content', 'children'),
+    Input('squad-load-btn', 'n_clicks'),
+    State('squad-team-id-input', 'value'),
+    prevent_initial_call=True
+)
+def load_my_squad(n_clicks, team_id):
+    if not team_id:
+        return html.P("Please enter your FPL team ID above.",
+                      style={'color': COLORS['text_light'], 'textAlign': 'center', 'padding': '40px 0'})
+
+    team_id = int(team_id)
+
+    # --- Fetch manager entry ---
+    entry = fetch_team_entry(team_id)
+    if not entry:
+        return html.Div([html.Div([
+            html.P(f"Could not load team ID {team_id}. Please check the ID and try again.",
+                   style={'color': COLORS['danger'], 'fontWeight': '600'})
+        ], style=CARD_STYLE)])
+
+    # --- Current GW ---
+    data = get_data()
+    current_gw_info = data.get('current_gw')
+    gw_num = current_gw_info['id'] if current_gw_info else 1
+    df_all = data.get('df', pd.DataFrame())
+    df_act = data.get('df_active', pd.DataFrame())
+    fixtures_data = data.get('fixtures_data', [])
+    fixture_difficulty = data.get('fixture_difficulty', {})
+
+    # --- Fetch picks ---
+    picks_data = fetch_team_picks(team_id, gw_num)
+    if not picks_data:
+        return html.Div([html.Div([
+            html.P("Could not load squad picks. The gameweek may not have started yet, or the ID is incorrect.",
+                   style={'color': COLORS['danger'], 'fontWeight': '600'})
+        ], style=CARD_STYLE)])
+
+    picks = picks_data.get('picks', [])
+    entry_history = picks_data.get('entry_history', {})
+    active_chip = picks_data.get('active_chip')
+
+    # --- Map picks to player data ---
+    pick_map = {p['element']: p for p in picks}
+    player_ids = list(pick_map.keys())
+
+    squad_df = df_all[df_all['id'].isin(player_ids)].copy()
+    if squad_df.empty:
+        return html.Div([html.Div([
+            html.P("No player data found for this squad. Try refreshing.",
+                   style={'color': COLORS['danger']})
+        ], style=CARD_STYLE)])
+
+    squad_df['pick_position'] = squad_df['id'].map(lambda x: pick_map[x]['position'])
+    squad_df['is_captain'] = squad_df['id'].map(lambda x: pick_map[x].get('is_captain', False))
+    squad_df['is_vice'] = squad_df['id'].map(lambda x: pick_map[x].get('is_vice_captain', False))
+    squad_df['selling_price'] = squad_df['id'].map(
+        lambda x: pick_map[x].get('selling_price', pick_map[x].get('now_cost', 0))
+    ) / 10
+    squad_df['form'] = pd.to_numeric(squad_df['form'], errors='coerce').fillna(0)
+    squad_df['ppg'] = pd.to_numeric(squad_df['points_per_game'], errors='coerce').fillna(0)
+    squad_df['avg_fdr_5'] = squad_df['team'].map(
+        lambda x: fixture_difficulty.get(x, {}).get('avg_fdr', 3.0)
+    )
+    squad_df['fixture_string'] = squad_df['team'].map(
+        lambda x: fixture_difficulty.get(x, {}).get('fixture_string', '')
+    )
+
+    # BGW/DGW flags
+    squad_team_ids = squad_df['team'].unique().tolist()
+    bgw_dgw_flags = get_squad_fixture_flags(squad_team_ids, fixtures_data, gw_num, num_gws=5)
+    squad_df['bgw_dgw'] = squad_df['team'].map(lambda x: bgw_dgw_flags.get(x, ''))
+
+    # Status labels
+    squad_df['status_label'] = squad_df['status'].map(
+        lambda x: STATUS_LABELS.get(x, ('? Unknown', COLORS['text_light']))[0]
+    )
+    squad_df['chance'] = pd.to_numeric(
+        squad_df.get('chance_of_playing_next_round', pd.Series(dtype=float)), errors='coerce'
+    )
+
+    squad_df = squad_df.sort_values('pick_position').reset_index(drop=True)
+
+    # Captain/vice label
+    def pick_label(row):
+        if row['is_captain']:
+            return '(C)'
+        if row['is_vice']:
+            return '(V)'
+        return ''
+
+    squad_df['cap_label'] = squad_df.apply(pick_label, axis=1)
+
+    # --- Manager info ---
+    mgr_name = entry.get('player_first_name', '') + ' ' + entry.get('player_last_name', '')
+    team_name_entry = entry.get('name', 'My Team')
+    overall_rank = entry.get('summary_overall_rank')
+    total_pts = entry.get('summary_overall_points', 0)
+    gw_pts = entry_history.get('points', 0)
+    bank_raw = entry_history.get('bank', entry.get('last_deadline_bank', 0))
+    bank_m = bank_raw / 10
+    team_value_raw = entry_history.get('value', entry.get('last_deadline_value', 0))
+    team_value_m = team_value_raw / 10
+    transfers_made = entry_history.get('event_transfers', 0)
+    transfer_cost = entry_history.get('event_transfers_cost', 0)
+
+    rank_str = f"{overall_rank:,}" if overall_rank else 'N/A'
+    chip_str = f" · Chip: {active_chip.upper()}" if active_chip else ''
+
+    manager_card = html.Div([
+        html.Div([
+            html.Div([
+                html.H3(team_name_entry, style={'color': COLORS['primary'], 'margin': '0 0 4px 0', 'fontSize': '22px'}),
+                html.P(f"{mgr_name.strip()}{chip_str}",
+                       style={'color': COLORS['text_light'], 'margin': '0', 'fontSize': '14px'}),
+            ], style={'flex': '2'}),
+            html.Div([
+                html.Div([
+                    html.Span("GW Points", style={'color': COLORS['text_light'], 'fontSize': '12px', 'display': 'block'}),
+                    html.Span(f"{gw_pts}", style={'color': COLORS['primary'], 'fontSize': '28px', 'fontWeight': '700'}),
+                    html.Span(f" (-{transfer_cost})" if transfer_cost else '',
+                              style={'color': COLORS['danger'], 'fontSize': '13px'}),
+                ])
+            ], style={'flex': '1', 'textAlign': 'center'}),
+            html.Div([
+                html.Span("Overall Rank", style={'color': COLORS['text_light'], 'fontSize': '12px', 'display': 'block'}),
+                html.Span(rank_str, style={'color': COLORS['primary'], 'fontSize': '22px', 'fontWeight': '700'}),
+            ], style={'flex': '1', 'textAlign': 'center'}),
+            html.Div([
+                html.Span("Team Value", style={'color': COLORS['text_light'], 'fontSize': '12px', 'display': 'block'}),
+                html.Span(f"£{team_value_m:.1f}m", style={'color': COLORS['primary'], 'fontSize': '22px', 'fontWeight': '700'}),
+            ], style={'flex': '1', 'textAlign': 'center'}),
+            html.Div([
+                html.Span("In the Bank", style={'color': COLORS['text_light'], 'fontSize': '12px', 'display': 'block'}),
+                html.Span(f"£{bank_m:.1f}m", style={'color': COLORS['success'], 'fontSize': '22px', 'fontWeight': '700'}),
+            ], style={'flex': '1', 'textAlign': 'center'}),
+            html.Div([
+                html.Span("Total Points", style={'color': COLORS['text_light'], 'fontSize': '12px', 'display': 'block'}),
+                html.Span(f"{total_pts}", style={'color': COLORS['primary'], 'fontSize': '22px', 'fontWeight': '700'}),
+            ], style={'flex': '1', 'textAlign': 'center'}),
+        ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'center', 'gap': '20px'}),
+    ], style=CARD_STYLE)
+
+    # --- Squad table builder ---
+    def build_squad_section(title, rows_df):
+        rows = []
+        for _, r in rows_df.iterrows():
+            status_text, status_color = STATUS_LABELS.get(r.get('status', 'a'), ('? Unknown', COLORS['text_light']))
+            fdr = r.get('avg_fdr_5')
+            fdr_color = (COLORS['success'] if fdr and fdr <= 2.5
+                         else COLORS['warning'] if fdr and fdr <= 3.5
+                         else COLORS['danger'])
+
+            cap_badge = None
+            if r.get('is_captain'):
+                cap_badge = html.Span('C', style={
+                    'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
+                    'borderRadius': '50%', 'width': '20px', 'height': '20px',
+                    'display': 'inline-flex', 'alignItems': 'center', 'justifyContent': 'center',
+                    'fontWeight': '800', 'fontSize': '11px', 'marginLeft': '6px'
+                })
+            elif r.get('is_vice'):
+                cap_badge = html.Span('V', style={
+                    'backgroundColor': '#ccc', 'color': COLORS['primary'],
+                    'borderRadius': '50%', 'width': '20px', 'height': '20px',
+                    'display': 'inline-flex', 'alignItems': 'center', 'justifyContent': 'center',
+                    'fontWeight': '800', 'fontSize': '11px', 'marginLeft': '6px'
+                })
+
+            bgw_dgw = r.get('bgw_dgw', '')
+            bgw_cell = []
+            if 'BGW' in bgw_dgw:
+                bgw_cell.append(html.Span('BGW', style={
+                    'backgroundColor': '#d0d0d0', 'color': '#555',
+                    'padding': '2px 6px', 'borderRadius': '10px', 'fontSize': '11px',
+                    'fontWeight': '600', 'marginRight': '4px'
+                }))
+            if 'DGW' in bgw_dgw:
+                bgw_cell.append(html.Span('DGW', style={
+                    'backgroundColor': COLORS['success'], 'color': COLORS['primary'],
+                    'padding': '2px 6px', 'borderRadius': '10px', 'fontSize': '11px',
+                    'fontWeight': '600', 'marginRight': '4px'
+                }))
+
+            pos_colors = {'GKP': '#666', 'DEF': COLORS['primary'], 'MID': COLORS['accent'], 'FWD': COLORS['info']}
+            pos_color = pos_colors.get(r.get('position', ''), '#333')
+
+            rows.append(html.Tr([
+                html.Td(html.Span(r.get('position', ''), style={
+                    'color': pos_color, 'fontWeight': '700', 'fontSize': '12px'
+                }), style={'padding': '10px 12px', 'width': '50px'}),
+                html.Td(
+                    html.Div([html.Span(r.get('web_name', ''), style={'fontWeight': '600'}), cap_badge or ''],
+                             style={'display': 'flex', 'alignItems': 'center'}),
+                    style={'padding': '10px 12px'}
+                ),
+                html.Td(r.get('team_name', ''), style={'padding': '10px 12px', 'color': COLORS['text_light'], 'fontSize': '13px'}),
+                html.Td(f"£{r.get('selling_price', r.get('price', 0)):.1f}m", style={'padding': '10px 12px'}),
+                html.Td(f"{r.get('form', 0):.1f}", style={'padding': '10px 12px'}),
+                html.Td(
+                    html.Span(f"{fdr:.2f}" if fdr else 'N/A', style={'color': fdr_color, 'fontWeight': '700'}),
+                    style={'padding': '10px 12px'}
+                ),
+                html.Td(r.get('fixture_string', ''), style={'padding': '10px 12px', 'fontSize': '12px', 'color': COLORS['text_light']}),
+                html.Td(
+                    html.Span(status_text, style={'color': status_color, 'fontWeight': '600', 'fontSize': '12px'}),
+                    style={'padding': '10px 12px'}
+                ),
+                html.Td(html.Div(bgw_cell), style={'padding': '10px 12px'}),
+            ], style={'borderBottom': '1px solid #e0e0e0',
+                      'backgroundColor': '#fff8e1' if r.get('pick_position', 0) > 11 else 'white'}))
+
+        header = html.Tr([
+            html.Th(col, style={**TABLE_STYLE_HEADER, 'padding': '10px 12px'})
+            for col in ['Pos', 'Player', 'Club', 'Selling Price', 'Form', 'Avg FDR', 'Next 5 Fixtures', 'Status', 'Flags']
+        ])
+
+        return html.Div([
+            html.H4(title, style={'color': COLORS['primary'], 'marginBottom': '12px'}),
+            html.Div([
+                html.Table(
+                    [html.Thead(header), html.Tbody(rows)],
+                    style={'width': '100%', 'borderCollapse': 'collapse', 'fontSize': '14px'}
+                )
+            ], style={'overflowX': 'auto'})
+        ], style=CARD_STYLE)
+
+    starters_df = squad_df[squad_df['pick_position'] <= 11]
+    bench_df = squad_df[squad_df['pick_position'] > 11]
+    starters_section = build_squad_section(f"Starting XI — GW{gw_num}", starters_df)
+    bench_section = build_squad_section("Bench", bench_df)
+
+    # --- Injury/doubt callout ---
+    concern_df = squad_df[squad_df['status'] != 'a']
+    injury_section = None
+    if len(concern_df) > 0:
+        concern_items = []
+        for _, r in concern_df.iterrows():
+            status_text, status_color = STATUS_LABELS.get(r.get('status', 'a'), ('? Unknown', COLORS['text_light']))
+            news = r.get('news', '')
+            concern_items.append(html.Div([
+                html.Span(r['web_name'], style={'fontWeight': '700', 'color': COLORS['primary']}),
+                html.Span(f" ({r['team_name']}, {r['position']}) — ", style={'color': COLORS['text_light']}),
+                html.Span(status_text, style={'color': status_color, 'fontWeight': '600'}),
+                html.Span(f" · {news}" if news else '', style={'color': COLORS['text_light'], 'fontSize': '13px'}),
+            ], style={'marginBottom': '8px'}))
+
+        injury_section = html.Div([
+            html.H4("Fitness Concerns", style={'color': COLORS['danger'], 'marginBottom': '12px'}),
+            html.Div(concern_items)
+        ], style={**CARD_STYLE, 'borderLeft': f'4px solid {COLORS["danger"]}'})
+
+    # --- Transfer suggestions ---
+    suggestions = build_squad_transfer_suggestions(squad_df, df_act, bank_m, gw_num, fixture_difficulty)
+
+    suggestion_cards = []
+    for s in suggestions:
+        p = s['player']
+        alts = s['alternatives']
+        alt_rows = []
+        for a in alts:
+            alt_rows.append(html.Tr([
+                html.Td(a.get('web_name', ''), style={'padding': '8px 10px', 'fontWeight': '600'}),
+                html.Td(a.get('team_name', ''), style={'padding': '8px 10px', 'color': COLORS['text_light'], 'fontSize': '13px'}),
+                html.Td(f"£{a.get('price', 0):.1f}m", style={'padding': '8px 10px'}),
+                html.Td(f"{a.get('form', 0):.1f}", style={'padding': '8px 10px'}),
+                html.Td(f"{a.get('ppg', 0):.2f}", style={'padding': '8px 10px'}),
+                html.Td(f"{a.get('avg_fdr_5', 3.0):.2f}", style={'padding': '8px 10px'}),
+                html.Td(f"{a.get('ownership', 0):.1f}%", style={'padding': '8px 10px'}),
+            ], style={'borderBottom': '1px solid #eee'}))
+
+        suggestion_cards.append(html.Div([
+            html.Div([
+                html.Span("Consider selling: ", style={'color': COLORS['text_light'], 'fontSize': '13px'}),
+                html.Span(p.get('web_name', ''), style={'fontWeight': '700', 'color': COLORS['danger'], 'fontSize': '16px'}),
+                html.Span(f" ({p.get('team_name', '')}, {p.get('position', '')})",
+                          style={'color': COLORS['text_light'], 'fontSize': '13px'}),
+            ], style={'marginBottom': '8px'}),
+            html.P(f"Reason: {s['reason']}", style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginBottom': '12px'}),
+            html.P(f"Budget available: £{s['budget']:.1f}m (selling price + bank)",
+                   style={'fontSize': '13px', 'fontWeight': '600', 'color': COLORS['primary'], 'marginBottom': '10px'}),
+            html.Div([
+                html.Table([
+                    html.Thead(html.Tr([
+                        html.Th(col, style={**TABLE_STYLE_HEADER, 'padding': '8px 10px'})
+                        for col in ['Player', 'Club', 'Price', 'Form', 'PPG', 'Avg FDR', 'Own%']
+                    ])),
+                    html.Tbody(alt_rows)
+                ], style={'width': '100%', 'borderCollapse': 'collapse', 'fontSize': '14px'})
+            ], style={'overflowX': 'auto'})
+        ], style={**CARD_STYLE, 'borderLeft': f'4px solid {COLORS["warning"]}', 'marginBottom': '16px'}))
+
+    transfer_section = html.Div([
+        html.H4("Transfer Suggestions", style={'color': COLORS['primary'], 'marginBottom': '4px'}),
+        html.P("Based on upcoming fixture difficulty, form, and fitness. Alternatives are within your available budget.",
+               style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginBottom': '16px'}),
+        html.Div(suggestion_cards) if suggestion_cards else html.P(
+            "No obvious transfer targets — your squad looks solid for the next 5 GWs.",
+            style={'color': COLORS['success'], 'fontWeight': '600'}
+        )
+    ], style=CARD_STYLE)
+
+    return html.Div([
+        manager_card,
+        starters_section,
+        bench_section,
+        injury_section or html.Div(),
+        transfer_section,
+    ])
 
 
 # =============================================================================
