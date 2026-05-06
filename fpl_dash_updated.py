@@ -4474,7 +4474,7 @@ def load_my_squad(n_clicks, team_id):
         ], style=CARD_STYLE)
 
     starters_section = build_squad_section(
-        f"Starting XI: GW{gw_num}",
+        f"Starting XI as of: GW{gw_num}",
         squad_df[squad_df['pick_position'] <= 11]
     )
     bench_section = build_squad_section(
