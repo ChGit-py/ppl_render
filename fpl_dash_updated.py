@@ -3283,24 +3283,6 @@ def check_rank_gap(n_clicks, your_rank, rival_rank):
                                                        'margin': '4px 0 0 0'}),
             ], style={**STAT_CARD_STYLE, 'flex': '1', 'minWidth': '160px', 'minHeight': 'auto', 'padding': '16px'}),
         ], style={'display': 'flex', 'flexWrap': 'wrap', 'gap': '16px', 'marginBottom': '20px'}),
-
-        html.Div([
-            html.P([
-                f"Between rank {higher_rank:,} ({higher_pts:,} pts) and rank {lower_rank:,} ({lower_pts:,} pts), ",
-                f"there are ",
-                html.Strong(f"{gap:,} points"),
-                f" separating {rank_gap:,} managers. ",
-                f"That's roughly ",
-                html.Strong(f"{pts_per_1k_ranks} points per 1,000 rank places"),
-                f" — ",
-                html.Strong(
-                    "very congested — one good gameweek could move you significantly." if pts_per_1k_ranks < 5
-                    else "moderately spread — consistent performance needed." if pts_per_1k_ranks < 15
-                    else "spread out — a big gap to close."
-                )
-            ], style={'color': COLORS['text_dark'], 'fontSize': '14px', 'lineHeight': '1.6', 'margin': '0'})
-        ], style={'backgroundColor': '#f8f9fa', 'padding': '16px', 'borderRadius': '8px',
-                  'borderLeft': f"4px solid {COLORS['secondary']}"})
     ])
 
 
