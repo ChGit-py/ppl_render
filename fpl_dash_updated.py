@@ -57,7 +57,7 @@ DEFCON_THRESHOLDS = {'DEF': 10, 'MID': 12, 'FWD': 12}
 
 # Fallbacks, used only if the API drops a field we depend on.
 _FALLBACK_SEASON_LABEL = '2026/27'
-_FALLBACK_PHOTO_PREFIX = 'premierleague26'
+_FALLBACK_PHOTO_PREFIX = 'premierleague25'
 
 SEASON = {
     'label': _FALLBACK_SEASON_LABEL,
