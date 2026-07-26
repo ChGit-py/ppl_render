@@ -38,6 +38,95 @@ def fetch_fixtures():
     return response.json()
 
 
+# =============================================================================
+# SEASON CONFIG — derived from the API instead of hardcoded
+# =============================================================================
+#
+# The FPL API added a `game_config` block for 2026/27. It exposes:
+#   game_config.settings.static_content_url  -> ".../plfpl-production/2026_27/"
+#   game_config.scoring                      -> full points table by position
+#
+# We read the season label, the player-photo path and the set of positions that
+# actually earn Defensive Contribution points from there, rather than hardcoding.
+#
+# NOTE: the DefCon *thresholds* (10 for DEF, 12 for MID/FWD) are still NOT in
+# the API anywhere. They remain hardcoded below — this is the only defcon value
+# that has to be maintained by hand.
+
+DEFCON_THRESHOLDS = {'DEF': 10, 'MID': 12, 'FWD': 12}
+
+# Fallbacks, used only if the API drops a field we depend on.
+_FALLBACK_SEASON_LABEL = '2026/27'
+_FALLBACK_PHOTO_PREFIX = 'premierleague26'
+
+SEASON = {
+    'label': _FALLBACK_SEASON_LABEL,
+    'photo_base': f"https://resources.premierleague.com/{_FALLBACK_PHOTO_PREFIX}/photos/players/110x140/",
+    'thresholds': dict(DEFCON_THRESHOLDS),
+    'defcon_positions': sorted(DEFCON_THRESHOLDS),
+    'positions': ['GKP', 'DEF', 'MID', 'FWD'],
+    'outfield_positions': ['DEF', 'MID', 'FWD'],
+}
+
+
+def build_season_config(data):
+    """
+    Populate the module-level SEASON dict from the bootstrap payload.
+
+    Called once at the top of every core refresh so a season rollover is picked
+    up automatically rather than needing a code edit.
+    """
+    cfg = data.get('game_config', {}) or {}
+
+    # --- Season label, e.g. "2026_27" -> "2026/27" ---
+    static_url = (cfg.get('settings', {}) or {}).get('static_content_url', '') or ''
+    season_slug = ''
+    for part in static_url.rstrip('/').split('/'):
+        if len(part) == 7 and part[:4].isdigit() and part[4] == '_':
+            season_slug = part
+            break
+    if season_slug:
+        start_year, end_yy = season_slug.split('_')
+        SEASON['label'] = f"{start_year}/{end_yy}"
+        # Photo bucket follows the season start year: 2026/27 -> premierleague26
+        SEASON['photo_base'] = (
+            f"https://resources.premierleague.com/premierleague{start_year[2:]}"
+            f"/photos/players/110x140/"
+        )
+
+    # --- Positions, straight from element_types ---
+    pos_short = [p['singular_name_short'] for p in data.get('element_types', [])]
+    if pos_short:
+        SEASON['positions'] = pos_short
+        SEASON['outfield_positions'] = [p for p in pos_short if p != 'GKP']
+
+    # --- Which positions actually earn DefCon points ---
+    # 2026/27 scoring: {"DEF": 2, "MID": 2, "FWD": 2, "GKP": 0}
+    dc_scoring = (cfg.get('scoring', {}) or {}).get('defensive_contribution')
+    if isinstance(dc_scoring, dict):
+        earners = [p for p, pts in dc_scoring.items() if pts and p in pos_short]
+        if earners:
+            SEASON['defcon_positions'] = sorted(earners)
+            SEASON['thresholds'] = {
+                p: DEFCON_THRESHOLDS.get(p, 12) for p in earners
+            }
+
+    print(f"  Season config: {SEASON['label']} | "
+          f"defcon positions {SEASON['defcon_positions']} | "
+          f"thresholds {SEASON['thresholds']}")
+    return SEASON
+
+
+def player_photo_url(code):
+    """Build a player headshot URL for the current season. Returns None if no code."""
+    if code is None:
+        return None
+    try:
+        return f"{SEASON['photo_base']}{int(code)}.png"
+    except (TypeError, ValueError):
+        return None
+
+
 def calculate_fixture_difficulty(fixtures, teams_df, current_gw, num_gameweeks=None):
     """
     Calculate average fixture difficulty for each team over remaining season fixtures.
@@ -343,14 +432,29 @@ def process_player_data(data):
     for col in numeric_cols:
         df[col] = pd.to_numeric(df[col], errors='coerce')
 
+    df['minutes_safe'] = df['minutes'].replace(0, np.nan)
+
+    def per_90(api_col, numerator_col, decimals=2):
+        """
+        Prefer the per-90 value the API now ships; fall back to computing it.
+        The API rounds to 2dp and returns 0 (not NaN) for zero-minute players,
+        so we blank those out to keep the old NaN semantics.
+        """
+        if api_col in df.columns:
+            vals = pd.to_numeric(df[api_col], errors='coerce')
+            return vals.where(df['minutes'] > 0).round(decimals)
+        return ((pd.to_numeric(df[numerator_col], errors='coerce')
+                 / df['minutes_safe']) * 90).round(decimals)
+
     # Defensive Contribution calculations
     df['defcon'] = df['defensive_contribution'].fillna(0).astype(int)
-    df['minutes_safe'] = df['minutes'].replace(0, np.nan)
-    df['defcon_per_90'] = ((df['defcon'] / df['minutes_safe']) * 90).round(2)
+    # API now supplies defensive_contribution_per_90 directly
+    df['defcon_per_90'] = per_90('defensive_contribution_per_90', 'defcon')
 
     df['games_played'] = df['minutes_safe'] / 90
-    df['defcon_vs_bonus'] = df['defcon_per_90'] - df['position'].map({'DEF': 10, 'MID': 12, 'FWD': 12, 'GKP': 10})
-    df['bonus_threshold'] = df['position'].map({'DEF': 10, 'MID': 12, 'FWD': 12, 'GKP': 10})
+    # Threshold map comes from SEASON (GKP is excluded — GKPs score 0 for defcon)
+    df['bonus_threshold'] = df['position'].map(SEASON['thresholds'])
+    df['defcon_vs_bonus'] = df['defcon_per_90'] - df['bonus_threshold']
     df['bonus_rate'] = (df['defcon_per_90'] / df['bonus_threshold']) * 100
 
     position_defcon_rates = df[df['minutes'] > 450].groupby('position')['defcon_per_90'].mean()
@@ -367,8 +471,9 @@ def process_player_data(data):
     df['form_vs_season'] = (df['form'] - df['ppg']).round(1)
     df['ownership'] = pd.to_numeric(df['selected_by_percent'], errors='coerce')
 
-    df['cs_per_90'] = (df['clean_sheets'] / df['minutes_safe']) * 90
-    df['gc_per_90'] = (df['goals_conceded'] / df['minutes_safe']) * 90
+    # API now supplies clean_sheets_per_90 / goals_conceded_per_90
+    df['cs_per_90'] = per_90('clean_sheets_per_90', 'clean_sheets')
+    df['gc_per_90'] = per_90('goals_conceded_per_90', 'goals_conceded')
 
     # Transfer columns
     df['transfers_in_gw'] = df['transfers_in_event']
@@ -387,10 +492,11 @@ def process_player_data(data):
     df['bps_per_90'] = (df['bps'] / df['minutes_safe']) * 90
     df['bonus_per_90'] = (df['bonus'] / df['minutes_safe']) * 90
 
-    # Underlying per-90 columns
-    df['xgi_per_90'] = (df['expected_goal_involvements'] / df['minutes_safe'] * 90).round(2)
-    df['xg_per_90'] = (df['expected_goals'] / df['minutes_safe'] * 90).round(2)
-    df['xa_per_90'] = (df['expected_assists'] / df['minutes_safe'] * 90).round(2)
+    # Underlying per-90 columns — xG/xA/xGI now come from the API
+    df['xgi_per_90'] = per_90('expected_goal_involvements_per_90', 'expected_goal_involvements')
+    df['xg_per_90'] = per_90('expected_goals_per_90', 'expected_goals')
+    df['xa_per_90'] = per_90('expected_assists_per_90', 'expected_assists')
+    # ICT components have no API per-90 equivalent — still computed
     df['threat_per_90'] = (df['threat'] / df['minutes_safe'] * 90).round(1)
     df['creativity_per_90'] = (df['creativity'] / df['minutes_safe'] * 90).round(1)
     df['ict_per_90'] = (df['ict_index'] / df['minutes_safe'] * 90).round(1)
@@ -414,6 +520,30 @@ def get_next_gameweek(data):
         if event['is_next']:
             return event
     return None
+
+
+def season_has_started(data):
+    """True once at least one gameweek has been played."""
+    return any(e.get('finished') for e in data.get('events', []))
+
+
+def get_target_gw_num(data):
+    """
+    The gameweek the user is planning FOR — i.e. the next deadline.
+
+    Pre-season nothing is `is_current`, so the old `current_gw['id'] + 1`
+    pattern silently resolved to GW2 and skipped GW1 entirely. FPL flips
+    `is_next` correctly at every deadline, so read it directly.
+    """
+    nxt = get_next_gameweek(data)
+    if nxt:
+        return nxt['id']
+    cur = get_current_gameweek(data)
+    if cur:
+        return cur['id']
+    # Season over (or events missing) — fall back to the last event we know of
+    events = data.get('events', [])
+    return events[-1]['id'] if events else 1
 
 
 # =============================================================================
@@ -496,14 +626,22 @@ _CACHE_KEYS = [
     'bootstrap_data', 'df', 'df_active', 'current_gw', 'next_gw',
     'total_managers', 'fixtures_data', 'teams_df', 'fixture_difficulty',
     'player_histories', 'sorted_teams', 'next_gw_num', 'last_refresh',
-    'heavy_loaded',
+    'heavy_loaded', 'fixture_anchor_gw', 'season_started', 'season_label',
 ]
+
+# Bump whenever the shape of cached data changes, or at a season rollover.
+# A mismatch (or an over-age cache) forces a clean fetch instead of serving
+# last season's teams and players from disk.
+CACHE_VERSION = 2
+MAX_CACHE_AGE = REFRESH_INTERVAL
 
 
 def save_cache():
     """Persist current DATA to disk so next startup is instant."""
     try:
         payload = {k: DATA[k] for k in _CACHE_KEYS if k in DATA}
+        payload['_cache_version'] = CACHE_VERSION
+        payload['_season_label'] = SEASON['label']
         with open(CACHE_PATH, 'wb') as f:
             pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
         size_mb = os.path.getsize(CACHE_PATH) / (1024 * 1024)
@@ -522,11 +660,30 @@ def load_cache():
     try:
         with open(CACHE_PATH, 'rb') as f:
             cached = pickle.load(f)
-        age_hrs = (time.time() - cached.get('last_refresh', 0)) / 3600
-        print(f"  Cache found ({age_hrs:.1f}h old) — loading...")
+
+        age = time.time() - cached.get('last_refresh', 0)
+        age_hrs = age / 3600
+
+        # Reject a cache written by an older build or a previous season —
+        # otherwise startup silently serves last season's teams and players.
+        if cached.get('_cache_version') != CACHE_VERSION:
+            print(f"  Cache version mismatch "
+                  f"(found {cached.get('_cache_version')}, need {CACHE_VERSION}) — refetching")
+            return False
+        if age > MAX_CACHE_AGE:
+            print(f"  Cache is {age_hrs:.1f}h old (limit {MAX_CACHE_AGE / 3600:.0f}h) — refetching")
+            return False
+
+        print(f"  Cache found ({age_hrs:.1f}h old, season {cached.get('_season_label')}) — loading...")
+        cached.pop('_cache_version', None)
+        cached.pop('_season_label', None)
         with DATA_LOCK:
             DATA.update(cached)
             DATA['refreshing'] = False
+        # Rebuild SEASON from the cached bootstrap so photo URLs, thresholds
+        # and the season label match what the cache was built against.
+        if cached.get('bootstrap_data'):
+            build_season_config(cached['bootstrap_data'])
         print(f"  Cache loaded — all tabs ready")
         return True
     except Exception as e:
@@ -553,11 +710,22 @@ def refresh_core_data():
 
         print("Fetching FPL data...")
         bootstrap_data = fetch_bootstrap_data()
+        build_season_config(bootstrap_data)
         df = process_player_data(bootstrap_data)
         current_gw = get_current_gameweek(bootstrap_data)
         next_gw = get_next_gameweek(bootstrap_data)
+        started = season_has_started(bootstrap_data)
 
-        df_active = df[df['minutes'] > 0].copy()
+        # Pre-season FPL zeroes every player's minutes, so a `minutes > 0` filter
+        # empties df_active and blanks the whole app. Fall back to the API's
+        # `can_select` flag until the first gameweek has actually been played.
+        if started:
+            df_active = df[df['minutes'] > 0].copy()
+        elif 'can_select' in df.columns:
+            df_active = df[df['can_select'].fillna(True)].copy()
+        else:
+            df_active = df[df['status'] != 'u'].copy()
+        print(f"  Season started: {started} | active players: {len(df_active)}")
 
         # Initialise consistency columns as NaN (Phase 2 will populate these)
         for col in ['qualifying_games', 'bonus_games', 'hit_rate',
@@ -568,8 +736,11 @@ def refresh_core_data():
         print("Fetching fixture data...")
         fixtures_data = fetch_fixtures()
         teams_df = pd.DataFrame(bootstrap_data['teams'])
-        current_gw_num = current_gw['id'] if current_gw else 1
-        fixture_difficulty = calculate_fixture_difficulty(fixtures_data, teams_df, current_gw_num)
+        # The GW we're planning for (GW1 pre-season, not GW2)
+        next_gw_num = get_target_gw_num(bootstrap_data)
+        # Fixture look-ahead starts AT the target GW, so anchor one behind it
+        fixture_anchor_gw = next_gw_num - 1
+        fixture_difficulty = calculate_fixture_difficulty(fixtures_data, teams_df, fixture_anchor_gw)
         print(f"  Calculated fixture difficulty for {len(fixture_difficulty)} teams")
 
         df_active['avg_fdr_5'] = df_active['team'].map(lambda x: fixture_difficulty.get(x, {}).get('avg_fdr'))
@@ -580,8 +751,7 @@ def refresh_core_data():
         total_managers = bootstrap_data['total_players']
 
         # Next fixture venue & FDR
-        print("Computing next-fixture data...")
-        next_gw_num = current_gw_num + 1
+        print(f"Computing next-fixture data for GW{next_gw_num}...")
         next_gw_fixtures = sorted(
             [f for f in fixtures_data if f.get('event') == next_gw_num],
             key=lambda f: f.get('kickoff_time') or ''
@@ -638,6 +808,9 @@ def refresh_core_data():
             DATA['player_histories'] = {}
             DATA['sorted_teams'] = sorted_teams
             DATA['next_gw_num'] = next_gw_num
+            DATA['fixture_anchor_gw'] = fixture_anchor_gw
+            DATA['season_started'] = started
+            DATA['season_label'] = SEASON['label']
             DATA['last_refresh'] = time.time()
             DATA['refreshing'] = False
             DATA['heavy_loaded'] = False
@@ -672,18 +845,33 @@ def refresh_heavy_data():
             df_active = DATA['df_active'].copy()
             fixtures_data = DATA['fixtures_data']
             total_managers = DATA['total_managers']
+            started = DATA.get('season_started', True)
+
+        # Pre-season there is no match history to fetch — every element-summary
+        # call returns an empty history. Skip ~300 requests (and the memory
+        # spike that comes with them) rather than burning them for nothing.
+        if not started:
+            print("  Season has not started — skipping player history fetch.")
+            with DATA_LOCK:
+                DATA['last_refresh'] = time.time()
+                DATA['refreshing'] = False
+                DATA['heavy_loaded'] = True
+            save_cache()
+            print(f"{'=' * 60}\n")
+            return
 
         # Bonus consistency data
         print("Fetching player match history for bonus consistency analysis...")
+        defcon_positions = SEASON['defcon_positions']
         consistency_players = df_active[
             (df_active['minutes'] >= 200) &
-            (df_active['position'].isin(['DEF', 'MID', 'FWD']))
+            (df_active['position'].isin(defcon_positions))
             ]['id'].tolist()
 
         print(f"  Fetching data for {len(consistency_players)} players...")
         consistency_thresholds = dict(zip(
             df_active.loc[df_active['id'].isin(consistency_players), 'id'],
-            df_active.loc[df_active['id'].isin(consistency_players), 'position'].map({'DEF': 10, 'MID': 12, 'FWD': 12})
+            df_active.loc[df_active['id'].isin(consistency_players), 'position'].map(SEASON['thresholds'])
         ))
         consistency_data = calculate_bonus_consistency(consistency_players, consistency_thresholds)
         print(f"  Retrieved data for {len(consistency_data)} players")
@@ -705,7 +893,7 @@ def refresh_heavy_data():
         print("Fetching player histories for captain & home/away analysis...")
         captain_candidates = df_active[
             (df_active['minutes'] >= 450) &
-            (df_active['position'].isin(['DEF', 'MID', 'FWD']))
+            (df_active['position'].isin(SEASON['outfield_positions']))
             ].nlargest(100, 'form')['id'].tolist()
 
         print(f"  Fetching match history for {len(captain_candidates)} captain candidates...")
@@ -1113,7 +1301,7 @@ def build_player_spotlight(player, title, metric_label, metric_value):
     if player is None:
         return html.Div()
 
-    photo_url = f"https://resources.premierleague.com/premierleague25/photos/players/110x140/{int(player['code'])}.png"
+    photo_url = player_photo_url(player.get('code'))
 
     text_section = html.Div([
         html.Div([
@@ -1242,6 +1430,10 @@ home_value_cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'tot
 # LAYOUT
 # =============================================================================
 
+# Threshold shorthands for layout copy (SEASON is populated by this point)
+DEF_THR = SEASON['thresholds'].get('DEF', 10)
+MID_THR = SEASON['thresholds'].get('MID', 12)
+
 app.layout = html.Div([
     # Interval + stores
     dcc.Interval(id='refresh-interval', interval=2 * 60 * 1000, n_intervals=0),
@@ -1258,7 +1450,7 @@ app.layout = html.Div([
                 html.Button('☰', id='hamburger-btn', n_clicks=0),
                 html.Img(src="/assets/premier_league_logo.png",
                          style={'height': '40px', 'marginRight': '12px'}),
-                html.Span("Fantasy Premier League 2025/26",
+                html.Span(f"Fantasy Premier League {SEASON['label']}",
                           style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
                                  'padding': '6px 12px', 'borderRadius': '6px', 'fontWeight': '800',
                                  'fontSize': '18px', 'marginRight': '12px'}),
@@ -1392,10 +1584,10 @@ app.layout = html.Div([
                         html.H3("Understanding Defensive Contribution Bonuses",
                                 style={'color': COLORS['primary'], 'marginBottom': '12px'}),
                         html.P(["Players earn ", html.Strong("2 bonus points"), " when they hit the defcon threshold: ",
-                                html.Strong("10+ for DEF"), " or ", html.Strong("12+ for MID/FWD"),
+                                html.Strong(f"{DEF_THR}+ for DEF"), " or ", html.Strong(f"{MID_THR}+ for MID/FWD"),
                                 " in a single match."],
                                style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
-                        html.Div([html.Span("Target: 10 DEFCON/90 (DEF) | 12 DEFCON/90 (MID/FWD)",
+                        html.Div([html.Span(f"Target: {DEF_THR} DEFCON/90 (DEF) | {MID_THR} DEFCON/90 (MID/FWD)",
                                             style={'backgroundColor': COLORS['secondary'],
                                                    'color': COLORS['primary'], 'padding': '8px 16px',
                                                    'borderRadius': '20px', 'fontWeight': '600'})])
@@ -1440,7 +1632,8 @@ app.layout = html.Div([
                         html.H3("Defcon Per 90 vs Bonus Threshold",
                                 style={'color': COLORS['primary'], 'marginBottom': '8px'}),
                         html.P(
-                            "Purple line = DEF threshold (10). Pink line = MID/FWD threshold (12). Players above consistently earn defcon bonuses.",
+                            f"Purple line = DEF threshold ({DEF_THR}). Pink line = MID/FWD threshold ({MID_THR}). "
+                            "Players above consistently earn defcon bonuses.",
                             style={'color': COLORS['text_light']}),
                         dcc.Graph(id='bonus-scatter')
                     ], style=CARD_STYLE),
@@ -1449,7 +1642,7 @@ app.layout = html.Div([
                         html.H3("Distance from Bonus Threshold",
                                 style={'color': COLORS['primary'], 'marginBottom': '8px'}),
                         html.P(
-                            "How far above or below their position threshold (DEF: 10, MID/FWD: 12) each player averages.",
+                            f"How far above or below their position threshold (DEF: {DEF_THR}, MID/FWD: {MID_THR}) each player averages.",
                             style={'color': COLORS['text_light']}),
                         dcc.Graph(id='bonus-bar')
                     ], style=CARD_STYLE),
@@ -1501,7 +1694,7 @@ app.layout = html.Div([
                                 style={'color': COLORS['primary'], 'marginBottom': '12px'}),
                         html.P([
                             "This shows how ", html.Strong("consistently"),
-                            " players hit their defcon bonus threshold (DEF: 10+, MID/FWD: 12+) in individual matches. ",
+                            f" players hit their defcon bonus threshold (DEF: {DEF_THR}+, MID/FWD: {MID_THR}+) in individual matches. ",
                             "A player averaging the threshold per 90 minutes might be inconsistent (20 one week, 0 the next) vs someone who reliably hits it every game."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div([
@@ -1560,7 +1753,8 @@ app.layout = html.Div([
                     html.Div([
                         html.H3("Bonus Hit Rate by Player", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
                         html.P(
-                            "Percentage of qualifying games (60+ mins) where player hit their bonus threshold (DEF: 10+, MID/FWD: 12+).",
+                            f"Percentage of qualifying games (60+ mins) where player hit their bonus threshold "
+                            f"(DEF: {DEF_THR}+, MID/FWD: {MID_THR}+).",
                             style={'color': COLORS['text_light']}),
                         dcc.Graph(id='consistency-bar')
                     ], style=CARD_STYLE),
@@ -3029,8 +3223,12 @@ def update_home_tab(n):
     next_gw_now = data.get('next_gw')
     total_mgrs = data.get('total_managers', 0)
 
-    avg_gw = current_gw_now['average_entry_score'] if current_gw_now else 0
-    highest_gw = current_gw_now['highest_score'] if current_gw_now else 0
+    # Both are null until a gameweek has actually been scored — `or 0` is unsafe
+    # for NaN but these are plain ints/None from JSON, so an explicit check is fine.
+    avg_gw = (current_gw_now or {}).get('average_entry_score')
+    highest_gw = (current_gw_now or {}).get('highest_score')
+    avg_gw = 0 if avg_gw is None else avg_gw
+    highest_gw = 0 if highest_gw is None else highest_gw
 
     # Top players
     top_scorer_now = df_now.nlargest(1, 'total_points').iloc[0] if len(df_now) > 0 else None
@@ -3119,7 +3317,8 @@ def update_home_tab(n):
     return html.Div([
         html.Div([
             html.H2("Season Overview", style={'color': COLORS['primary'], 'margin': '0 0 4px 0'}),
-            html.P("Key statistics from the 2025/26 FPL season", style={'color': COLORS['text_light']})
+            html.P(f"Key statistics from the {data.get('season_label', SEASON['label'])} FPL season",
+                   style={'color': COLORS['text_light']})
         ], style={'marginBottom': '24px'}),
 
         html.Div([
@@ -3145,14 +3344,14 @@ def update_home_tab(n):
                 most_cap['web_name'] if most_cap is not None else "N/A",
                 f"{most_cap['team_name']} - £{most_cap['price']:.1f}m" if most_cap is not None else "Data available after deadline",
                 color=COLORS['primary'],
-                image_url=f"https://resources.premierleague.com/premierleague25/photos/players/110x140/{most_cap['code']}.png" if most_cap is not None else None
+                image_url=player_photo_url(most_cap['code']) if most_cap is not None else None
             )], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
             html.Div([build_stat_card(
                 "Most Vice-Captained",
                 most_vice['web_name'] if most_vice is not None else "N/A",
                 f"{most_vice['team_name']} - £{most_vice['price']:.1f}m" if most_vice is not None else "Data available after deadline",
                 color=COLORS['accent'],
-                image_url=f"https://resources.premierleague.com/premierleague25/photos/players/110x140/{most_vice['code']}.png" if most_vice is not None else None
+                image_url=player_photo_url(most_vice['code']) if most_vice is not None else None
             )], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
             html.Div([build_stat_card(
                 "Chips Used This GW",
@@ -3293,16 +3492,16 @@ def check_rank_gap(n_clicks, your_rank, rival_rank):
      Input('bonus-minutes', 'value')]
 )
 def update_bonus(position, team, max_price, min_minutes):
-    filtered = filter_data(position, team, max_price, min_minutes, positions_allowed=['DEF', 'MID', 'FWD'])
+    filtered = filter_data(position, team, max_price, min_minutes, positions_allowed=SEASON['defcon_positions'])
     filtered = filtered.dropna(subset=['defcon_per_90'])
 
     scatter_fig = px.scatter(filtered, x='price', y='defcon_per_90', color='position', size='minutes',
                              hover_name='web_name', hover_data=['team_name', 'defcon', 'defcon_vs_bonus'],
                              color_discrete_map={'DEF': COLORS['primary'], 'MID': COLORS['accent'],
                                                  'FWD': COLORS['info']})
-    scatter_fig.add_hline(y=10, line_dash="dash", line_color=COLORS['primary'],
+    scatter_fig.add_hline(y=SEASON['thresholds'].get('DEF', 10), line_dash="dash", line_color=COLORS['primary'],
                           annotation_text="DEF Threshold (10)", annotation_position="top right")
-    scatter_fig.add_hline(y=12, line_dash="dash", line_color=COLORS['accent'],
+    scatter_fig.add_hline(y=SEASON['thresholds'].get('MID', 12), line_dash="dash", line_color=COLORS['accent'],
                           annotation_text="MID/FWD Threshold (12)", annotation_position="bottom right")
     scatter_fig.update_layout(template='plotly_white', height=400, xaxis_title='Price (£m)',
                               yaxis_title='Defcon per 90',
@@ -3353,7 +3552,7 @@ def update_consistency(position, team, max_price, min_games, min_minutes, _n):
     if position != 'All':
         filtered = filtered[filtered['position'] == position]
     else:
-        filtered = filtered[filtered['position'].isin(['DEF', 'MID', 'FWD'])]
+        filtered = filtered[filtered['position'].isin(SEASON['defcon_positions'])]
 
     # Apply team filter
     if team != 'All':
@@ -3401,8 +3600,12 @@ def update_consistency(position, team, max_price, min_games, min_minutes, _n):
         color_discrete_map={'DEF': COLORS['primary'], 'MID': COLORS['accent'], 'FWD': COLORS['info']}
     )
     scatter_fig.add_hline(y=50, line_dash="dash", line_color='#999', annotation_text="50% hit rate")
-    scatter_fig.add_vline(x=10, line_dash="dash", line_color=COLORS['primary'], annotation_text="DEF threshold (10)")
-    scatter_fig.add_vline(x=12, line_dash="dash", line_color=COLORS['accent'], annotation_text="MID/FWD threshold (12)")
+    _def_thr = SEASON['thresholds'].get('DEF', 10)
+    _mid_thr = SEASON['thresholds'].get('MID', 12)
+    scatter_fig.add_vline(x=_def_thr, line_dash="dash", line_color=COLORS['primary'],
+                          annotation_text=f"DEF threshold ({_def_thr})")
+    scatter_fig.add_vline(x=_mid_thr, line_dash="dash", line_color=COLORS['accent'],
+                          annotation_text=f"MID/FWD threshold ({_mid_thr})")
     scatter_fig.update_layout(
         template='plotly_white',
         height=400,
@@ -3426,7 +3629,7 @@ def update_consistency(position, team, max_price, min_games, min_minutes, _n):
      Input('defcon-minutes', 'value')]
 )
 def update_defcon(position, team, max_price, min_minutes):
-    filtered = filter_data(position, team, max_price, min_minutes, positions_allowed=['DEF', 'MID', 'FWD'])
+    filtered = filter_data(position, team, max_price, min_minutes, positions_allowed=SEASON['defcon_positions'])
     filtered = filtered.dropna(subset=['defcon_per_90', 'expected_defcon'])
 
     fig = px.scatter(filtered, x='expected_defcon', y='defcon', color='position', size='minutes',
@@ -3666,8 +3869,12 @@ def update_fixture_ticker(sort_by, n):
     data = get_data()
     fixtures_data = data.get('fixtures_data', [])
     teams_df      = data.get('teams_df', pd.DataFrame())
-    current_gw_info = data.get('current_gw')
-    current_gw_num  = current_gw_info['id'] if current_gw_info else 1
+    # Anchor one GW behind the next deadline so the target GW is included.
+    # Pre-season this is 0 (target GW1), not 1 — which used to hide GW1.
+    current_gw_num = data.get('fixture_anchor_gw')
+    if current_gw_num is None:
+        current_gw_info = data.get('current_gw')
+        current_gw_num = current_gw_info['id'] if current_gw_info else 0
 
     def _empty(msg):
         fig = go.Figure()
@@ -3882,7 +4089,7 @@ def sync_own_slider(input_val):
      Input('cap-minutes', 'value'), Input('refresh-interval', 'n_intervals')]
 )
 def update_captain(position, team, max_price, min_minutes, _n):
-    filtered = filter_data(position, team, max_price, min_minutes, positions_allowed=['DEF', 'MID', 'FWD'])
+    filtered = filter_data(position, team, max_price, min_minutes, positions_allowed=SEASON['outfield_positions'])
     filtered = filtered.dropna(subset=['captain_score'])
     filtered = filtered[filtered['captain_score'] > 0]
 
@@ -4272,7 +4479,17 @@ def load_my_squad(n_clicks, team_id):
 
     data = get_data()
     current_gw_info = data.get('current_gw')
-    gw_num = current_gw_info['id'] if current_gw_info else 1
+    # Picks only exist once a deadline has passed. Pre-season there is no
+    # current gameweek at all, so asking for GW1 picks just 404s.
+    if not current_gw_info:
+        target = data.get('next_gw_num', 1)
+        return html.Div([html.Div([
+            html.P(f"The season hasn't started yet — squads become available "
+                   f"after the GW{target} deadline.",
+                   style={'color': COLORS['text_light'], 'fontWeight': '600',
+                          'textAlign': 'center', 'padding': '40px 0'})
+        ], style=CARD_STYLE)])
+    gw_num = current_gw_info['id']
     df_all = data.get('df', pd.DataFrame())
     fixtures_data = data.get('fixtures_data', [])
     fixture_difficulty = data.get('fixture_difficulty', {})
