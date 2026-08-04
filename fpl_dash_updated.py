@@ -2817,24 +2817,39 @@ app.layout = html.Div([
 
                     html.Div([
                         html.Div([
-                            html.Label("Sort teams by", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                            dcc.Dropdown(
-                                id='ticker-sort',
-                                options=[
-                                    {'label': 'Alphabetical', 'value': 'name'},
-                                    {'label': 'Easiest run-in first (avg FDR)', 'value': 'fdr'},
-                                ],
-                                value='name',
-                                clearable=False
-                            )
-                        ], style={'maxWidth': '300px'})
+                            html.Div([
+                                html.Label("Gameweeks to show", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Slider(
+                                    id='ticker-gws',
+                                    min=3, max=38, step=1, value=6,
+                                    marks={3: '3', 5: '5', 8: '8', 10: '10', 15: '15',
+                                           20: '20', 30: '30', 38: 'All'},
+                                    tooltip={'placement': 'bottom', 'always_visible': False}
+                                )
+                            ], style={'flex': '2', 'minWidth': '260px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Sort teams by", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Dropdown(
+                                    id='ticker-sort',
+                                    options=[
+                                        {'label': 'Alphabetical', 'value': 'name'},
+                                        {'label': 'Easiest run first (avg FDR in window)', 'value': 'fdr'},
+                                    ],
+                                    value='name',
+                                    clearable=False
+                                )
+                            ], style={'flex': '1', 'minWidth': '220px', 'padding': '0 10px'}),
+                        ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-end'})
                     ], style=CARD_STYLE),
 
                     html.Div([
-                        html.H3("Fixture Ticker: Remainder of the Season",
+                        html.H3("Fixture Ticker",
+                                id='ticker-title',
                                 style={'color': COLORS['primary'], 'marginBottom': '4px'}),
                         html.P("Opponent shown in each cell (H = home, A = away). "
-                               "Double GW cells show both fixtures.",
+                               "Double GW cells show both fixtures. Beyond 15 gameweeks the "
+                               "cell text is hidden to keep the grid readable — hover any "
+                               "cell for the fixture.",
                                style={'color': COLORS['text_light'], 'marginBottom': '12px'}),
                         dcc.Graph(id='ticker-heatmap', config={'displayModeBar': False})
                     ], style=CARD_STYLE),
@@ -4409,10 +4424,11 @@ def update_fdr(position, team, max_price, min_minutes):
 
 # --- FIXTURE TICKER ---
 @callback(
-    [Output('ticker-heatmap', 'figure')],
-    [Input('ticker-sort', 'value'), Input('refresh-interval', 'n_intervals')]
+    [Output('ticker-heatmap', 'figure'), Output('ticker-title', 'children')],
+    [Input('ticker-sort', 'value'), Input('ticker-gws', 'value'),
+     Input('refresh-interval', 'n_intervals')]
 )
-def update_fixture_ticker(sort_by, n):
+def update_fixture_ticker(sort_by, num_gws, n):
     data = get_data()
     fixtures_data = data.get('fixtures_data', [])
     teams_df      = data.get('teams_df', pd.DataFrame())
@@ -4429,7 +4445,7 @@ def update_fixture_ticker(sort_by, n):
                            x=0.5, y=0.5, showarrow=False,
                            font=dict(size=16, color=COLORS['text_light']))
         fig.update_layout(template='plotly_white', height=500)
-        return [fig]
+        return [fig, "Fixture Ticker"]
 
     if teams_df.empty or not fixtures_data:
         return _empty('Data loading — please wait...')
@@ -4447,7 +4463,14 @@ def update_fixture_ticker(sort_by, n):
     if not remaining:
         return _empty('No remaining fixtures found.')
 
-    remaining_gws = sorted(set(f['event'] for f in remaining))
+    # Window: the next N gameweeks from the upcoming deadline. Everything
+    # downstream (matrices, avg-FDR sort, sizing) works off this slice, so the
+    # FDR sort ranks teams by their run over the WINDOW you're looking at.
+    all_remaining_gws = sorted(set(f['event'] for f in remaining))
+    num_gws = int(num_gws or 6)
+    remaining_gws = all_remaining_gws[:num_gws]
+    showing_all = len(remaining_gws) == len(all_remaining_gws)
+    remaining = [f for f in remaining if f['event'] in set(remaining_gws)]
 
     # Build team × gw → list of {opponent, venue, fdr}
     team_gw = {tid: {gw: [] for gw in remaining_gws} for tid in all_team_ids}
@@ -4493,7 +4516,7 @@ def update_fixture_ticker(sort_by, n):
                 hover_row.append(f"{fx['opponent']} ({fx['venue']})  FDR {fx['fdr']}")
             else:
                 z_row.append(6)
-                text_row.append(' / '.join(f"{fx['opponent']} ({fx['venue']})" for fx in fixes))
+                text_row.append('<br>'.join(f"{fx['opponent']} ({fx['venue']})" for fx in fixes))
                 hover_row.append('DGW: ' + '  +  '.join(
                     f"{fx['opponent']} ({fx['venue']}) FDR {fx['fdr']}" for fx in fixes))
         z_matrix.append(z_row)
@@ -4521,6 +4544,19 @@ def update_fixture_ticker(sort_by, n):
         [1.0,    '#00bcd4'],
     ]
 
+    # Adaptive sizing: fewer columns = bigger, clearer cells. Past 15 columns
+    # no font is small enough to avoid overlap, so drop cell text entirely and
+    # let colour + hover carry the information.
+    n_cols = len(remaining_gws)
+    if n_cols <= 8:
+        cell_font, tick_font, show_text = 13, 16, True
+    elif n_cols <= 12:
+        cell_font, tick_font, show_text = 11, 14, True
+    elif n_cols <= 15:
+        cell_font, tick_font, show_text = 9, 12, True
+    else:
+        cell_font, tick_font, show_text = 9, 10, False
+
     height = max(520, len(sorted_ids) * 34 + 120)
 
     fig = go.Figure(go.Heatmap(
@@ -4529,7 +4565,7 @@ def update_fixture_ticker(sort_by, n):
         y=sorted_names,
         text=text_matrix,
         customdata=hover_matrix,
-        texttemplate='%{text}',
+        texttemplate='%{text}' if show_text else '',
         colorscale=colorscale,
         zmin=0,
         zmax=6,
@@ -4537,19 +4573,26 @@ def update_fixture_ticker(sort_by, n):
         hovertemplate='<b>%{y}</b>  %{x}<br>%{customdata}<extra></extra>',
         xgap=2,
         ygap=2,
-        textfont=dict(size=12, color='#333333'),
+        textfont=dict(size=cell_font, color='#333333'),
     ))
 
     fig.update_layout(
         template='plotly_white',
         height=height,
         font=dict(family='Arial, sans-serif', size=12),
-        xaxis=dict(side='top', tickangle=0, fixedrange=True, tickfont=dict(size=16)),
+        xaxis=dict(side='top', tickangle=0 if n_cols <= 15 else -45,
+                   fixedrange=True, tickfont=dict(size=tick_font)),
         yaxis=dict(autorange='reversed', fixedrange=True, tickfont=dict(size=14)),
         margin=dict(l=110, r=20, t=60, b=10),
     )
 
-    return [fig]
+    if showing_all:
+        title = "Fixture Ticker: Remainder of the Season"
+    else:
+        title = (f"Fixture Ticker: Next {len(remaining_gws)} Gameweeks "
+                 f"(GW{remaining_gws[0]}\u2013GW{remaining_gws[-1]})")
+
+    return [fig, title]
 
 
 # --- OWNERSHIP DIFFERENTIALS ---
