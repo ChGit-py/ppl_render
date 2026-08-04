@@ -2821,12 +2821,13 @@ app.layout = html.Div([
                                 html.Label("Gameweeks to show", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Slider(
                                     id='ticker-gws',
-                                    min=3, max=38, step=1, value=6,
-                                    marks={3: '3', 5: '5', 8: '8', 10: '10', 15: '15',
-                                           20: '20', 30: '30', 38: 'All'},
-                                    tooltip={'placement': 'bottom', 'always_visible': False}
+                                    min=5, max=38, step=None, value=5,
+                                    marks={5: '5', 10: '10', 15: '15', 20: '20',
+                                           25: '25', 30: '30', 35: '35', 38: 'All'},
+                                    included=True
                                 )
-                            ], style={'flex': '2', 'minWidth': '260px', 'padding': '0 10px'}),
+                            ], style={'flex': '0 1 420px', 'minWidth': '260px',
+                                      'maxWidth': '420px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Sort teams by", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Dropdown(
@@ -4467,7 +4468,7 @@ def update_fixture_ticker(sort_by, num_gws, n):
     # downstream (matrices, avg-FDR sort, sizing) works off this slice, so the
     # FDR sort ranks teams by their run over the WINDOW you're looking at.
     all_remaining_gws = sorted(set(f['event'] for f in remaining))
-    num_gws = int(num_gws or 6)
+    num_gws = int(num_gws or 5)
     remaining_gws = all_remaining_gws[:num_gws]
     showing_all = len(remaining_gws) == len(all_remaining_gws)
     remaining = [f for f in remaining if f['event'] in set(remaining_gws)]
