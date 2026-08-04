@@ -57,11 +57,54 @@ DEFCON_THRESHOLDS = {'DEF': 10, 'MID': 12, 'FWD': 12}
 
 # Fallbacks, used only if the API drops a field we depend on.
 _FALLBACK_SEASON_LABEL = '2026/27'
-_FALLBACK_PHOTO_PREFIX = 'premierleague25'
+_FALLBACK_PHOTO_PREFIX = 'premierleague26'
+
+# Optional escape hatch: set FPL_PHOTO_PREFIX in the environment (e.g. on
+# Render) to force a bucket without redeploying code, if the PL CDN moves.
+_PHOTO_PREFIX_OVERRIDE = os.environ.get('FPL_PHOTO_PREFIX', '').strip()
+
+# Shown when every candidate URL 404s, so a missing headshot degrades to a
+# neutral silhouette rather than the browser's broken-image icon.
+PHOTO_PLACEHOLDER = (
+    "data:image/svg+xml;utf8,"
+    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 110 140'>"
+    "<rect width='110' height='140' rx='8' fill='%23efeaf3'/>"
+    "<circle cx='55' cy='54' r='23' fill='%23cabdd5'/>"
+    "<path d='M16 140c0-24 17-41 39-41s39 17 39 41z' fill='%23cabdd5'/>"
+    "</svg>"
+)
+
+
+def _photo_templates(prefix):
+    """
+    Ordered candidate URL templates for a given season prefix.
+
+    The PL CDN has used several layouts over the years and does not always have
+    the new season's bucket populated on day one, so we try in order rather than
+    betting the UI on a single guess:
+      1. this season's bucket        premierleague26/.../{code}.png
+      2. last season's bucket        premierleague25/.../{code}.png
+      3. the legacy unversioned path premierleague/.../p{code}.png
+    """
+    base = "https://resources.premierleague.com"
+    templates = []
+    if _PHOTO_PREFIX_OVERRIDE:
+        templates.append(f"{base}/{_PHOTO_PREFIX_OVERRIDE}/photos/players/110x140/{{code}}.png")
+    templates.append(f"{base}/{prefix}/photos/players/110x140/{{code}}.png")
+    try:
+        prev = f"premierleague{int(prefix.replace('premierleague', '')) - 1:02d}"
+        templates.append(f"{base}/{prev}/photos/players/110x140/{{code}}.png")
+    except (TypeError, ValueError):
+        pass
+    templates.append(f"{base}/premierleague/photos/players/110x140/p{{code}}.png")
+    # De-duplicate, preserving order
+    return list(dict.fromkeys(templates))
+
 
 SEASON = {
     'label': _FALLBACK_SEASON_LABEL,
     'photo_base': f"https://resources.premierleague.com/{_FALLBACK_PHOTO_PREFIX}/photos/players/110x140/",
+    'photo_templates': _photo_templates(_FALLBACK_PHOTO_PREFIX),
     'thresholds': dict(DEFCON_THRESHOLDS),
     'defcon_positions': sorted(DEFCON_THRESHOLDS),
     'positions': ['GKP', 'DEF', 'MID', 'FWD'],
@@ -89,10 +132,11 @@ def build_season_config(data):
         start_year, end_yy = season_slug.split('_')
         SEASON['label'] = f"{start_year}/{end_yy}"
         # Photo bucket follows the season start year: 2026/27 -> premierleague26
+        _prefix = f"premierleague{start_year[2:]}"
         SEASON['photo_base'] = (
-            f"https://resources.premierleague.com/premierleague{start_year[2:]}"
-            f"/photos/players/110x140/"
+            f"https://resources.premierleague.com/{_prefix}/photos/players/110x140/"
         )
+        SEASON['photo_templates'] = _photo_templates(_prefix)
 
     # --- Positions, straight from element_types ---
     pos_short = [p['singular_name_short'] for p in data.get('element_types', [])]
@@ -111,20 +155,59 @@ def build_season_config(data):
                 p: DEFCON_THRESHOLDS.get(p, 12) for p in earners
             }
 
+    print(f"  Player photos: {SEASON['photo_templates'][0]}")
     print(f"  Season config: {SEASON['label']} | "
           f"defcon positions {SEASON['defcon_positions']} | "
           f"thresholds {SEASON['thresholds']}")
     return SEASON
 
 
-def player_photo_url(code):
-    """Build a player headshot URL for the current season. Returns None if no code."""
-    if code is None:
+def _photo_code(player_or_code):
+    """
+    Resolve the numeric asset id. Prefers the element's `photo` field (which is
+    what FPL itself builds image URLs from, e.g. "223094.jpg") and falls back to
+    `code`. They are currently identical, but `photo` is the authoritative one.
+    """
+    value = player_or_code
+    if hasattr(player_or_code, 'get'):
+        value = player_or_code.get('photo') or player_or_code.get('code')
+    if value is None:
         return None
     try:
-        return f"{SEASON['photo_base']}{int(code)}.png"
+        return int(str(value).split('.')[0])
     except (TypeError, ValueError):
         return None
+
+
+def player_photo_candidates(player_or_code):
+    """Ordered list of headshot URLs to try, ending in the local placeholder."""
+    code = _photo_code(player_or_code)
+    if code is None:
+        return [PHOTO_PLACEHOLDER]
+    urls = [t.format(code=code) for t in SEASON['photo_templates']]
+    urls.append(PHOTO_PLACEHOLDER)
+    return urls
+
+
+def player_photo_url(player_or_code):
+    """First-choice headshot URL. Kept for callers that just want a string."""
+    return player_photo_candidates(player_or_code)[0]
+
+
+def player_photo_img(player_or_code, style=None, **kwargs):
+    """
+    An <img> that walks its fallback list client-side if the CDN 404s.
+    The remaining candidates ride along in data-fallbacks; a delegated error
+    handler in index_string advances through them.
+    """
+    urls = player_photo_candidates(player_or_code)
+    return html.Img(
+        src=urls[0],
+        className='player-photo',
+        style=style or {},
+        **{'data-fallbacks': '||'.join(urls[1:])},
+        **kwargs
+    )
 
 
 def calculate_fixture_difficulty(fixtures, teams_df, current_gw, num_gameweeks=None):
@@ -1227,6 +1310,12 @@ app.index_string = '''
 
                 .js-plotly-plot { max-height: 300px !important; }
             }
+            /* Player headshots — keep the box stable while fallbacks resolve */
+            .player-photo {
+                object-fit: cover;
+                background: #efeaf3;
+                border-radius: 8px;
+            }
         </style>
     </head>
     <body>
@@ -1235,6 +1324,20 @@ app.index_string = '''
             {%config%}
             {%scripts%}
             {%renderer%}
+            <script>
+                // Player headshots: advance through data-fallbacks on 404.
+                // 'error' does not bubble, so we listen in the capture phase.
+                document.addEventListener('error', function (e) {
+                    var img = e.target;
+                    if (!img || img.tagName !== 'IMG') { return; }
+                    if (!img.classList || !img.classList.contains('player-photo')) { return; }
+                    var raw = img.getAttribute('data-fallbacks') || '';
+                    var list = raw.split('||').filter(function (u) { return u.length > 0; });
+                    if (list.length === 0) { return; }
+                    img.setAttribute('data-fallbacks', list.slice(1).join('||'));
+                    img.src = list[0];
+                }, true);
+            </script>
         </footer>
     </body>
 </html>
@@ -1271,10 +1374,12 @@ def prepare_table_data(dataframe, columns):
         return []
 
 
-def build_stat_card(title, value, subtitle=None, color=COLORS['primary'], image_url=None):
+def build_stat_card(title, value, subtitle=None, color=COLORS['primary'], image_code=None):
     return html.Div([
-        html.Img(src=image_url, style={'width': '50px', 'height': '60px', 'objectFit': 'cover',
-                                        'borderRadius': '6px', 'marginBottom': '8px'}) if image_url else None,
+        player_photo_img(image_code,
+                         style={'width': '50px', 'height': '60px',
+                                'borderRadius': '6px', 'marginBottom': '8px'})
+        if image_code is not None else None,
         html.P(title, style={
             'color': COLORS['text_light'],
             'fontSize': '14px',
@@ -1300,8 +1405,6 @@ def build_stat_card(title, value, subtitle=None, color=COLORS['primary'], image_
 def build_player_spotlight(player, title, metric_label, metric_value):
     if player is None:
         return html.Div()
-
-    photo_url = player_photo_url(player.get('code'))
 
     text_section = html.Div([
         html.Div([
@@ -1337,8 +1440,8 @@ def build_player_spotlight(player, title, metric_label, metric_value):
         ])
     ], style={'flex': '1'})
 
-    image_section = html.Img(src=photo_url, style={
-        'width': '70px', 'height': '90px', 'objectFit': 'cover',
+    image_section = player_photo_img(player, style={
+        'width': '70px', 'height': '90px',
         'borderRadius': '8px', 'alignSelf': 'center'
     })
 
@@ -1527,6 +1630,9 @@ app.layout = html.Div([
                             id='nav-squad-builder', className='nav-item', n_clicks=0),
             ]
         ),
+
+        # Carried-over-stats warning; populated by callback, empty in-season
+        html.Div(id='stale-stats-banner'),
 
         # Content area — all pages live here, show/hide via callback
         html.Div(id='content-area', children=[
@@ -3070,6 +3176,60 @@ app.layout = html.Div([
 # CALLBACKS
 # =============================================================================
 
+@callback(
+    Output('stale-stats-banner', 'children'),
+    Input('refresh-interval', 'n_intervals')
+)
+def render_stale_stats_banner(_n):
+    """
+    Until the season starts, every cumulative counter in bootstrap-static
+    (minutes, points, clean sheets, goals conceded, BPS, DEFCON...) still holds
+    its FINAL 2025/26 value. FPL zeroes them around the GW1 deadline. Nothing in
+    the payload flags this, so any tab built on season totals silently plots last
+    season's numbers under this season's clubs. Say so rather than let the charts
+    imply otherwise.
+    """
+    data = get_data()
+    if data.get('season_started', True):
+        return None
+
+    next_gw = data.get('next_gw') or {}
+    deadline = ''
+    if next_gw.get('deadline_time'):
+        try:
+            deadline = datetime.fromisoformat(
+                next_gw['deadline_time'].replace('Z', '+00:00')
+            ).strftime('%d %b, %H:%M')
+        except (TypeError, ValueError):
+            deadline = ''
+
+    return html.Div([
+        html.Span("Pre-season", style={
+            'backgroundColor': COLORS['warning'], 'color': '#3a2c00',
+            'padding': '4px 12px', 'borderRadius': '20px',
+            'fontSize': '12px', 'fontWeight': '700',
+            'textTransform': 'uppercase', 'letterSpacing': '0.5px',
+            'marginRight': '12px', 'whiteSpace': 'nowrap', 'flexShrink': '0'
+        }),
+        html.Span([
+            "Player stats shown are ",
+            html.Strong("final 2025/26 numbers"),
+            ". FPL carries them over until the "
+            f"{next_gw.get('name', 'Gameweek 1')} deadline"
+            f"{f' ({deadline})' if deadline else ''}, when they reset to zero. "
+            "Prices, clubs and fixtures are current — minutes, points, clean "
+            "sheets and DEFCON are not. Transferred players still carry their "
+            "old club's numbers, and promoted clubs are absent because they have "
+            "no Premier League minutes yet."
+        ], style={'color': COLORS['text_dark'], 'fontSize': '14px', 'lineHeight': '1.5'})
+    ], style={
+        'display': 'flex', 'alignItems': 'flex-start', 'flexWrap': 'wrap', 'gap': '4px',
+        'backgroundColor': '#fff8e1', 'border': '1px solid #ffe082',
+        'borderLeft': f"4px solid {COLORS['warning']}",
+        'borderRadius': '8px', 'padding': '14px 18px', 'marginBottom': '20px'
+    })
+
+
 # All page values in order
 ALL_PAGES = [
     'home', 'defcon-bonus', 'bonus-consistency', 'defcon',
@@ -3344,14 +3504,14 @@ def update_home_tab(n):
                 most_cap['web_name'] if most_cap is not None else "N/A",
                 f"{most_cap['team_name']} - £{most_cap['price']:.1f}m" if most_cap is not None else "Data available after deadline",
                 color=COLORS['primary'],
-                image_url=player_photo_url(most_cap['code']) if most_cap is not None else None
+                image_code=most_cap if most_cap is not None else None
             )], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
             html.Div([build_stat_card(
                 "Most Vice-Captained",
                 most_vice['web_name'] if most_vice is not None else "N/A",
                 f"{most_vice['team_name']} - £{most_vice['price']:.1f}m" if most_vice is not None else "Data available after deadline",
                 color=COLORS['accent'],
-                image_url=player_photo_url(most_vice['code']) if most_vice is not None else None
+                image_code=most_vice if most_vice is not None else None
             )], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
             html.Div([build_stat_card(
                 "Chips Used This GW",
