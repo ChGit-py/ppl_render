@@ -12,6 +12,8 @@ import plotly.graph_objects as go
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import json
+import sqlite3
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import gc
 import pickle
@@ -442,40 +444,313 @@ def _safe_val(v):
     return float(v)
 
 
-def compute_captain_score(row, weights=None):
+CAPTAIN_WEIGHTS = {
+    'form': 0.25,
+    'xgi90': 0.20,
+    'ppg': 0.15,
+    'fdr_inv': 0.15,
+    'bps90': 0.10,
+    'venue_ppg': 0.10,
+    'own_inv': 0.05,
+}
+
+
+def _minmax_norm(series, index):
     """
-    Weighted captain score combining multiple factors.
-    Higher score = better captain pick.
+    Min-max normalize a series to 0-1. NaN inputs become 0 (no evidence = no
+    credit). If the column is entirely NaN or constant, return a neutral 0.5
+    so it neither helps nor hurts anyone.
     """
-    if weights is None:
-        weights = {
-            'form': 0.25,
-            'xgi': 0.20,
-            'ppg': 0.15,
-            'fdr_inv': 0.15,
-            'bps_rate': 0.10,
-            'venue_ppg': 0.10,
-            'ownership_inv': 0.05
+    s = pd.to_numeric(series, errors='coerce')
+    lo, hi = s.min(), s.max()
+    if pd.isna(lo) or pd.isna(hi) or hi == lo:
+        return pd.Series(0.5, index=index)
+    return ((s - lo) / (hi - lo)).fillna(0.0)
+
+
+def compute_captain_scores(df):
+    """
+    Vectorized, normalized captain score on a 0-100 scale.
+
+    The old model summed raw values on wildly different scales (season-total
+    xGI vs 0-10 form vs a 0-1 ownership term) with fudge multipliers trying to
+    rebalance them — so the stated weights didn't mean what they said. Here
+    every input is min-max normalized across the pool first, so the weights
+    are true relative importances:
+
+      Form 25% | xGI per 90 20% | PPG 15% | Fixture ease 15%
+      BPS/90 10% | Venue-specific PPG 10% | Differential 5%
+
+    Two multipliers then discount the weighted sum:
+      - availability (chance_of_playing_next_round; 100% when unflagged)
+      - start security (recent start rate, floored at 0.5 so squad rotation
+        dampens rather than erases a score; neutral until histories load)
+
+    Per-90 xGI replaces season-total xGI so minutes played no longer
+    dominates the attacking-threat term. Attack-specific FDR is used when
+    available, falling back to FPL's generic FDR.
+    """
+    idx = df.index
+
+    fdr_source = df['next_att_fdr'] if 'next_att_fdr' in df.columns else df['next_fdr']
+    fdr_inv = 6 - pd.to_numeric(fdr_source, errors='coerce').fillna(3)
+
+    components = {
+        'form': _minmax_norm(df['form'], idx),
+        'xgi90': _minmax_norm(df['xgi_per_90'], idx),
+        'ppg': _minmax_norm(df['ppg'], idx),
+        'fdr_inv': _minmax_norm(fdr_inv, idx),
+        'bps90': _minmax_norm(df['bps_per_90'], idx),
+        'venue_ppg': _minmax_norm(df['venue_ppg'], idx) if 'venue_ppg' in df.columns
+                     else pd.Series(0.5, index=idx),
+        'own_inv': _minmax_norm(100 - pd.to_numeric(df['ownership'], errors='coerce').fillna(50), idx),
+    }
+
+    raw = sum(CAPTAIN_WEIGHTS[k] * v for k, v in components.items())
+    score = raw * 100
+
+    # Availability multiplier — a 25% flag quarters the score
+    if 'avail_pct' in df.columns:
+        avail = pd.to_numeric(df['avail_pct'], errors='coerce').fillna(100) / 100
+        score = score * avail
+
+    # Start-security damping — rotation risks get discounted, not erased.
+    # NaN (no history yet / not a candidate) stays neutral at 1.0.
+    if 'start_rate' in df.columns:
+        sec = pd.to_numeric(df['start_rate'], errors='coerce') / 100
+        sec = sec.clip(lower=0.5, upper=1.0).fillna(1.0)
+        score = score * sec
+
+    return score.round(1)
+
+
+def calculate_minutes_security(player_histories, window=6):
+    """
+    From match-by-match history, compute recent start rate and share of
+    available minutes over the last `window` matches. The biggest source of
+    FPL point loss isn't bad picks — it's benched/rotated picks.
+    Returns dict of player_id -> {start_rate, recent_minutes_pct, recent_games}
+    """
+    security = {}
+    for pid, matches in player_histories.items():
+        recent = sorted(matches, key=lambda m: (m.get('round') or 0))[-window:]
+        if not recent:
+            continue
+        total_mins = sum(m.get('minutes', 0) for m in recent)
+        # The API ships a `starts` field; fall back to a 60-minute heuristic
+        starts = sum(
+            1 for m in recent
+            if (m.get('starts') if m.get('starts') is not None else (m.get('minutes', 0) >= 60))
+        )
+        n = len(recent)
+        security[pid] = {
+            'start_rate': round(starts / n * 100, 1),
+            'recent_minutes_pct': round(total_mins / (n * 90) * 100, 1),
+            'recent_games': n,
         }
+    return security
 
-    form_score = _safe_val(row.get('form', 0))
-    xgi_score = _safe_val(row.get('expected_goal_involvements', 0))
-    ppg_score = _safe_val(row.get('ppg', 0))
-    fdr_inv_score = (6 - _safe_val(row.get('next_fdr', 3)))
-    bps_score = _safe_val(row.get('bps_per_90', 0))
-    venue_ppg_score = _safe_val(row.get('venue_ppg', 0))
-    own_inv_score = max(0, 100 - _safe_val(row.get('ownership', 50))) / 100
 
-    raw = (
-            weights['form'] * form_score +
-            weights['xgi'] * xgi_score * 2 +
-            weights['ppg'] * ppg_score +
-            weights['fdr_inv'] * fdr_inv_score * 2 +
-            weights['bps_rate'] * bps_score * 0.3 +
-            weights['venue_ppg'] * venue_ppg_score +
-            weights['ownership_inv'] * own_inv_score * 10
-    )
-    return round(raw, 2)
+def calculate_custom_fdr(fixtures, teams_df, anchor_gw, num_gameweeks=5):
+    """
+    Attack- and defence-specific fixture difficulty built from FPL's team
+    strength ratings, scaled to the familiar 1-5 range.
+
+    FPL's generic FDR gives one number per fixture, but "easy fixture for a
+    defender" and "easy fixture for a forward" are different questions:
+      - attack difficulty = opponent's (venue-specific) DEFENCE strength
+      - defence difficulty = opponent's (venue-specific) ATTACK strength
+
+    Returns dict of team_id -> {att_fdr, def_fdr, next_att_fdr, next_def_fdr}
+    """
+    strength_cols = ['strength_attack_home', 'strength_attack_away',
+                     'strength_defence_home', 'strength_defence_away']
+    if not all(c in teams_df.columns for c in strength_cols):
+        return {}
+
+    strengths = teams_df.set_index('id')[strength_cols].to_dict('index')
+
+    att_pool = ([s['strength_attack_home'] for s in strengths.values()] +
+                [s['strength_attack_away'] for s in strengths.values()])
+    def_pool = ([s['strength_defence_home'] for s in strengths.values()] +
+                [s['strength_defence_away'] for s in strengths.values()])
+
+    def scale(value, pool):
+        lo, hi = min(pool), max(pool)
+        if hi == lo:
+            return 3.0
+        return round(1 + 4 * (value - lo) / (hi - lo), 2)
+
+    upcoming_gws = set(range(anchor_gw + 1, anchor_gw + num_gameweeks + 1))
+    per_team = {tid: {'att': [], 'def': []} for tid in strengths}
+
+    for f in sorted([f for f in fixtures if f.get('event') in upcoming_gws],
+                    key=lambda f: (f.get('event') or 0, f.get('kickoff_time') or '')):
+        home, away = f['team_h'], f['team_a']
+        if home in strengths and away in strengths:
+            # Home team attacks the away side's away-defence, defends their away-attack
+            per_team[home]['att'].append(scale(strengths[away]['strength_defence_away'], def_pool))
+            per_team[home]['def'].append(scale(strengths[away]['strength_attack_away'], att_pool))
+            # Away team faces the home side's home strengths
+            per_team[away]['att'].append(scale(strengths[home]['strength_defence_home'], def_pool))
+            per_team[away]['def'].append(scale(strengths[home]['strength_attack_home'], att_pool))
+
+    result = {}
+    for tid, vals in per_team.items():
+        result[tid] = {
+            'att_fdr': round(sum(vals['att']) / len(vals['att']), 2) if vals['att'] else None,
+            'def_fdr': round(sum(vals['def']) / len(vals['def']), 2) if vals['def'] else None,
+            'next_att_fdr': vals['att'][0] if vals['att'] else None,
+            'next_def_fdr': vals['def'][0] if vals['def'] else None,
+        }
+    return result
+
+
+# =============================================================================
+# SNAPSHOT STORE — daily state for ownership/price trend deltas
+# =============================================================================
+
+SNAPSHOT_DB_PATH = os.environ.get(
+    'FPL_SNAPSHOT_DB',
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fpl_snapshots.db')
+)
+SNAPSHOT_COLS = ['id', 'price', 'ownership', 'total_points', 'form',
+                 'transfers_in_gw', 'transfers_out_gw']
+
+
+def _snapshot_conn():
+    conn = sqlite3.connect(SNAPSHOT_DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS player_snapshots (
+            snap_date        TEXT NOT NULL,
+            player_id        INTEGER NOT NULL,
+            gw               INTEGER,
+            price            REAL,
+            ownership        REAL,
+            total_points     INTEGER,
+            form             REAL,
+            transfers_in_gw  INTEGER,
+            transfers_out_gw INTEGER,
+            PRIMARY KEY (snap_date, player_id)
+        )
+    """)
+    return conn
+
+
+def save_daily_snapshot(df_active, gw):
+    """
+    Append today's player state (one row per player per day, idempotent).
+    Bootstrap-static is a point-in-time snapshot — without this, every refresh
+    throws away the previous state and trends are unknowable.
+    """
+    today = datetime.now().strftime('%Y-%m-%d')
+    rows = []
+    for _, r in df_active[SNAPSHOT_COLS].iterrows():
+        rows.append((
+            today, int(r['id']), gw,
+            None if pd.isna(r['price']) else float(r['price']),
+            None if pd.isna(r['ownership']) else float(r['ownership']),
+            None if pd.isna(r['total_points']) else int(r['total_points']),
+            None if pd.isna(r['form']) else float(r['form']),
+            None if pd.isna(r['transfers_in_gw']) else int(r['transfers_in_gw']),
+            None if pd.isna(r['transfers_out_gw']) else int(r['transfers_out_gw']),
+        ))
+    conn = _snapshot_conn()
+    with conn:
+        conn.executemany(
+            "INSERT OR REPLACE INTO player_snapshots VALUES (?,?,?,?,?,?,?,?,?)", rows
+        )
+        # Retention: keep 90 days
+        conn.execute(
+            "DELETE FROM player_snapshots WHERE snap_date < date('now', '-90 days')"
+        )
+    conn.close()
+    print(f"  Snapshot saved for {len(rows)} players ({today})")
+
+
+def load_snapshot_baseline(days=7):
+    """
+    Oldest snapshot within the window (excluding today), per player.
+    Returns (dict of player_id -> {price, ownership}, baseline_date or None).
+    """
+    conn = _snapshot_conn()
+    row = conn.execute(
+        """SELECT MIN(snap_date) FROM player_snapshots
+           WHERE snap_date >= date('now', ?) AND snap_date < date('now')""",
+        (f'-{int(days)} days',)
+    ).fetchone()
+    baseline_date = row[0] if row else None
+    if not baseline_date:
+        conn.close()
+        return {}, None
+    baseline = {
+        pid: {'price': price, 'ownership': own}
+        for pid, price, own in conn.execute(
+            "SELECT player_id, price, ownership FROM player_snapshots WHERE snap_date = ?",
+            (baseline_date,)
+        )
+    }
+    conn.close()
+    return baseline, baseline_date
+
+
+# =============================================================================
+# EFFECTIVE OWNERSHIP — sampled from the top of the overall league
+# =============================================================================
+
+OVERALL_LEAGUE_ID = 314
+EO_SAMPLE_SIZE = 100
+
+
+def fetch_top_manager_entry_ids(sample_size=EO_SAMPLE_SIZE):
+    """Entry IDs of the current overall-league leaders (paged, 50/page)."""
+    ids = []
+    page = 1
+    while len(ids) < sample_size and page <= (sample_size // 50) + 1:
+        try:
+            r = requests.get(
+                f"{FPL_BASE_URL}/leagues-classic/{OVERALL_LEAGUE_ID}/standings/"
+                f"?page_standings={page}", timeout=15
+            )
+            r.raise_for_status()
+            results = (r.json().get('standings') or {}).get('results') or []
+        except Exception as e:
+            print(f"  Error fetching overall standings page {page}: {e}")
+            break
+        if not results:
+            break
+        ids.extend(e['entry'] for e in results)
+        page += 1
+    return ids[:sample_size]
+
+
+def calculate_effective_ownership(entry_ids, gw, max_workers=8):
+    """
+    Effective ownership among sampled top managers, using pick multipliers
+    (0 = benched, 1 = starting, 2 = captain, 3 = triple captain). Overall
+    `selected_by_percent` includes millions of abandoned teams; what moves
+    rank is ownership among managers you're actually racing.
+    Returns (dict of player_id -> EO%, number of squads sampled).
+    """
+    eo_counts = Counter()
+    n_ok = 0
+
+    def _fetch(eid):
+        return fetch_team_picks(eid, gw)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(_fetch, eid) for eid in entry_ids]
+        for future in as_completed(futures):
+            picks_data = future.result()
+            if not picks_data or 'picks' not in picks_data:
+                continue
+            n_ok += 1
+            for p in picks_data['picks']:
+                eo_counts[p['element']] += p.get('multiplier', 1)
+
+    if n_ok == 0:
+        return {}, 0
+    return {pid: round(cnt / n_ok * 100, 1) for pid, cnt in eo_counts.items()}, n_ok
 
 
 def estimate_price_change_likelihood(row, total_managers):
@@ -587,6 +862,31 @@ def process_player_data(data):
     df['gi_per_90'] = (df['gi'] / df['minutes_safe'] * 90).round(2)
     df['xgi_diff'] = (df['gi'] - df['expected_goal_involvements']).round(2)
     df['xgi_diff_per_90'] = (df['gi_per_90'] - df['xgi_per_90']).round(2)
+
+    # --- Availability & FPL's own expected points ---
+    # chance_of_playing_next_round is None for unflagged players = fully fit
+    if 'chance_of_playing_next_round' in df.columns:
+        df['avail_pct'] = pd.to_numeric(
+            df['chance_of_playing_next_round'], errors='coerce').fillna(100)
+    else:
+        df['avail_pct'] = 100.0
+    df['news'] = df['news'].fillna('') if 'news' in df.columns else ''
+    df['ep_next'] = pd.to_numeric(df['ep_next'], errors='coerce') if 'ep_next' in df.columns else np.nan
+
+    # --- Set-piece duties (P=penalties, C=corners/indirect FKs, F=direct FKs) ---
+    # First or second in a duty order is a real xGI driver hiding in the payload.
+    def _duty(col, tag):
+        if col not in df.columns:
+            return pd.Series('', index=df.index)
+        order = pd.to_numeric(df[col], errors='coerce')
+        return order.map(lambda v: f"{tag}{int(v)}" if pd.notna(v) and v <= 2 else '')
+
+    duties = pd.concat([
+        _duty('penalties_order', 'P'),
+        _duty('corners_and_indirect_freekicks_order', 'C'),
+        _duty('direct_freekicks_order', 'F'),
+    ], axis=1)
+    df['set_pieces'] = duties.apply(lambda r: ' '.join(x for x in r if x), axis=1)
 
     return df
 
@@ -715,7 +1015,7 @@ _CACHE_KEYS = [
 # Bump whenever the shape of cached data changes, or at a season rollover.
 # A mismatch (or an over-age cache) forces a clean fetch instead of serving
 # last season's teams and players from disk.
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 MAX_CACHE_AGE = REFRESH_INTERVAL
 
 
@@ -831,6 +1131,13 @@ def refresh_core_data():
             lambda x: fixture_difficulty.get(x, {}).get('fixture_string'))
         df_active['fixture_count'] = df_active['team'].map(lambda x: fixture_difficulty.get(x, {}).get('fixture_count'))
 
+        # Attack/defence-specific FDR from team strength ratings (next 5 GWs)
+        custom_fdr = calculate_custom_fdr(fixtures_data, teams_df, fixture_anchor_gw, num_gameweeks=5)
+        for col, key in [('att_fdr_5', 'att_fdr'), ('def_fdr_5', 'def_fdr'),
+                         ('next_att_fdr', 'next_att_fdr'), ('next_def_fdr', 'next_def_fdr')]:
+            df_active[col] = df_active['team'].map(lambda x, k=key: custom_fdr.get(x, {}).get(k))
+        print(f"  Attack/defence FDR computed for {len(custom_fdr)} teams")
+
         total_managers = bootstrap_data['total_players']
 
         # Next fixture venue & FDR
@@ -855,13 +1162,14 @@ def refresh_core_data():
         df_active['next_venue'] = df_active['team'].map(lambda x: team_next_fixture.get(x, {}).get('venue', ''))
         df_active['next_fdr'] = df_active['team'].map(lambda x: team_next_fixture.get(x, {}).get('fdr', 3))
 
-        # Initialise home/away columns as NaN (Phase 2 will populate)
-        for col in ['home_ppg', 'away_ppg', 'home_games', 'away_games', 'venue_ppg', 'ha_diff']:
+        # Initialise home/away + Phase-2 columns as NaN (Phase 2 will populate)
+        for col in ['home_ppg', 'away_ppg', 'home_games', 'away_games', 'venue_ppg', 'ha_diff',
+                    'start_rate', 'recent_minutes_pct', 'top_eo']:
             df_active[col] = np.nan
 
-        # Captain score (partial — form/xGI/ppg/fdr work, venue_ppg will be NaN until Phase 2)
+        # Captain score (partial — venue_ppg/start_rate neutral until Phase 2)
         print("Computing initial captain scores...")
-        df_active['captain_score'] = df_active.apply(compute_captain_score, axis=1)
+        df_active['captain_score'] = compute_captain_scores(df_active)
 
         # Transfer trend / price prediction
         print("Computing price change likelihood scores...")
@@ -875,6 +1183,31 @@ def refresh_core_data():
                 (df_active['form'].fillna(0) * 0.3) +
                 ((100 - df_active['ownership'].fillna(50)) / 10 * 0.2)
         ).round(2)
+
+        # --- Daily snapshot + 7-day trend deltas ---
+        # Turns "what is true now" into "what is changing": ownership momentum
+        # and realised price movement over the last week.
+        try:
+            save_daily_snapshot(df_active, next_gw_num)
+            baseline, baseline_date = load_snapshot_baseline(days=7)
+            if baseline:
+                df_active['own_delta_7d'] = (
+                    df_active['ownership'] -
+                    df_active['id'].map(lambda x: baseline.get(x, {}).get('ownership'))
+                ).round(2)
+                df_active['price_delta_7d'] = (
+                    df_active['price'] -
+                    df_active['id'].map(lambda x: baseline.get(x, {}).get('price'))
+                ).round(1)
+                print(f"  Trend deltas computed vs snapshot from {baseline_date}")
+            else:
+                df_active['own_delta_7d'] = np.nan
+                df_active['price_delta_7d'] = np.nan
+                print("  No prior snapshot yet — trend deltas will appear from tomorrow")
+        except Exception as e:
+            print(f"  Snapshot store unavailable: {e}")
+            df_active['own_delta_7d'] = np.nan
+            df_active['price_delta_7d'] = np.nan
 
         sorted_teams = sorted(df['team_name'].unique())
 
@@ -994,13 +1327,44 @@ def refresh_heavy_data():
         )
         df_active['ha_diff'] = df_active['home_ppg'] - df_active['away_ppg']
 
+        # Minutes security from the same histories — no extra API calls
+        print("Computing minutes security (last 6 matches)...")
+        minutes_sec = calculate_minutes_security(player_histories)
+        df_active['start_rate'] = df_active['id'].map(
+            lambda x: minutes_sec.get(x, {}).get('start_rate'))
+        df_active['recent_minutes_pct'] = df_active['id'].map(
+            lambda x: minutes_sec.get(x, {}).get('recent_minutes_pct'))
+
         # Free intermediate data to reclaim memory
-        del home_away_splits, captain_candidates
+        del home_away_splits, captain_candidates, minutes_sec
         gc.collect()
 
-        # Recalculate captain score with full home/away data
-        print("Recalculating captain scores with home/away data...")
-        df_active['captain_score'] = df_active.apply(compute_captain_score, axis=1)
+        # Effective ownership among the overall-league leaders. Raw ownership
+        # includes millions of dead teams; EO among top managers is what
+        # actually separates a differential from a must-own.
+        print("Sampling effective ownership from overall league leaders...")
+        try:
+            with DATA_LOCK:
+                cur = DATA.get('current_gw')
+            eo_gw = cur['id'] if cur else None
+            if eo_gw:
+                entry_ids = fetch_top_manager_entry_ids()
+                eo_map, n_ok = calculate_effective_ownership(entry_ids, eo_gw)
+                if n_ok >= 20:
+                    df_active['top_eo'] = df_active['id'].map(eo_map).fillna(0).round(1)
+                    print(f"  EO computed from {n_ok} top squads")
+                else:
+                    print(f"  EO sample too small ({n_ok} squads) — skipped")
+                del eo_map, entry_ids
+            else:
+                print("  No current GW yet — EO skipped until GW1 starts")
+        except Exception as e:
+            print(f"  EO sampling failed (non-fatal): {e}")
+        gc.collect()
+
+        # Recalculate captain score with venue PPG + start security in play
+        print("Recalculating captain scores with home/away + minutes data...")
+        df_active['captain_score'] = compute_captain_scores(df_active)
 
         # Swap into global store
         with DATA_LOCK:
@@ -2690,6 +3054,10 @@ app.layout = html.Div([
                                 {'name': 'xGI', 'id': 'expected_goal_involvements', 'type': 'numeric',
                                  'format': {'specifier': '.2f'}},
                                 {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                {'name': 'EO% (Top)', 'id': 'top_eo', 'type': 'numeric',
+                                 'format': {'specifier': '.1f'}},
+                                {'name': 'Own \u03947d', 'id': 'own_delta_7d', 'type': 'numeric',
+                                 'format': {'specifier': '+.1f'}},
                                 {'name': 'Diff Score', 'id': 'differential_score', 'type': 'numeric',
                                  'format': {'specifier': '.2f'}},
                                 {'name': 'Avg FDR', 'id': 'avg_fdr_5', 'type': 'numeric',
@@ -2724,10 +3092,10 @@ app.layout = html.Div([
                         html.P([
                             "Captaincy is the ", html.Strong("single biggest rank differentiator"), " in FPL. ",
                             "Your captain's points are doubled, so getting it right every week compounds massively. ",
-                            "This tool scores candidates using a weighted model: ",
+                            "This tool scores candidates 0\u2013100 with every input normalized across the pool, so the weights are true relative importances: ",
                             html.Strong(
-                                "Form (25%), xGI (20%), PPG (15%), Fixture ease (15%), BPS rate (10%), Home/Away PPG (10%), Differential (5%)"),
-                            "."
+                                "Form (25%), xGI/90 (20%), PPG (15%), Attack-fixture ease (15%), BPS/90 (10%), Venue PPG (10%), Differential (5%)"),
+                            ". Scores are then discounted by availability flags and recent start rate \u2014 a great score means nothing on a 25% flag or a rotation risk."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div([
                             html.Span(f"Next fixture: GW{next_gw_num}",
@@ -2798,19 +3166,27 @@ app.layout = html.Div([
                                 {'name': 'Pos', 'id': 'position'},
                                 {'name': 'Price', 'id': 'price', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                                 {'name': 'Captain Score', 'id': 'captain_score', 'type': 'numeric',
-                                 'format': {'specifier': '.2f'}},
+                                 'format': {'specifier': '.1f'}},
+                                {'name': 'FPL xP', 'id': 'ep_next', 'type': 'numeric',
+                                 'format': {'specifier': '.1f'}},
                                 {'name': 'Form', 'id': 'form', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                                 {'name': 'PPG', 'id': 'ppg', 'type': 'numeric', 'format': {'specifier': '.2f'}},
-                                {'name': 'xGI', 'id': 'expected_goal_involvements', 'type': 'numeric',
+                                {'name': 'xGI/90', 'id': 'xgi_per_90', 'type': 'numeric',
                                  'format': {'specifier': '.2f'}},
                                 {'name': 'Next', 'id': 'next_opponent'},
                                 {'name': 'Venue', 'id': 'next_venue'},
-                                {'name': 'FDR', 'id': 'next_fdr', 'type': 'numeric'},
-                                {'name': 'Home PPG', 'id': 'home_ppg', 'type': 'numeric',
+                                {'name': 'aFDR', 'id': 'next_att_fdr', 'type': 'numeric',
+                                 'format': {'specifier': '.1f'}},
+                                {'name': 'Venue PPG', 'id': 'venue_ppg', 'type': 'numeric',
                                  'format': {'specifier': '.2f'}},
-                                {'name': 'Away PPG', 'id': 'away_ppg', 'type': 'numeric',
-                                 'format': {'specifier': '.2f'}},
+                                {'name': 'Start%', 'id': 'start_rate', 'type': 'numeric',
+                                 'format': {'specifier': '.0f'}},
+                                {'name': 'Avail%', 'id': 'avail_pct', 'type': 'numeric',
+                                 'format': {'specifier': '.0f'}},
+                                {'name': 'Set Pieces', 'id': 'set_pieces'},
                                 {'name': 'BPS/90', 'id': 'bps_per_90', 'type': 'numeric',
+                                 'format': {'specifier': '.1f'}},
+                                {'name': 'EO% (Top)', 'id': 'top_eo', 'type': 'numeric',
                                  'format': {'specifier': '.1f'}},
                                 {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                             ],
@@ -2821,14 +3197,18 @@ app.layout = html.Div([
                             style_data=TABLE_STYLE_DATA,
                             style_data_conditional=[
                                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
-                                {'if': {'filter_query': '{next_fdr} <= 2', 'column_id': 'next_fdr'},
+                                {'if': {'filter_query': '{next_att_fdr} <= 2.3', 'column_id': 'next_att_fdr'},
                                  'backgroundColor': '#e8f5e9'},
-                                {'if': {'filter_query': '{next_fdr} >= 4', 'column_id': 'next_fdr'},
+                                {'if': {'filter_query': '{next_att_fdr} >= 3.7', 'column_id': 'next_att_fdr'},
                                  'backgroundColor': '#ffebee'},
                                 {'if': {'filter_query': '{next_venue} = H', 'column_id': 'next_venue'},
                                  'color': COLORS['success'], 'fontWeight': '600'},
                                 {'if': {'filter_query': '{next_venue} = A', 'column_id': 'next_venue'},
                                  'color': COLORS['danger'], 'fontWeight': '600'},
+                                {'if': {'filter_query': '{avail_pct} < 100', 'column_id': 'avail_pct'},
+                                 'backgroundColor': '#ffebee', 'fontWeight': '600'},
+                                {'if': {'filter_query': '{start_rate} < 70', 'column_id': 'start_rate'},
+                                 'backgroundColor': '#fff8e1'},
                             ]
                         )
                     ], style=CARD_STYLE)
@@ -2936,6 +3316,10 @@ app.layout = html.Div([
                                  'format': {'specifier': '.2f'}},
                                 {'name': 'Price Chg', 'id': 'price_change_likelihood', 'type': 'numeric',
                                  'format': {'specifier': '.1f'}},
+                                {'name': 'Own \u03947d', 'id': 'own_delta_7d', 'type': 'numeric',
+                                 'format': {'specifier': '+.1f'}},
+                                {'name': '\u00a3 \u03947d', 'id': 'price_delta_7d', 'type': 'numeric',
+                                 'format': {'specifier': '+.1f'}},
                                 {'name': 'Season +/-', 'id': 'cost_change_start', 'type': 'numeric',
                                  'format': {'specifier': '.1f'}},
                                 {'name': 'Form', 'id': 'form', 'type': 'numeric', 'format': {'specifier': '.1f'}},
@@ -4217,7 +4601,8 @@ def update_differentials(position, team, max_price, max_own, min_minutes):
                           font=dict(family='Arial, sans-serif'))
 
     cols = ['web_name', 'team_name', 'position', 'price', 'total_points', 'form', 'ppg',
-            'expected_goal_involvements', 'ownership', 'differential_score', 'avg_fdr_5', 'fixture_string']
+            'expected_goal_involvements', 'ownership', 'top_eo', 'own_delta_7d',
+            'differential_score', 'avg_fdr_5', 'fixture_string']
     table_data = prepare_table_data(filtered.nlargest(50, 'differential_score'), cols)
 
     return scatter_fig, bar_fig, table_data
@@ -4296,7 +4681,9 @@ def update_captain(position, team, max_price, min_minutes, _n):
     ha_scatter.update_layout(template='plotly_white', height=400, xaxis_title='Away PPG', yaxis_title='Home PPG',
                              font=dict(family='Arial, sans-serif'))
 
-    cols = ['web_name', 'team_name', 'position', 'price', 'captain_score', 'form', 'ppg',
+    cols = ['web_name', 'team_name', 'position', 'price', 'captain_score', 'ep_next', 'form', 'ppg',
+            'xgi_per_90', 'next_att_fdr', 'venue_ppg', 'start_rate', 'avail_pct',
+            'set_pieces', 'top_eo',
             'expected_goal_involvements', 'next_opponent', 'next_venue', 'next_fdr',
             'home_ppg', 'away_ppg', 'bps_per_90', 'ownership']
     table_data = prepare_table_data(filtered.nlargest(50, 'captain_score'), cols)
@@ -4362,7 +4749,8 @@ def update_transfers(position, team, max_price, min_minutes):
     sorted_by_activity = filtered.copy()
     sorted_by_activity['abs_net'] = sorted_by_activity['net_transfers_gw'].abs()
     cols = ['web_name', 'team_name', 'position', 'price', 'transfers_in_gw', 'transfers_out_gw',
-            'net_transfers_gw', 'transfer_ratio', 'price_change_likelihood', 'cost_change_start', 'form', 'ownership']
+            'net_transfers_gw', 'transfer_ratio', 'price_change_likelihood', 'own_delta_7d',
+            'price_delta_7d', 'cost_change_start', 'form', 'ownership']
     table_data = prepare_table_data(sorted_by_activity.nlargest(50, 'abs_net'), cols)
 
     return risers_fig, fallers_fig, scatter_fig, table_data
