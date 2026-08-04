@@ -1995,11 +1995,14 @@ app.layout = html.Div([
             ]
         ),
 
-        # Carried-over-stats warning; populated by callback, empty in-season
-        html.Div(id='stale-stats-banner'),
-
         # Content area — all pages live here, show/hide via callback
         html.Div(id='content-area', children=[
+
+            # Carried-over-stats warning; populated by callback, empty in-season.
+            # Must live INSIDE the content column — as a direct child of the
+            # #app-body flex row it renders as a third column and shoves every
+            # page off the right-hand edge of the viewport.
+            html.Div(id='stale-stats-banner'),
 
             # HOME PAGE
             html.Div(id='page-home', style={'display': 'block'}, children=[
