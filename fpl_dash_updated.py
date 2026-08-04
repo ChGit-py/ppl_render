@@ -4595,7 +4595,7 @@ def update_fixture_ticker(sort_by, num_gws, n):
         title = "Fixture Ticker: Remainder of the Season"
     else:
         title = (f"Fixture Ticker: Next {len(remaining_gws)} Gameweeks "
-                 f"(GW{remaining_gws[0]}to GW{remaining_gws[-1]})")
+                 f"(GW{remaining_gws[0]} to GW{remaining_gws[-1]})")
 
     return [fig, title]
 
