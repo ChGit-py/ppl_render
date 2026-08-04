@@ -1123,8 +1123,12 @@ def refresh_core_data():
         next_gw_num = get_target_gw_num(bootstrap_data)
         # Fixture look-ahead starts AT the target GW, so anchor one behind it
         fixture_anchor_gw = next_gw_num - 1
-        fixture_difficulty = calculate_fixture_difficulty(fixtures_data, teams_df, fixture_anchor_gw)
-        print(f"  Calculated fixture difficulty for {len(fixture_difficulty)} teams")
+        # Next 5 GWs only. A season-long average FDR converges to ~3 for every
+        # team (useless for ranking), and a 30-fixture string swamps every table
+        # that shows it. 5 GWs is the planning horizon that differentiates teams.
+        fixture_difficulty = calculate_fixture_difficulty(
+            fixtures_data, teams_df, fixture_anchor_gw, num_gameweeks=5)
+        print(f"  Calculated 5-GW fixture difficulty for {len(fixture_difficulty)} teams")
 
         df_active['avg_fdr_5'] = df_active['team'].map(lambda x: fixture_difficulty.get(x, {}).get('avg_fdr'))
         df_active['fixture_string'] = df_active['team'].map(
@@ -2872,7 +2876,7 @@ app.layout = html.Div([
                             "FDR ranges from 1 (very easy) to 5 (very hard). Use this tab to see which teams have easier fixtures and potentially target players from those teams."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div([
-                            html.Span("Remaining Season", style={'backgroundColor': COLORS['secondary'],
+                            html.Span("Next 5 Gameweeks", style={'backgroundColor': COLORS['secondary'],
                                                                  'color': COLORS['primary'], 'padding': '8px 16px',
                                                                  'borderRadius': '20px', 'fontWeight': '600'})
                         ])
@@ -2917,7 +2921,7 @@ app.layout = html.Div([
 
                     # Team FDR Chart
                     html.Div([
-                        html.H3("Team Fixture Difficulty (Remaining Season)",
+                        html.H3("Team Fixture Difficulty (Next 5 GWs)",
                                 style={'color': COLORS['primary'], 'marginBottom': '8px'}),
                         html.P("Teams sorted by average FDR. Green = easy run, Orange = average run and Red = tough run.",
                                style={'color': COLORS['text_light']}),
@@ -2951,7 +2955,7 @@ app.layout = html.Div([
                                 {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                                 {'name': 'Avg FDR', 'id': 'avg_fdr_5', 'type': 'numeric',
                                  'format': {'specifier': '.2f'}},
-                                {'name': 'Remaining Fixtures', 'id': 'fixture_string'},
+                                {'name': 'Next 5 Fixtures', 'id': 'fixture_string'},
                             ],
                             sort_action='native',
                             page_size=20,
@@ -3081,7 +3085,7 @@ app.layout = html.Div([
                                  'format': {'specifier': '.2f'}},
                                 {'name': 'Avg FDR', 'id': 'avg_fdr_5', 'type': 'numeric',
                                  'format': {'specifier': '.2f'}},
-                                {'name': 'Remaining', 'id': 'fixture_string'},
+                                {'name': 'Next 5', 'id': 'fixture_string'},
                             ],
                             sort_action='native',
                             page_size=20,
@@ -4378,7 +4382,7 @@ def update_fdr(position, team, max_price, min_minutes):
     bar_fig.add_hline(y=3.0, line_dash="dash", line_color='#999', annotation_text="Avg (3.0)",
                       annotation_position="right")
     bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
-                          yaxis_title='Average FDR (Remaining Season)', showlegend=False,
+                          yaxis_title='Average FDR (Next 5 GWs)', showlegend=False,
                           yaxis=dict(range=[0, 5.5]),
                           font=dict(family='Arial, sans-serif'))
 
