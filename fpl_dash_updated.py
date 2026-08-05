@@ -524,6 +524,122 @@ def compute_captain_scores(df):
     return score.round(1)
 
 
+# =============================================================================
+# EXPECTED POINTS PROJECTION ENGINE
+# =============================================================================
+
+# FPL 2025/26 scoring values used by the projection (position-keyed)
+GOAL_POINTS = {'GKP': 10, 'DEF': 6, 'MID': 5, 'FWD': 4}
+CS_POINTS   = {'GKP': 4,  'DEF': 4, 'MID': 1, 'FWD': 0}
+ASSIST_POINTS = 3
+DEFCON_POINTS = 2
+
+# How strongly fixture difficulty scales output. FDR 3 is neutral; each step
+# away moves output by this fraction (FDR 1 → ×1.24 attack, FDR 5 → ×0.76).
+FDR_SENSITIVITY = 0.12
+
+
+def _fdr_mult(fdr_series, index, invert=False):
+    """Fixture multiplier centred on FDR 3. invert=True for 'harder = more'
+    quantities (goals conceded, saves faced)."""
+    fdr = pd.to_numeric(fdr_series, errors='coerce').fillna(3.0)
+    delta = (fdr - 3.0) if invert else (3.0 - fdr)
+    return (1.0 + FDR_SENSITIVITY * delta).reindex(index).fillna(1.0)
+
+
+def compute_expected_points(df, gw_elapsed=38):
+    """
+    Per-player projected FPL points for the next gameweek (`proj_pts_next`)
+    and the next five (`proj_pts_5`), built strictly from data already in the
+    frame — no extra API calls.
+
+    The model is a sum of expected-value components under FPL's actual
+    scoring rules:
+
+      minutes    exp_mins = 90 × minutes-share × availability, where the
+                 share comes from recent start/minutes data when Phase 2 has
+                 run, falling back to season minutes ÷ (gw_elapsed × 90).
+                 p60 (prob. of 60+ mins) gates appearance, CS and DEFCON pts.
+      goals      xG/90 × exp90 × attack-fixture mult × position goal value
+      assists    xA/90 × exp90 × attack-fixture mult × 3
+      clean      P(CS) = ½·realised CS rate + ½·defence-fixture-implied rate,
+      sheet      × p60 × position CS value
+      conceded   −½ × GC/90 × exp90 × fixture mult (GKP/DEF only; E[⌊gc/2⌋]≈gc/2)
+      DEFCON     2 × P(hit threshold) × p60, using the measured per-match
+                 hit_rate when available, else a rate-implied estimate
+      saves      GKP: saves/90 ÷ 3 × exp90
+      bonus      realised bonus/90 × exp90 (capped at 3)
+
+    Next-GW uses next-fixture FDRs; the 5-GW figure re-uses the same per-GW
+    model with 5-GW average FDRs and multiplies by fixture_count, which makes
+    it DGW/BGW-aware automatically. Fixture multipliers are linear in FDR
+    with FDR 3 neutral — deliberately simple and inspectable rather than
+    fitted; the FPL xP column exists as an external benchmark.
+
+    Returns (exp_mins, proj_next, proj_5) as Series aligned to df.
+    """
+    idx = df.index
+    n = lambda col: pd.to_numeric(df[col], errors='coerce') if col in df.columns \
+        else pd.Series(np.nan, index=idx)
+
+    pos = df['position']
+
+    # --- Expected minutes -------------------------------------------------
+    avail = n('avail_pct').fillna(100).clip(0, 100) / 100
+
+    season_share = (n('minutes').fillna(0) / (max(int(gw_elapsed), 1) * 90)).clip(0, 1)
+    recent_share = (n('recent_minutes_pct') / 100).clip(0, 1)
+    share = recent_share.fillna(season_share)
+
+    p60_fallback = (share * 1.05).clip(0, 1)          # heavy minutes ⇒ starts
+    p60 = (n('start_rate') / 100).clip(0, 1).fillna(p60_fallback) * avail
+    p_any = (share * 1.15 + 0.05).clip(0, 1).where(share > 0, 0) * avail
+    p_any = pd.concat([p_any, p60], axis=1).max(axis=1)   # p_any ≥ p60
+
+    exp90 = share * avail                              # expected match-share
+    exp_mins = (exp90 * 90).round(0)
+
+    appearance_pts = 2 * p60 + 1 * (p_any - p60)
+
+    # --- Per-GW component model (parameterised by fixture columns) --------
+    def per_gw(att_fdr_col, def_fdr_col):
+        att_mult = _fdr_mult(df.get(att_fdr_col), idx)
+        def_mult_cs = _fdr_mult(df.get(def_fdr_col), idx)            # easier ⇒ more CS
+        def_mult_gc = _fdr_mult(df.get(def_fdr_col), idx, invert=True)  # harder ⇒ more GC
+
+        goal_pts = n('xg_per_90').fillna(0) * exp90 * att_mult * pos.map(GOAL_POINTS).fillna(4)
+        assist_pts = n('xa_per_90').fillna(0) * exp90 * att_mult * ASSIST_POINTS
+
+        cs_realised = n('cs_per_90').fillna(0).clip(0, 0.8)
+        cs_fixture = (0.50 - 0.08 * (pd.to_numeric(df.get(def_fdr_col), errors='coerce')
+                                     .fillna(3.0) - 1)).clip(0.05, 0.55) * def_mult_cs.clip(0.8, 1.2)
+        cs_prob = (0.5 * cs_realised + 0.5 * cs_fixture).clip(0, 0.75)
+        cs_pts = cs_prob * p60 * pos.map(CS_POINTS).fillna(0)
+
+        is_def_unit = pos.isin(['GKP', 'DEF'])
+        gc_pts = (-0.5 * n('gc_per_90').fillna(0) * exp90 * def_mult_gc).where(is_def_unit, 0)
+
+        threshold = n('bonus_threshold').fillna(10)
+        p_hit_est = (0.5 * n('defcon_per_90').fillna(0) / threshold).clip(0, 0.85)
+        p_hit = (n('hit_rate') / 100).clip(0, 1).fillna(p_hit_est)
+        defcon_pts = DEFCON_POINTS * p_hit * p60
+
+        saves_per_90 = (n('saves').fillna(0) / n('minutes').replace(0, np.nan) * 90).fillna(0)
+        save_pts = (saves_per_90 / 3 * exp90).where(pos == 'GKP', 0)
+
+        bonus_pts = (n('bonus_per_90').fillna(0) * exp90).clip(0, 3)
+
+        return (appearance_pts + goal_pts + assist_pts + cs_pts +
+                gc_pts + defcon_pts + save_pts + bonus_pts)
+
+    proj_next = per_gw('next_att_fdr', 'next_def_fdr').round(2)
+
+    fixture_count = n('fixture_count').fillna(5).clip(0, 10)
+    proj_5 = (per_gw('att_fdr_5', 'def_fdr_5') * fixture_count).round(1)
+
+    return exp_mins, proj_next, proj_5
+
+
 def calculate_minutes_security(player_histories, window=6):
     """
     From match-by-match history, compute recent start rate and share of
@@ -1015,7 +1131,7 @@ _CACHE_KEYS = [
 # Bump whenever the shape of cached data changes, or at a season rollover.
 # A mismatch (or an over-age cache) forces a clean fetch instead of serving
 # last season's teams and players from disk.
-CACHE_VERSION = 3
+CACHE_VERSION = 4
 MAX_CACHE_AGE = REFRESH_INTERVAL
 
 
@@ -1174,6 +1290,14 @@ def refresh_core_data():
         # Captain score (partial — venue_ppg/start_rate neutral until Phase 2)
         print("Computing initial captain scores...")
         df_active['captain_score'] = compute_captain_scores(df_active)
+
+        # Expected points projection (Phase-1 pass: season minutes share;
+        # Phase 2 re-runs it with recent start data and measured hit rates)
+        print("Computing expected points projections...")
+        gw_elapsed = current_gw['id'] if current_gw else 38
+        (df_active['exp_mins_next'],
+         df_active['proj_pts_next'],
+         df_active['proj_pts_5']) = compute_expected_points(df_active, gw_elapsed)
 
         # Transfer trend / price prediction
         print("Computing price change likelihood scores...")
@@ -1369,6 +1493,16 @@ def refresh_heavy_data():
         # Recalculate captain score with venue PPG + start security in play
         print("Recalculating captain scores with home/away + minutes data...")
         df_active['captain_score'] = compute_captain_scores(df_active)
+
+        # Re-run projections now start_rate, recent minutes and measured
+        # DEFCON hit rates are in the frame (Phase 1 used fallbacks)
+        print("Recalculating expected points with Phase-2 data...")
+        with DATA_LOCK:
+            cur_for_proj = DATA.get('current_gw')
+        gw_elapsed = cur_for_proj['id'] if cur_for_proj else 38
+        (df_active['exp_mins_next'],
+         df_active['proj_pts_next'],
+         df_active['proj_pts_5']) = compute_expected_points(df_active, gw_elapsed)
 
         # Swap into global store
         with DATA_LOCK:
@@ -3083,6 +3217,8 @@ app.layout = html.Div([
                                  'format': {'specifier': '+.1f'}},
                                 {'name': 'Diff Score', 'id': 'differential_score', 'type': 'numeric',
                                  'format': {'specifier': '.2f'}},
+                                {'name': 'Proj Next 5', 'id': 'proj_pts_5', 'type': 'numeric',
+                                 'format': {'specifier': '.1f'}},
                                 {'name': 'Avg FDR', 'id': 'avg_fdr_5', 'type': 'numeric',
                                  'format': {'specifier': '.2f'}},
                                 {'name': 'Next 5', 'id': 'fixture_string'},
@@ -3190,6 +3326,8 @@ app.layout = html.Div([
                                 {'name': 'Price', 'id': 'price', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                                 {'name': 'Captain Score', 'id': 'captain_score', 'type': 'numeric',
                                  'format': {'specifier': '.1f'}},
+                                {'name': 'Proj Pts', 'id': 'proj_pts_next', 'type': 'numeric',
+                                 'format': {'specifier': '.2f'}},
                                 {'name': 'FPL xP', 'id': 'ep_next', 'type': 'numeric',
                                  'format': {'specifier': '.1f'}},
                                 {'name': 'Form', 'id': 'form', 'type': 'numeric', 'format': {'specifier': '.1f'}},
@@ -3489,6 +3627,8 @@ app.layout = html.Div([
                                         {'label': 'Expected Goal Involvements', 'value': 'expected_goal_involvements'},
                                         {'label': 'Total Points (season)', 'value': 'total_points'},
                                         {'label': 'Blended (PPG + Form + xGI)', 'value': 'blended'},
+                                        {'label': 'Projected Points (next GW)', 'value': 'proj_pts_next'},
+                                        {'label': 'Projected Points (next 5 GWs)', 'value': 'proj_pts_5'},
                                     ],
                                     value='ppg', clearable=False
                                 )
@@ -4653,7 +4793,7 @@ def update_differentials(position, team, max_price, max_own, min_minutes):
 
     cols = ['web_name', 'team_name', 'position', 'price', 'total_points', 'form', 'ppg',
             'expected_goal_involvements', 'ownership', 'top_eo', 'own_delta_7d',
-            'differential_score', 'avg_fdr_5', 'fixture_string']
+            'differential_score', 'proj_pts_5', 'avg_fdr_5', 'fixture_string']
     table_data = prepare_table_data(filtered.nlargest(50, 'differential_score'), cols)
 
     return scatter_fig, bar_fig, table_data
@@ -4732,7 +4872,8 @@ def update_captain(position, team, max_price, min_minutes, _n):
     ha_scatter.update_layout(template='plotly_white', height=400, xaxis_title='Away PPG', yaxis_title='Home PPG',
                              font=dict(family='Arial, sans-serif'))
 
-    cols = ['web_name', 'team_name', 'position', 'price', 'captain_score', 'ep_next', 'form', 'ppg',
+    cols = ['web_name', 'team_name', 'position', 'price', 'captain_score', 'proj_pts_next',
+            'ep_next', 'form', 'ppg',
             'xgi_per_90', 'next_att_fdr', 'venue_ppg', 'start_rate', 'avail_pct',
             'set_pieces', 'top_eo',
             'expected_goal_involvements', 'next_opponent', 'next_venue', 'next_fdr',
@@ -4849,6 +4990,8 @@ def build_squad(n_clicks, budget, objective, must_include, must_exclude):
             'expected_goal_involvements': 'xGI',
             'total_points': 'Total Points',
             'blended': 'Blended Score',
+            'proj_pts_next': 'Projected Points (next GW)',
+            'proj_pts_5': 'Projected Points (next 5 GWs)',
         }
         obj_label = obj_labels.get(objective, objective)
 
