@@ -3764,7 +3764,7 @@ def render_stale_stats_banner(_n):
             ". FPL carries them over until the "
             f"{next_gw.get('name', 'Gameweek 1')} deadline"
             f"{f' ({deadline})' if deadline else ''}, when they reset to zero. "
-            "Prices, clubs and fixtures are current — minutes, points, clean "
+            "Prices, clubs and fixtures are current whereas minutes, points, clean "
             "sheets and DEFCON are not. Transferred players still carry their "
             "old club's numbers, and promoted clubs are absent because they have "
             "no Premier League minutes yet."
