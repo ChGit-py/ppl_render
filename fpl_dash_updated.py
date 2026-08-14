@@ -3759,8 +3759,8 @@ def render_stale_stats_banner(_n):
             'marginRight': '12px', 'whiteSpace': 'nowrap', 'flexShrink': '0'
         }),
         html.Span([
-            "Player stats shown are ",
-            html.Strong("final 2025/26 numbers"),
+            "Player stats shown reflect the end of the ",
+            html.Strong("2025/26 season"),
             ". FPL carries them over until the "
             f"{next_gw.get('name', 'Gameweek 1')} deadline"
             f"{f' ({deadline})' if deadline else ''}, when they reset to zero. "
