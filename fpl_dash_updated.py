@@ -387,6 +387,175 @@ def fetch_team_picks(team_id, gw):
         return None
 
 
+# =============================================================================
+# MINI-LEAGUE RIVAL INTELLIGENCE
+# =============================================================================
+
+RIVALS_MAX_ENTRIES = 20  # keep API load and memory bounded for big leagues
+
+
+def fetch_league_standings(league_id, max_entries=RIVALS_MAX_ENTRIES):
+    """
+    Standings for any classic mini-league. Returns (league_name, entries)
+    where entries is a list of dicts (entry, entry_name, player_name, rank,
+    total, event_total), capped at max_entries by rank.
+    """
+    try:
+        r = requests.get(
+            f"{FPL_BASE_URL}/leagues-classic/{int(league_id)}/standings/",
+            timeout=15)
+        r.raise_for_status()
+        payload = r.json()
+    except Exception as e:
+        print(f"Error fetching league {league_id}: {e}")
+        return None, []
+    name = (payload.get('league') or {}).get('name', f'League {league_id}')
+    results = ((payload.get('standings') or {}).get('results') or [])[:max_entries]
+    entries = [{
+        'entry': e['entry'], 'entry_name': e.get('entry_name', ''),
+        'player_name': e.get('player_name', ''), 'rank': e.get('rank'),
+        'total': e.get('total', 0), 'event_total': e.get('event_total', 0),
+    } for e in results]
+    return name, entries
+
+
+def fetch_entry_chips(entry_id):
+    """Chips a manager has already played: list of {name, event}."""
+    try:
+        r = requests.get(f"{FPL_BASE_URL}/entry/{entry_id}/history/", timeout=10)
+        r.raise_for_status()
+        return r.json().get('chips', []) or []
+    except Exception as e:
+        print(f"Error fetching history for entry {entry_id}: {e}")
+        return []
+
+
+def fetch_rival_snapshots(entries, gw, max_workers=8):
+    """
+    For each league entry, fetch current-GW picks and chip history in
+    parallel. Returns dict entry_id -> {picks, entry_history, active_chip,
+    chips_used}. Entries whose picks fail (e.g. joined late) are skipped.
+    """
+    snapshots = {}
+
+    def _one(entry_id):
+        picks_data = fetch_team_picks(entry_id, gw)
+        chips = fetch_entry_chips(entry_id)
+        return entry_id, picks_data, chips
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(_one, e['entry']) for e in entries]
+        for future in as_completed(futures):
+            entry_id, picks_data, chips = future.result()
+            if picks_data and 'picks' in picks_data:
+                snapshots[entry_id] = {
+                    'picks': picks_data['picks'],
+                    'entry_history': picks_data.get('entry_history', {}) or {},
+                    'active_chip': picks_data.get('active_chip'),
+                    'chips_used': chips,
+                }
+    return snapshots
+
+
+def build_league_ownership(snapshots):
+    """
+    Per-player league-effective-ownership from pick multipliers across all
+    sampled squads, plus a plain owner count. Returns (eo_pct, owner_count)
+    dicts keyed by player id. Same EO definition as the top-100 sampling:
+    bench 0, start 1, captain 2, TC 3 — so a player captained by half the
+    league carries more swing than one benched by half of it.
+    """
+    eo = Counter()
+    owners = Counter()
+    n = len(snapshots)
+    if n == 0:
+        return {}, {}
+    for snap in snapshots.values():
+        for pk in snap['picks']:
+            eo[pk['element']] += pk.get('multiplier', 1)
+            owners[pk['element']] += 1
+    return ({pid: round(v / n * 100, 1) for pid, v in eo.items()},
+            dict(owners))
+
+
+# =============================================================================
+# CHIP PLANNER — per-gameweek squad projection
+# =============================================================================
+
+def build_gw_fixture_lookup(fixtures_data, teams_df, gws):
+    """
+    For each gameweek in `gws`, per team: fixture count and average
+    attack/defence difficulty (1-5, from venue-specific team strengths —
+    same scaling as calculate_custom_fdr). Returns
+    {gw: {team_id: {'count': n, 'att_fdr': x, 'def_fdr': y}}}.
+    """
+    lookup = {}
+    for gw in gws:
+        per_gw = calculate_custom_fdr(fixtures_data, teams_df,
+                                      anchor_gw=gw - 1, num_gameweeks=1)
+        counts = Counter()
+        for f in fixtures_data:
+            if f.get('event') == gw:
+                counts[f['team_h']] += 1
+                counts[f['team_a']] += 1
+        lookup[gw] = {
+            tid: {'count': counts.get(tid, 0),
+                  'att_fdr': (v.get('att_fdr') if v.get('att_fdr') is not None else 3.0),
+                  'def_fdr': (v.get('def_fdr') if v.get('def_fdr') is not None else 3.0)}
+            for tid, v in per_gw.items()
+        }
+        for tid in counts:
+            lookup[gw].setdefault(tid, {'count': counts[tid],
+                                        'att_fdr': 3.0, 'def_fdr': 3.0})
+    return lookup
+
+
+def project_player_gw(neutral_base, position, team_id, gw_lookup_for_gw):
+    """
+    One player's projected points in one specific future GW: the neutral
+    (FDR-3, single-fixture) per-GW base scaled by that GW's fixture
+    difficulty and multiplied by fixture count (0 for a blank, 2 for a
+    double). GKP/DEF scale off defensive difficulty (their points are
+    CS-driven), MID/FWD off attacking difficulty.
+    """
+    info = gw_lookup_for_gw.get(team_id)
+    if not info or info['count'] == 0:
+        return 0.0
+    fdr = info['def_fdr'] if position in ('GKP', 'DEF') else info['att_fdr']
+    mult = 1.0 + FDR_SENSITIVITY * (3.0 - fdr)
+    return round(neutral_base * mult * info['count'], 2)
+
+
+def pick_best_xi(players):
+    """
+    Formation-legal best XI from a 15-man squad list of dicts with keys
+    position and proj: exactly 1 GKP, 3-5 DEF, 2-5 MID, 1-3 FWD, 11 total.
+    Greedy: satisfy minimums with the best available, then fill by
+    projection within positional maximums. Returns (xi, bench) lists.
+    """
+    by_pos = {pos: sorted([p for p in players if p['position'] == pos],
+                          key=lambda x: -x['proj'])
+              for pos in ('GKP', 'DEF', 'MID', 'FWD')}
+
+    xi = (by_pos['GKP'][:1] + by_pos['DEF'][:3] +
+          by_pos['MID'][:2] + by_pos['FWD'][:1])
+    chosen = {id(p) for p in xi}
+    maxima = {'GKP': 1, 'DEF': 5, 'MID': 5, 'FWD': 3}
+
+    pool = sorted([p for p in players if id(p) not in chosen],
+                  key=lambda x: -x['proj'])
+    for p in pool:
+        if len(xi) >= 11:
+            break
+        pos_count = sum(1 for q in xi if q['position'] == p['position'])
+        if pos_count < maxima[p['position']]:
+            xi.append(p)
+            chosen.add(id(p))
+
+    bench = [p for p in players if id(p) not in chosen]
+    return xi, bench
+
+
 def get_squad_fixture_flags(team_ids, fixtures_data, current_gw_num, num_gws=5):
     """
     For each team_id, return a string listing any BGW/DGW in the next N GWs.
@@ -2126,6 +2295,12 @@ app.layout = html.Div([
                             id='nav-captain', className='nav-item', n_clicks=0),
                 html.Button('Transfer Trends',
                             id='nav-transfers', className='nav-item', n_clicks=0),
+                html.Button('Transfer Planner',
+                            id='nav-transfer-planner', className='nav-item', n_clicks=0),
+                html.Button('Chip Planner',
+                            id='nav-chip-planner', className='nav-item', n_clicks=0),
+                html.Button('Mini-League Rivals',
+                            id='nav-rivals', className='nav-item', n_clicks=0),
                 html.Button('My Squad',
                             id='nav-my-squad', className='nav-item', n_clicks=0),
                 html.Button('Squad Builder',
@@ -3512,6 +3687,148 @@ app.layout = html.Div([
             # =================================================================
             # SQUAD BUILDER PAGE
             # MY SQUAD PAGE
+            # TRANSFER PLANNER PAGE
+            html.Div(id='page-transfer-planner', style={'display': 'none'}, children=[
+                html.Div([
+                    html.Div([
+                        html.H3("Transfer Gain Calculator", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
+                        html.P([
+                            "The most expensive habit in FPL is paying 4 points for transfers that don't return 4 points. ",
+                            "This compares any two players on ", html.Strong("projected points over your chosen horizon"),
+                            " and tells you the net gain of the move — including the hit, if you're taking one."
+                        ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+
+                    html.Div([
+                        html.Div([
+                            html.Div([
+                                html.Label("Player OUT", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Dropdown(id='tp-player-out', options=[], placeholder='Search player to sell...',
+                                             optionHeight=50)
+                            ], style={'flex': '2', 'minWidth': '260px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Player IN", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Dropdown(id='tp-player-in', options=[], placeholder='Search player to buy...',
+                                             optionHeight=50)
+                            ], style={'flex': '2', 'minWidth': '260px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Horizon", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.RadioItems(
+                                    id='tp-horizon',
+                                    options=[{'label': ' Next GW', 'value': 'next'},
+                                             {'label': ' Next 5 GWs', 'value': 'five'}],
+                                    value='five', inline=True,
+                                    inputStyle={'marginRight': '4px', 'marginLeft': '10px'}
+                                )
+                            ], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Transfer cost", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.RadioItems(
+                                    id='tp-hit',
+                                    options=[{'label': ' Free transfer', 'value': 0},
+                                             {'label': ' -4 hit', 'value': 4}],
+                                    value=0, inline=True,
+                                    inputStyle={'marginRight': '4px', 'marginLeft': '10px'}
+                                )
+                            ], style={'flex': '1', 'minWidth': '220px', 'padding': '0 10px'}),
+                        ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-end'})
+                    ], style=CARD_STYLE),
+
+                    html.Div(id='tp-result')
+                ], style={'padding': '20px 0'})
+            ]),
+
+            # CHIP PLANNER PAGE
+            html.Div(id='page-chip-planner', style={'display': 'none'}, children=[
+                html.Div([
+                    html.Div([
+                        html.H3("Chip Planner", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
+                        html.P([
+                            "Chips are 30\u201360 points a season decided in a handful of choices \u2014 and the right week ",
+                            "depends on ", html.Strong("your specific fifteen"), ", not the community consensus. ",
+                            "This projects your actual squad gameweek by gameweek (DGW/BGW aware) and scores the best ",
+                            "windows for ", html.Strong("Bench Boost"), " (bench projection), ",
+                            html.Strong("Triple Captain"), " (best single-player week), and flags ",
+                            html.Strong("Free Hit"), " candidates (blank-hit weeks)."
+                        ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '16px'}),
+                        html.Div([
+                            html.Label("FPL Team ID",
+                                       style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                            html.Div([
+                                dcc.Input(
+                                    id='cp-team-id', type='number', placeholder='e.g. 1234567',
+                                    style={'padding': '10px 14px', 'borderRadius': '6px',
+                                           'border': f'2px solid {COLORS["primary"]}',
+                                           'fontSize': '16px', 'width': '200px', 'marginRight': '12px'}
+                                ),
+                                html.Button(
+                                    "Analyse Chip Windows", id='cp-load-btn', n_clicks=0,
+                                    style={'backgroundColor': COLORS['primary'], 'color': 'white',
+                                           'border': 'none', 'padding': '10px 28px', 'borderRadius': '6px',
+                                           'fontSize': '15px', 'fontWeight': '700', 'cursor': 'pointer'}
+                                ),
+                            ], style={'display': 'flex', 'alignItems': 'center', 'flexWrap': 'wrap', 'gap': '8px'}),
+                        ]),
+                        html.P("Your team ID is in the URL on the FPL Points page: fantasy.premierleague.com/entry/XXXXXXX/…",
+                               style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginTop': '10px'})
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+
+                    dcc.Loading(html.Div(id='cp-content'), type='circle', color=COLORS['primary'])
+                ], style={'padding': '20px 0'})
+            ]),
+
+            # MINI-LEAGUE RIVALS PAGE
+            html.Div(id='page-rivals', style={'display': 'none'}, children=[
+                html.Div([
+                    html.Div([
+                        html.H3("Mini-League Rivals", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
+                        html.P([
+                            "A mini-league isn't scored in points \u2014 it's scored in ", html.Strong("gaps"),
+                            ". Players you share with a rival cancel out; only the differences move the table. ",
+                            "This loads every squad in your league and shows the ", html.Strong("threats"),
+                            " (they own, you don't), your ", html.Strong("leverage"), " (you own, they don't), ",
+                            "everyone's captain, and the chips each rival has already burned."
+                        ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '16px'}),
+                        html.Div([
+                            html.Div([
+                                html.Label("League ID",
+                                           style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Input(
+                                    id='rv-league-id', type='number', placeholder='e.g. 123456',
+                                    style={'padding': '10px 14px', 'borderRadius': '6px',
+                                           'border': f'2px solid {COLORS["primary"]}',
+                                           'fontSize': '16px', 'width': '180px'}
+                                ),
+                            ], style={'marginRight': '16px'}),
+                            html.Div([
+                                html.Label("Your Team ID (optional)",
+                                           style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Input(
+                                    id='rv-my-id', type='number', placeholder='e.g. 1234567',
+                                    style={'padding': '10px 14px', 'borderRadius': '6px',
+                                           'border': f'2px solid {COLORS["primary"]}',
+                                           'fontSize': '16px', 'width': '180px'}
+                                ),
+                            ], style={'marginRight': '16px'}),
+                            html.Button(
+                                "Load League", id='rv-load-btn', n_clicks=0,
+                                style={'backgroundColor': COLORS['primary'], 'color': 'white',
+                                       'border': 'none', 'padding': '10px 28px', 'borderRadius': '6px',
+                                       'fontSize': '15px', 'fontWeight': '700', 'cursor': 'pointer',
+                                       'alignSelf': 'flex-end', 'marginBottom': '2px'}
+                            ),
+                        ], style={'display': 'flex', 'alignItems': 'flex-end', 'flexWrap': 'wrap', 'gap': '8px'}),
+                        html.P(["Your league ID is in the URL of the league standings page: ",
+                                "fantasy.premierleague.com/leagues/", html.Strong("XXXXXX"), "/standings/c. ",
+                                "Works for any classic league. Leagues bigger than 20 are capped at the top 20 by rank. ",
+                                "Add your team ID to unlock the you-vs-them views."],
+                               style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginTop': '10px'})
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+
+                    dcc.Loading(html.Div(id='rv-content'), type='circle', color=COLORS['primary'])
+                ], style={'padding': '20px 0'})
+            ]),
+
             html.Div(id='page-my-squad', style={'display': 'none'}, children=[
                 html.Div([
                     html.Div([
@@ -3782,7 +4099,8 @@ ALL_PAGES = [
     'home', 'defcon-bonus', 'bonus-consistency', 'defcon',
     'xg', 'underlying', 'value', 'form', 'cs',
     'fixture-ticker', 'fixtures', 'differentials',
-    'captain', 'transfers', 'my-squad', 'squad-builder',
+    'captain', 'transfers', 'transfer-planner', 'chip-planner',
+    'rivals', 'my-squad', 'squad-builder',
 ]
 
 # --- NAV: clicks → active-page store ---
@@ -5459,6 +5777,557 @@ def load_my_squad(n_clicks, team_id):
 # =============================================================================
 # RUN
 # =============================================================================
+
+# =============================================================================
+# TRANSFER PLANNER CALLBACKS
+# =============================================================================
+
+@callback(
+    [Output('tp-player-out', 'options'), Output('tp-player-in', 'options')],
+    Input('active-page', 'data')
+)
+def populate_transfer_planner_options(page):
+    """Refresh the player pools whenever the page is visited (cheap, and
+    avoids serving a boot-time snapshot after a data refresh)."""
+    data = get_data()
+    dfa = data.get('df_active', pd.DataFrame())
+    if dfa.empty:
+        return [], []
+    pool = dfa.sort_values(['team_name', 'web_name'])
+    options = [
+        {'label': f"{r.web_name} ({r.team_name} {r.position} \u00a3{r.price:.1f}m)",
+         'value': int(r.id)}
+        for r in pool.itertuples()
+    ]
+    return options, options
+
+
+def _tp_stat_row(label, out_val, in_val):
+    return html.Tr([
+        html.Td(label, style={'padding': '8px 12px', 'fontWeight': '600',
+                              'color': COLORS['text_light'], 'fontSize': '13px'}),
+        html.Td(out_val, style={'padding': '8px 12px', 'textAlign': 'center'}),
+        html.Td(in_val, style={'padding': '8px 12px', 'textAlign': 'center'}),
+    ], style={'borderBottom': '1px solid #eee'})
+
+
+@callback(
+    Output('tp-result', 'children'),
+    [Input('tp-player-out', 'value'), Input('tp-player-in', 'value'),
+     Input('tp-horizon', 'value'), Input('tp-hit', 'value')]
+)
+def update_transfer_gain(out_id, in_id, horizon, hit):
+    if not out_id or not in_id:
+        return html.Div([
+            html.P("Select the player you'd sell and the player you'd buy.",
+                   style={'color': COLORS['text_light'], 'textAlign': 'center',
+                          'padding': '30px 0'})
+        ], style=CARD_STYLE)
+
+    if out_id == in_id:
+        return html.Div([
+            html.P("That's the same player twice \u2014 the projected gain of doing nothing is reassuringly zero.",
+                   style={'color': COLORS['text_light'], 'textAlign': 'center', 'padding': '30px 0'})
+        ], style=CARD_STYLE)
+
+    data = get_data()
+    dfa = data.get('df_active', pd.DataFrame())
+    out_rows = dfa[dfa['id'] == out_id]
+    in_rows = dfa[dfa['id'] == in_id]
+    if out_rows.empty or in_rows.empty:
+        return html.Div([html.P("Player data not found \u2014 try reloading the page.",
+                                style={'color': COLORS['danger']})], style=CARD_STYLE)
+    p_out, p_in = out_rows.iloc[0], in_rows.iloc[0]
+
+    proj_col = 'proj_pts_next' if horizon == 'next' else 'proj_pts_5'
+    horizon_label = 'next gameweek' if horizon == 'next' else 'next 5 gameweeks'
+    hit = int(hit or 0)
+
+    def _proj(row):
+        v = row.get(proj_col)
+        return 0.0 if pd.isna(v) else float(v)
+
+    out_proj, in_proj = _proj(p_out), _proj(p_in)
+    raw_gain = in_proj - out_proj
+    net_gain = raw_gain - hit
+
+    if net_gain >= 2:
+        verdict, colour = f"Worth it: projected +{net_gain:.1f} pts over the {horizon_label}", COLORS['success']
+    elif net_gain > 0:
+        verdict, colour = f"Marginal: projected +{net_gain:.1f} pts over the {horizon_label}", COLORS['warning']
+    else:
+        verdict, colour = f"Don't: projected {net_gain:+.1f} pts over the {horizon_label}", COLORS['danger']
+
+    position_warning = None
+    if p_out['position'] != p_in['position']:
+        position_warning = html.P(
+            f"\u26a0 Position mismatch: {p_out['web_name']} is a {p_out['position']}, "
+            f"{p_in['web_name']} is a {p_in['position']} \u2014 this can't be a direct one-for-one swap.",
+            style={'color': COLORS['danger'], 'fontWeight': '600', 'marginTop': '10px'})
+
+    price_delta = p_in['price'] - p_out['price']
+
+    def _fx(row):
+        v = row.get('fixture_string')
+        return v if isinstance(v, str) and v else '\u2014'
+
+    def _avail(row):
+        v = row.get('avail_pct')
+        return '100%' if pd.isna(v) else f"{v:.0f}%"
+
+    return html.Div([
+        html.Div([
+            html.Div(verdict, style={
+                'backgroundColor': colour, 'color': 'white', 'padding': '14px 24px',
+                'borderRadius': '8px', 'fontSize': '18px', 'fontWeight': '700',
+                'textAlign': 'center', 'marginBottom': '6px'
+            }),
+            html.P(
+                f"{p_in['web_name']} projects {in_proj:.1f}, {p_out['web_name']} projects {out_proj:.1f}"
+                + (f", minus the {hit}-point hit" if hit else "")
+                + f". Money move: {'+' if price_delta >= 0 else ''}\u00a3{price_delta:.1f}m.",
+                style={'color': COLORS['text_light'], 'textAlign': 'center', 'marginBottom': '16px'}),
+            html.Table([
+                html.Thead(html.Tr([
+                    html.Th("", style={'padding': '8px 12px'}),
+                    html.Th(f"OUT: {p_out['web_name']}",
+                            style={'padding': '8px 12px', 'color': COLORS['danger'], 'textAlign': 'center'}),
+                    html.Th(f"IN: {p_in['web_name']}",
+                            style={'padding': '8px 12px', 'color': COLORS['success'], 'textAlign': 'center'}),
+                ])),
+                html.Tbody([
+                    _tp_stat_row("Team", p_out['team_name'], p_in['team_name']),
+                    _tp_stat_row("Position", p_out['position'], p_in['position']),
+                    _tp_stat_row("Price", f"\u00a3{p_out['price']:.1f}m", f"\u00a3{p_in['price']:.1f}m"),
+                    _tp_stat_row("Proj next GW",
+                                 f"{0 if pd.isna(p_out.get('proj_pts_next')) else p_out['proj_pts_next']:.2f}",
+                                 f"{0 if pd.isna(p_in.get('proj_pts_next')) else p_in['proj_pts_next']:.2f}"),
+                    _tp_stat_row("Proj next 5",
+                                 f"{0 if pd.isna(p_out.get('proj_pts_5')) else p_out['proj_pts_5']:.1f}",
+                                 f"{0 if pd.isna(p_in.get('proj_pts_5')) else p_in['proj_pts_5']:.1f}"),
+                    _tp_stat_row("Form", f"{p_out['form']:.1f}" if pd.notna(p_out['form']) else '\u2014',
+                                 f"{p_in['form']:.1f}" if pd.notna(p_in['form']) else '\u2014'),
+                    _tp_stat_row("Availability", _avail(p_out), _avail(p_in)),
+                    _tp_stat_row("Next 5 fixtures", _fx(p_out), _fx(p_in)),
+                ])
+            ], style={'width': '100%', 'borderCollapse': 'collapse'}),
+            position_warning,
+            html.P("Projections come from the expected-points engine (xG/xA, minutes security, "
+                   "fixture-specific difficulty, DEFCON, availability). A projected gain under ~2 "
+                   "points is within model noise \u2014 treat it as a coin flip, not a signal.",
+                   style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginTop': '14px'})
+        ], style=CARD_STYLE)
+    ])
+
+
+# =============================================================================
+# CHIP PLANNER CALLBACK
+# =============================================================================
+
+@callback(
+    Output('cp-content', 'children'),
+    Input('cp-load-btn', 'n_clicks'),
+    State('cp-team-id', 'value'),
+    prevent_initial_call=True
+)
+def analyse_chip_windows(n_clicks, team_id):
+    if not team_id:
+        return html.Div([html.P("Enter your FPL team ID above.",
+                                style={'color': COLORS['text_light'], 'textAlign': 'center',
+                                       'padding': '30px 0'})], style=CARD_STYLE)
+
+    data = get_data()
+    current_gw_info = data.get('current_gw')
+    if not current_gw_info:
+        target = data.get('next_gw_num', 1)
+        return html.Div([html.Div([
+            html.P(f"The season hasn't started \u2014 squads (and therefore chip planning) "
+                   f"become available after the GW{target} deadline.",
+                   style={'color': COLORS['text_light'], 'fontWeight': '600',
+                          'textAlign': 'center', 'padding': '40px 0'})
+        ], style=CARD_STYLE)])
+
+    gw_num = current_gw_info['id']
+    picks_data = fetch_team_picks(int(team_id), gw_num)
+    if not picks_data or 'picks' not in picks_data:
+        return html.Div([html.Div([
+            html.P("Could not load your squad \u2014 check the team ID.",
+                   style={'color': COLORS['danger'], 'fontWeight': '600'})
+        ], style=CARD_STYLE)])
+
+    squad_ids = [pk['element'] for pk in picks_data['picks']]
+    dfa = data.get('df_active', pd.DataFrame())
+    squad = dfa[dfa['id'].isin(squad_ids)].copy()
+    missing = len(squad_ids) - len(squad)
+
+    if squad.empty:
+        return html.Div([html.P("No projection data found for this squad.",
+                                style={'color': COLORS['danger']})], style=CARD_STYLE)
+
+    # Neutral per-GW base: the projection engine run with flat FDR-3 fixtures.
+    neutral = squad.copy()
+    neutral['next_att_fdr'] = 3.0
+    neutral['next_def_fdr'] = 3.0
+    _, neutral_proj, _ = compute_expected_points(neutral, gw_elapsed=max(gw_num, 1))
+    squad['neutral_base'] = neutral_proj.values
+
+    fixtures_data = data.get('fixtures_data', [])
+    teams_df = data.get('teams_df', pd.DataFrame())
+    future_gws = [g for g in range(gw_num + 1, gw_num + 9) if g <= 38]
+    if not future_gws:
+        return html.Div([html.P("No future gameweeks left this season.",
+                                style={'color': COLORS['text_light']})], style=CARD_STYLE)
+
+    gw_lookup = build_gw_fixture_lookup(fixtures_data, teams_df, future_gws)
+
+    rows = []
+    for g in future_gws:
+        players = []
+        blanks = 0
+        for r in squad.itertuples():
+            proj = project_player_gw(r.neutral_base, r.position, r.team, gw_lookup.get(g, {}))
+            if proj == 0:
+                blanks += 1
+            players.append({'name': r.web_name, 'position': r.position, 'proj': proj})
+        xi, bench = pick_best_xi(players)
+        xi_total = sum(p['proj'] for p in xi)
+        bench_total = sum(p['proj'] for p in bench)
+        with_fixture = len(players) - blanks
+        best = max(players, key=lambda p: p['proj'])
+        rows.append({
+            'gw': g, 'xi': round(xi_total, 1), 'bench': round(bench_total, 1),
+            'squad_total': round(xi_total + bench_total, 1),
+            'tc_name': best['name'], 'tc_pts': round(best['proj'], 1),
+            'blanks': blanks, 'with_fixture': with_fixture,
+        })
+
+    best_bb = max(rows, key=lambda r: r['bench'])
+    best_tc = max(rows, key=lambda r: r['tc_pts'])
+    fh_rows = [r for r in rows if r['with_fixture'] < 11]
+
+    rec_lines = [
+        html.P([html.Strong("Bench Boost: "),
+                f"GW{best_bb['gw']} \u2014 your bench projects {best_bb['bench']:.1f} pts there, "
+                f"the most of the next {len(rows)} gameweeks."],
+               style={'color': COLORS['text_dark'], 'marginBottom': '8px'}),
+        html.P([html.Strong("Triple Captain: "),
+                f"{best_tc['tc_name']} in GW{best_tc['gw']} \u2014 projected {best_tc['tc_pts']:.1f} pts, "
+                f"so the extra captain multiplier is worth ~{best_tc['tc_pts']:.1f} more."],
+               style={'color': COLORS['text_dark'], 'marginBottom': '8px'}),
+    ]
+    if fh_rows:
+        worst = min(fh_rows, key=lambda r: r['with_fixture'])
+        rec_lines.append(html.P([html.Strong("Free Hit: "),
+                                 f"GW{worst['gw']} \u2014 only {worst['with_fixture']} of your squad "
+                                 f"have a fixture. Prime Free Hit (or early transfer planning) territory."],
+                                style={'color': COLORS['text_dark'], 'marginBottom': '8px'}))
+    else:
+        rec_lines.append(html.P([html.Strong("Free Hit: "),
+                                 f"no blank-hit weeks in the next {len(rows)} gameweeks \u2014 hold it."],
+                                style={'color': COLORS['text_dark'], 'marginBottom': '8px'}))
+    if missing:
+        rec_lines.append(html.P(f"Note: {missing} squad player(s) had no projection data "
+                                f"(usually zero minutes so far) and count as 0.",
+                                style={'color': COLORS['text_light'], 'fontSize': '13px'}))
+
+    bench_fig = go.Figure()
+    bench_fig.add_trace(go.Bar(
+        x=[f"GW{r['gw']}" for r in rows],
+        y=[r['bench'] for r in rows],
+        marker_color=[COLORS['success'] if r['gw'] == best_bb['gw'] else COLORS['info'] for r in rows],
+        text=[f"{r['bench']:.1f}" for r in rows], textposition='outside',
+    ))
+    bench_fig.update_layout(template='plotly_white', height=320,
+                            yaxis_title='Bench projection (Bench Boost value)',
+                            showlegend=False, margin=dict(t=30, b=30, l=50, r=20),
+                            font=dict(family='Arial, sans-serif'))
+
+    table_rows = [{
+        'gw': f"GW{r['gw']}", 'xi': r['xi'], 'bench': r['bench'],
+        'squad_total': r['squad_total'],
+        'tc': f"{r['tc_name']} ({r['tc_pts']:.1f})",
+        'blanks': r['blanks'],
+    } for r in rows]
+
+    return html.Div([
+        html.Div([
+            html.H3("Chip Windows \u2014 Recommendations", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
+            *rec_lines
+        ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+
+        html.Div([
+            html.H3("Bench Projection by Gameweek", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+            html.P("The green bar is your best Bench Boost window on current fixtures. Re-run after wildcards or DGW announcements.",
+                   style={'color': COLORS['text_light']}),
+            dcc.Graph(figure=bench_fig, config={'displayModeBar': False})
+        ], style=CARD_STYLE),
+
+        html.Div([
+            html.H4("Gameweek-by-Gameweek Squad Projection", style={'color': COLORS['primary'], 'marginBottom': '16px'}),
+            dash_table.DataTable(
+                data=table_rows,
+                columns=[
+                    {'name': 'GW', 'id': 'gw'},
+                    {'name': 'Best XI Proj', 'id': 'xi', 'type': 'numeric'},
+                    {'name': 'Bench Proj (BB gain)', 'id': 'bench', 'type': 'numeric'},
+                    {'name': 'Full Squad Proj', 'id': 'squad_total', 'type': 'numeric'},
+                    {'name': 'Best TC Pick', 'id': 'tc'},
+                    {'name': 'Players Blanking', 'id': 'blanks', 'type': 'numeric'},
+                ],
+                style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
+                style_data=TABLE_STYLE_DATA,
+                style_data_conditional=[
+                    {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
+                    {'if': {'filter_query': '{blanks} > 0', 'column_id': 'blanks'},
+                     'backgroundColor': '#ffebee', 'fontWeight': '600'},
+                ]
+            ),
+            html.P("Projections assume your current fifteen held over the horizon; DGWs count both fixtures, blanks count zero.",
+                   style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginTop': '12px'})
+        ], style=CARD_STYLE),
+    ])
+
+
+# =============================================================================
+# MINI-LEAGUE RIVALS CALLBACK
+# =============================================================================
+
+def _rv_list_card(title, subtitle, items, accent):
+    return html.Div([
+        html.H4(title, style={'color': accent, 'marginBottom': '4px'}),
+        html.P(subtitle, style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginBottom': '12px'}),
+        html.Ul([
+            html.Li(item, style={'marginBottom': '6px', 'fontSize': '14px', 'color': COLORS['text_dark']})
+            for item in items
+        ], style={'paddingLeft': '18px', 'margin': 0}) if items else
+        html.P("\u2014 none \u2014", style={'color': COLORS['text_light']})
+    ], style={**CARD_STYLE, 'flex': '1', 'minWidth': '260px'})
+
+
+@callback(
+    Output('rv-content', 'children'),
+    Input('rv-load-btn', 'n_clicks'),
+    [State('rv-league-id', 'value'), State('rv-my-id', 'value')],
+    prevent_initial_call=True
+)
+def load_rivals(n_clicks, league_id, my_id):
+    if not league_id:
+        return html.Div([html.P("Enter a league ID above.",
+                                style={'color': COLORS['text_light'], 'textAlign': 'center',
+                                       'padding': '30px 0'})], style=CARD_STYLE)
+
+    league_name, entries = fetch_league_standings(int(league_id))
+    if not entries:
+        return html.Div([html.Div([
+            html.P(f"Could not load league {league_id}. Check the ID \u2014 it must be a classic "
+                   f"(not head-to-head) league.",
+                   style={'color': COLORS['danger'], 'fontWeight': '600'})
+        ], style=CARD_STYLE)])
+
+    data = get_data()
+    dfa = data.get('df_active', pd.DataFrame())
+    df_all = data.get('df', pd.DataFrame())
+    name_map = dict(zip(df_all['id'], df_all['web_name'])) if not df_all.empty else {}
+    current_gw_info = data.get('current_gw')
+
+    # Pre-season: no picks exist yet — show the table we do have, cleanly.
+    if not current_gw_info:
+        target = data.get('next_gw_num', 1)
+        table = dash_table.DataTable(
+            data=[{'rank': e['rank'], 'player_name': e['player_name'],
+                   'entry_name': e['entry_name'], 'total': e['total']} for e in entries],
+            columns=[{'name': 'Rank', 'id': 'rank'}, {'name': 'Manager', 'id': 'player_name'},
+                     {'name': 'Team', 'id': 'entry_name'}, {'name': 'Total', 'id': 'total'}],
+            style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER, style_data=TABLE_STYLE_DATA,
+        )
+        return html.Div([
+            html.Div([
+                html.H3(league_name, style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+                html.P(f"Squads, captains and chips appear after the GW{target} deadline \u2014 "
+                       f"for now, here's who you're up against.",
+                       style={'color': COLORS['text_light'], 'marginBottom': '16px'}),
+                table
+            ], style=CARD_STYLE)
+        ])
+
+    gw_num = current_gw_info['id']
+    snapshots = fetch_rival_snapshots(entries, gw_num)
+
+    my_id = int(my_id) if my_id else None
+    entry_ids = {e['entry'] for e in entries}
+    my_snapshot = snapshots.get(my_id)
+    if my_id and my_id not in entry_ids:
+        # User's team isn't in the sampled slice — fetch it separately
+        pk = fetch_team_picks(my_id, gw_num)
+        if pk and 'picks' in pk:
+            my_snapshot = {'picks': pk['picks'],
+                           'entry_history': pk.get('entry_history', {}) or {},
+                           'active_chip': pk.get('active_chip'),
+                           'chips_used': fetch_entry_chips(my_id)}
+
+    rival_snapshots = {eid: s for eid, s in snapshots.items() if eid != my_id}
+    eo_pct, owner_count = build_league_ownership(rival_snapshots if my_snapshot else snapshots)
+    n_rivals = len(rival_snapshots if my_snapshot else snapshots)
+
+    def _proj(pid):
+        row = dfa[dfa['id'] == pid]
+        if row.empty:
+            return 0.0
+        v = row.iloc[0].get('proj_pts_next')
+        return 0.0 if pd.isna(v) else float(v)
+
+    # --- League table with captain / chips / value ---
+    captain_counter = Counter()
+    table_rows = []
+    for e in entries:
+        snap = snapshots.get(e['entry'])
+        cap_name, chips_str, value_str, bank_str, active = '\u2014', '\u2014', '\u2014', '\u2014', ''
+        if snap:
+            cap_pick = next((pk for pk in snap['picks'] if pk.get('is_captain')), None)
+            if cap_pick:
+                cap_name = name_map.get(cap_pick['element'], f"#{cap_pick['element']}")
+                captain_counter[cap_name] += 1
+            used = snap['chips_used']
+            chips_str = ', '.join(
+                f"{chip_name_map.get(c['name'], c['name'])} (GW{c['event']})" for c in used
+            ) if used else 'None yet'
+            eh = snap['entry_history']
+            if eh.get('value') is not None:
+                value_str = f"\u00a3{eh['value'] / 10:.1f}m"
+            if eh.get('bank') is not None:
+                bank_str = f"\u00a3{eh['bank'] / 10:.1f}m"
+            active = chip_name_map.get(snap['active_chip'], snap['active_chip']) if snap['active_chip'] else ''
+        is_me = (my_id is not None and e['entry'] == my_id)
+        table_rows.append({
+            'rank': e['rank'],
+            'player_name': e['player_name'] + (' (you)' if is_me else ''),
+            'entry_name': e['entry_name'],
+            'event_total': e['event_total'], 'total': e['total'],
+            'captain': cap_name + (f" \u2605 {active}" if active else ''),
+            'chips': chips_str, 'value': value_str, 'bank': bank_str,
+        })
+
+    league_table = dash_table.DataTable(
+        data=table_rows,
+        columns=[
+            {'name': 'Rank', 'id': 'rank'},
+            {'name': 'Manager', 'id': 'player_name'},
+            {'name': 'Team', 'id': 'entry_name'},
+            {'name': 'GW Pts', 'id': 'event_total', 'type': 'numeric'},
+            {'name': 'Total', 'id': 'total', 'type': 'numeric'},
+            {'name': f'GW{gw_num} Captain', 'id': 'captain'},
+            {'name': 'Chips Used', 'id': 'chips'},
+            {'name': 'Team Value', 'id': 'value'},
+            {'name': 'Bank', 'id': 'bank'},
+        ],
+        style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER, style_data=TABLE_STYLE_DATA,
+        style_data_conditional=[
+            {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
+            {'if': {'filter_query': '{player_name} contains "(you)"'},
+             'backgroundColor': '#e8f5e9', 'fontWeight': '600'},
+        ],
+    )
+
+    # --- Captain tracker ---
+    cap_items = [f"{name}: {cnt} manager{'s' if cnt != 1 else ''}"
+                 for name, cnt in captain_counter.most_common()]
+
+    # --- Threats / leverage / shared (needs your squad) ---
+    if my_snapshot:
+        my_ids = {pk['element'] for pk in my_snapshot['picks']}
+        rival_owned = set(owner_count.keys())
+
+        def _fmt(pid, with_owners=True):
+            nm = name_map.get(pid, f"#{pid}")
+            pj = _proj(pid)
+            if with_owners:
+                cnt = owner_count.get(pid, 0)
+                return f"{nm} \u2014 {cnt}/{n_rivals} rivals, proj {pj:.1f}"
+            return f"{nm} \u2014 proj {pj:.1f}"
+
+        threats = sorted([pid for pid in rival_owned if pid not in my_ids],
+                         key=lambda pid: (-owner_count.get(pid, 0), -_proj(pid)))[:12]
+        leverage = sorted([pid for pid in my_ids if pid not in rival_owned],
+                          key=lambda pid: -_proj(pid))[:12]
+        shared = sorted([pid for pid in my_ids if pid in rival_owned],
+                        key=lambda pid: -owner_count.get(pid, 0))[:12]
+
+        versus_section = html.Div([
+            _rv_list_card("Threats", "They own, you don't \u2014 every point scores against you",
+                          [_fmt(pid) for pid in threats], COLORS['danger']),
+            _rv_list_card("Your Leverage", "You own, no rival does \u2014 your rank-movers",
+                          [_fmt(pid, with_owners=False) for pid in leverage], COLORS['success']),
+            _rv_list_card("Shared (cancels out)", "Owned by you and rivals \u2014 moves nothing between you",
+                          [_fmt(pid) for pid in shared], COLORS['info']),
+        ], style={'display': 'flex', 'flexWrap': 'wrap', 'gap': '20px', 'marginBottom': '20px'})
+    else:
+        versus_section = html.Div([
+            html.P("Add your Team ID and reload to unlock Threats / Leverage / Shared analysis.",
+                   style={'color': COLORS['text_light'], 'textAlign': 'center', 'padding': '20px 0'})
+        ], style=CARD_STYLE)
+
+    # --- League EO table ---
+    eo_rows = []
+    for pid, eo_val in sorted(eo_pct.items(), key=lambda kv: -kv[1])[:25]:
+        row = dfa[dfa['id'] == pid]
+        glob = row.iloc[0]['ownership'] if not row.empty and pd.notna(row.iloc[0]['ownership']) else None
+        eo_rows.append({
+            'player': name_map.get(pid, f"#{pid}"),
+            'owners': f"{owner_count.get(pid, 0)}/{n_rivals}",
+            'league_eo': eo_val,
+            'global_own': round(glob, 1) if glob is not None else None,
+            'proj': round(_proj(pid), 2),
+            'mine': '\u2713' if (my_snapshot and pid in {pk['element'] for pk in my_snapshot['picks']}) else '',
+        })
+
+    eo_table = dash_table.DataTable(
+        data=eo_rows,
+        columns=[
+            {'name': 'Player', 'id': 'player'},
+            {'name': 'Rival Owners', 'id': 'owners'},
+            {'name': 'League EO%', 'id': 'league_eo', 'type': 'numeric'},
+            {'name': 'Global Own%', 'id': 'global_own', 'type': 'numeric'},
+            {'name': 'Proj Pts', 'id': 'proj', 'type': 'numeric'},
+            {'name': 'You Own', 'id': 'mine'},
+        ],
+        sort_action='native', page_size=25,
+        style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER, style_data=TABLE_STYLE_DATA,
+        style_data_conditional=[
+            {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
+            {'if': {'filter_query': '{league_eo} >= 100', 'column_id': 'league_eo'},
+             'backgroundColor': '#ffebee', 'fontWeight': '600'},
+        ],
+    )
+
+    loaded_note = (f"Loaded {len(snapshots)}/{len(entries)} squads for GW{gw_num}. "
+                   f"League EO counts captains double and triple captains treble \u2014 "
+                   f"100%+ means effectively more than one copy per rival squad.")
+
+    return html.Div([
+        html.Div([
+            html.H3(league_name, style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+            html.P(loaded_note, style={'color': COLORS['text_light'], 'marginBottom': '16px'}),
+            league_table
+        ], style=CARD_STYLE),
+
+        versus_section,
+
+        html.Div([
+            html.H4(f"GW{gw_num} Captain Picks", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
+            html.P("Behind the leader and sharing his captain? You can't catch him this week. "
+                   "Ahead? Covering the chasers' captain removes their biggest weapon.",
+                   style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginBottom': '12px'}),
+            html.Ul([html.Li(item, style={'marginBottom': '6px', 'fontSize': '14px'})
+                     for item in cap_items]) if cap_items else
+            html.P("No captain data loaded.", style={'color': COLORS['text_light']}),
+        ], style=CARD_STYLE),
+
+        html.Div([
+            html.H4("Effective Ownership Within This League", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
+            eo_table
+        ], style=CARD_STYLE),
+    ])
+
 
 if __name__ == '__main__':
     print("\n" + "=" * 60)
