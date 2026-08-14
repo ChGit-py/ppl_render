@@ -2987,7 +2987,7 @@ app.layout = html.Div([
                                 style={'color': COLORS['primary'], 'marginBottom': '4px'}),
                         html.P("Opponent shown in each cell (H = home, A = away). "
                                "Double GW cells show both fixtures. Beyond 15 gameweeks the "
-                               "cell text is hidden to keep the grid readable — hover any "
+                               "cell text is hidden to keep the grid readable. In this case hover over any "
                                "cell for the fixture.",
                                style={'color': COLORS['text_light'], 'marginBottom': '12px'}),
                         dcc.Graph(id='ticker-heatmap', config={'displayModeBar': False})
