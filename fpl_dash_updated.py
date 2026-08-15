@@ -949,43 +949,72 @@ def calculate_expected_clean_sheets(fixtures_data, teams_df, anchor_gw,
     """
     Expected clean sheets per team over the next `num_gws` gameweeks.
 
-    Per fixture, expected goals conceded is a multiplicative Poisson rate:
+    Per fixture, expected goals conceded is a multiplicative Poisson rate
 
         lambda = league_avg_goals x opponent-attack factor x own-defence factor
 
     and P(clean sheet) = P(Poisson(lambda) = 0) = exp(-lambda). Expected CS
-    over the horizon is the SUM of per-fixture probabilities — which makes
-    it DGW/BGW aware for free (two fixtures add two chances; a blank adds
-    none).
+    over the horizon is the SUM of per-fixture probabilities — which makes it
+    DGW/BGW aware for free (two fixtures add two chances; a blank adds none).
 
-    Both factors blend a static component (FPL's venue-specific team
-    strength ratings) with a dynamic one (actual goals scored/conceded per
-    match in the team's last `form_window` finished games). The form share
-    of the blend is form_weight, scaled by how much of the window has
-    actually been played — so pre-season it's 100% strengths, and by ~3
-    played games form carries its full weight. That is what makes the number
-    recalculate to reflect form rather than being a season-long constant.
+    STATIC COMPONENT — two sources, in order of preference:
+      1. FPL's venue-specific team strength ratings, when they contain real
+         values. Pre-season the API can ship these as null/0, which would
+         poison every division — so values are coerced to numeric and any
+         non-finite or sub-100 entry is treated as missing.
+      2. If fewer than half the teams have usable strengths, fall back to the
+         per-fixture difficulty ratings (team_h_difficulty/team_a_difficulty),
+         which are always present. Difficulty d in 1..5 maps to a base rate
+         lambda_static = 0.70 + 0.35 x (d - 1)  →  CS ~50% at d=1, ~25% at
+         d=3, ~12% at d=5.
+
+    DYNAMIC COMPONENT — actual goals scored/conceded per match over each
+    team's last `form_window` FINISHED games, re-derived at every refresh.
+    Form's share ramps with games played (full weight after 3), so
+    pre-season it is honestly 100% static and the numbers start moving with
+    the first real results.
 
     Returns {team_id: {xcs, avg_cs_prob, fixtures: [(gw, opp_short, venue,
     cs_prob)], fixture_string, count, recent_conceded_pm, recent_cs,
     recent_played}}.
     """
-    strength_cols = ['strength_attack_home', 'strength_attack_away',
-                     'strength_defence_home', 'strength_defence_away']
-    if not all(c in teams_df.columns for c in strength_cols):
+    if teams_df.empty:
         return {}
 
-    strengths = teams_df.set_index('id')[strength_cols].to_dict('index')
-    short = dict(zip(teams_df['id'], teams_df.get('short_name', teams_df['name'])))
+    strength_cols = ['strength_attack_home', 'strength_attack_away',
+                     'strength_defence_home', 'strength_defence_away']
 
-    mean_att = np.mean([s['strength_attack_home'] for s in strengths.values()] +
-                       [s['strength_attack_away'] for s in strengths.values()])
-    mean_def = np.mean([s['strength_defence_home'] for s in strengths.values()] +
-                       [s['strength_defence_away'] for s in strengths.values()])
+    # --- Sanitise strengths: numeric, finite, plausibly scaled (FPL uses
+    # ~1000-1400; null/0 placeholders mean "not set yet") ---
+    st = teams_df.set_index('id').reindex(columns=strength_cols)
+    st = st.apply(pd.to_numeric, errors='coerce')
+    st = st.where(np.isfinite(st) & (st > 100))
+
+    valid_teams = int(st.notna().all(axis=1).sum())
+    strengths_ok = valid_teams >= max(2, len(teams_df) // 2)
+    if not strengths_ok:
+        print(f"  xCS: only {valid_teams}/{len(teams_df)} teams have usable strength "
+              f"ratings — falling back to fixture difficulty ratings")
+
+    # Partial gaps in an otherwise-usable table: fill with column means
+    if strengths_ok:
+        st = st.fillna(st.mean())
+        strengths = st.to_dict('index')
+        mean_att = float(np.mean([[v['strength_attack_home'], v['strength_attack_away']]
+                                  for v in strengths.values()]))
+        mean_def = float(np.mean([[v['strength_defence_home'], v['strength_defence_away']]
+                                  for v in strengths.values()]))
+    else:
+        strengths, mean_att, mean_def = {}, 1.0, 1.0
+
+    short = dict(zip(teams_df['id'], teams_df.get('short_name', teams_df['name'])))
+    all_ids = list(teams_df['id'])
 
     recent = calculate_team_recent_form(fixtures_data, window=form_window)
     played_vals = [v['scored_pm'] for v in recent.values() if v['played'] > 0]
     league_avg_goals = float(np.mean(played_vals)) if played_vals else 1.40
+    if not np.isfinite(league_avg_goals) or league_avg_goals <= 0:
+        league_avg_goals = 1.40
 
     def _w(tid):
         """Effective form weight for a team: full after 3 played games."""
@@ -993,14 +1022,16 @@ def calculate_expected_clean_sheets(fixtures_data, teams_df, anchor_gw,
         return form_weight * min(1.0, played / 3.0)
 
     def _att_factor(opp_id, opp_venue):
-        static = strengths[opp_id][f'strength_attack_{opp_venue}'] / mean_att
+        static = (strengths[opp_id][f'strength_attack_{opp_venue}'] / mean_att
+                  if strengths_ok else 1.0)
         w = _w(opp_id)
         form_f = recent.get(opp_id, {}).get('scored_pm', league_avg_goals) / league_avg_goals
         return (1 - w) * static + w * form_f
 
     def _def_factor(tid, venue):
         # Stronger defence => factor below 1 => lower lambda
-        static = mean_def / strengths[tid][f'strength_defence_{venue}']
+        static = (mean_def / strengths[tid][f'strength_defence_{venue}']
+                  if strengths_ok else 1.0)
         w = _w(tid)
         form_f = recent.get(tid, {}).get('conceded_pm', league_avg_goals) / league_avg_goals
         return (1 - w) * static + w * form_f
@@ -1009,12 +1040,23 @@ def calculate_expected_clean_sheets(fixtures_data, teams_df, anchor_gw,
     upcoming = sorted([f for f in fixtures_data if f.get('event') in upcoming_gws],
                       key=lambda f: (f.get('event') or 0, f.get('kickoff_time') or ''))
 
-    result = {tid: {'xcs': 0.0, 'fixtures': [], 'count': 0} for tid in strengths}
+    result = {tid: {'xcs': 0.0, 'fixtures': [], 'count': 0} for tid in all_ids}
 
-    def _add(tid, opp_id, venue, opp_venue, gw):
-        if tid not in strengths or opp_id not in strengths:
+    def _add(tid, opp_id, venue, opp_venue, gw, own_difficulty):
+        if tid not in result:
             return
-        lam = league_avg_goals * _att_factor(opp_id, opp_venue) * _def_factor(tid, venue)
+        if strengths_ok:
+            lam = league_avg_goals * _att_factor(opp_id, opp_venue) * _def_factor(tid, venue)
+        else:
+            # Difficulty-based static rate, still scaled by form on both sides
+            d = own_difficulty if own_difficulty in (1, 2, 3, 4, 5) else 3
+            lam_static = 0.70 + 0.35 * (d - 1)
+            wT, wO = _w(tid), _w(opp_id)
+            own_form = recent.get(tid, {}).get('conceded_pm', league_avg_goals) / league_avg_goals
+            opp_form = recent.get(opp_id, {}).get('scored_pm', league_avg_goals) / league_avg_goals
+            lam = lam_static * ((1 - wT) + wT * own_form) * ((1 - wO) + wO * opp_form)
+        if not np.isfinite(lam):
+            lam = league_avg_goals
         lam = float(np.clip(lam, 0.25, 3.5))
         p_cs = float(np.exp(-lam))
         result[tid]['xcs'] += p_cs
@@ -1023,8 +1065,10 @@ def calculate_expected_clean_sheets(fixtures_data, teams_df, anchor_gw,
                                         'H' if venue == 'home' else 'A', p_cs))
 
     for f in upcoming:
-        _add(f['team_h'], f['team_a'], 'home', 'away', f.get('event'))
-        _add(f['team_a'], f['team_h'], 'away', 'home', f.get('event'))
+        _add(f['team_h'], f['team_a'], 'home', 'away', f.get('event'),
+             f.get('team_h_difficulty'))
+        _add(f['team_a'], f['team_h'], 'away', 'home', f.get('event'),
+             f.get('team_a_difficulty'))
 
     for tid, v in result.items():
         v['xcs'] = round(v['xcs'], 2)
@@ -1032,8 +1076,9 @@ def calculate_expected_clean_sheets(fixtures_data, teams_df, anchor_gw,
         v['fixture_string'] = ', '.join(
             f"{opp} ({ven}) {p * 100:.0f}%" for _gw, opp, ven, p in v['fixtures'])
         rec = recent.get(tid, {})
-        v['recent_conceded_pm'] = round(rec.get('conceded_pm', np.nan), 2) if rec else None
-        v['recent_cs'] = rec.get('cs') if rec else None
+        has_form = bool(rec) and rec.get('played', 0) > 0
+        v['recent_conceded_pm'] = round(rec['conceded_pm'], 2) if has_form else None
+        v['recent_cs'] = rec.get('cs') if has_form else None
         v['recent_played'] = rec.get('played', 0) if rec else 0
 
     return result
