@@ -3624,7 +3624,7 @@ app.layout = html.Div([
                             "This tool scores candidates 0\u2013100 with every input normalized across the pool, so the weights are true relative importances: ",
                             html.Strong(
                                 "Form (25%), xGI/90 (20%), PPG (15%), Attack-fixture ease (15%), BPS/90 (10%), Venue PPG (10%), Differential (5%)"),
-                            ". Scores are then discounted by availability flags and recent start rate \u2014 a great score means nothing on a 25% flag or a rotation risk."
+                            ". Scores are then discounted by availability flags and recent start rate. A great score means nothing on a 25% flag or a rotation risk."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div([
                             html.Span(f"Next fixture: GW{next_gw_num}",
@@ -4033,7 +4033,7 @@ app.layout = html.Div([
                     html.Div([
                         html.H3("Chip Planner", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
                         html.P([
-                            "Chips are 30\u201360 points a season decided in a handful of choices \u2014 and the right week ",
+                            "Chips are 30\u201360 points a season decided in a handful of choices and the right week ",
                             "depends on ", html.Strong("your specific fifteen"), ", not the community consensus. ",
                             "This projects your actual squad gameweek by gameweek (DGW/BGW aware) and scores the best ",
                             "windows for ", html.Strong("Bench Boost"), " (bench projection), ",
@@ -4072,7 +4072,7 @@ app.layout = html.Div([
                     html.Div([
                         html.H3("Mini-League Rivals", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
                         html.P([
-                            "A mini-league isn't scored in points \u2014 it's scored in ", html.Strong("gaps"),
+                            "A mini-league isn't scored in points, it's scored in ", html.Strong("gaps"),
                             ". Players you share with a rival cancel out; only the differences move the table. ",
                             "This loads every squad in your league and shows the ", html.Strong("threats"),
                             " (they own, you don't), your ", html.Strong("leverage"), " (you own, they don't), ",
@@ -6115,7 +6115,7 @@ def update_transfer_gain(out_id, in_id, horizon, hit):
 
     if out_id == in_id:
         return html.Div([
-            html.P("That's the same player twice \u2014 the projected gain of doing nothing is reassuringly zero.",
+            html.P("That's the same player twice. The projected gain of doing nothing is reassuringly zero.",
                    style={'color': COLORS['text_light'], 'textAlign': 'center', 'padding': '30px 0'})
         ], style=CARD_STYLE)
 
@@ -6124,7 +6124,7 @@ def update_transfer_gain(out_id, in_id, horizon, hit):
     out_rows = dfa[dfa['id'] == out_id]
     in_rows = dfa[dfa['id'] == in_id]
     if out_rows.empty or in_rows.empty:
-        return html.Div([html.P("Player data not found \u2014 try reloading the page.",
+        return html.Div([html.P("Player data not found. Try reloading the page.",
                                 style={'color': COLORS['danger']})], style=CARD_STYLE)
     p_out, p_in = out_rows.iloc[0], in_rows.iloc[0]
 
@@ -6711,7 +6711,7 @@ def update_expected_clean_sheets(horizon, n):
                          style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
                                 'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
 
-    title = f"Expected Clean Sheets \u2014 Next {horizon} Gameweek{'s' if horizon > 1 else ''}"
+    title = f"Expected Clean Sheets: Next {horizon} Gameweek{'s' if horizon > 1 else ''}"
     return [bar_fig, rows, player_rows, title, note]
 
 
