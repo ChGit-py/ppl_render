@@ -410,12 +410,25 @@ def fetch_league_standings(league_id, max_entries=RIVALS_MAX_ENTRIES):
         print(f"Error fetching league {league_id}: {e}")
         return None, []
     name = (payload.get('league') or {}).get('name', f'League {league_id}')
-    results = ((payload.get('standings') or {}).get('results') or [])[:max_entries]
+    results = ((payload.get('standings') or {}).get('results') or [])
+    if results:
+        entries = [{
+            'entry': e['entry'], 'entry_name': e.get('entry_name', ''),
+            'player_name': e.get('player_name', ''), 'rank': e.get('rank'),
+            'total': e.get('total', 0), 'event_total': e.get('event_total', 0),
+        } for e in results[:max_entries]]
+        return name, entries
+
+    # Pre-season (and brand-new leagues): the API returns an EMPTY standings
+    # list until a gameweek has completed — members are listed under
+    # new_entries instead, with names split into first/last and no rank yet.
+    newbies = ((payload.get('new_entries') or {}).get('results') or [])
     entries = [{
         'entry': e['entry'], 'entry_name': e.get('entry_name', ''),
-        'player_name': e.get('player_name', ''), 'rank': e.get('rank'),
-        'total': e.get('total', 0), 'event_total': e.get('event_total', 0),
-    } for e in results]
+        'player_name': (f"{e.get('player_first_name', '')} "
+                        f"{e.get('player_last_name', '')}").strip(),
+        'rank': None, 'total': 0, 'event_total': 0,
+    } for e in newbies[:max_entries]]
     return name, entries
 
 
@@ -888,6 +901,141 @@ def calculate_custom_fdr(fixtures, teams_df, anchor_gw, num_gameweeks=5):
             'next_att_fdr': vals['att'][0] if vals['att'] else None,
             'next_def_fdr': vals['def'][0] if vals['def'] else None,
         }
+    return result
+
+
+# =============================================================================
+# EXPECTED CLEAN SHEETS MODEL
+# =============================================================================
+
+def calculate_team_recent_form(fixtures_data, window=6):
+    """
+    Per-team attacking/defensive form from FINISHED fixtures this season:
+    goals scored and conceded per match plus clean sheets kept over the last
+    `window` games. This is the component that makes clean-sheet expectations
+    react to form — it re-derives from results at every data refresh.
+    Returns {team_id: {scored_pm, conceded_pm, cs, played}}.
+    """
+    finished = sorted(
+        [f for f in fixtures_data
+         if f.get('finished') and f.get('team_h_score') is not None
+         and f.get('team_a_score') is not None],
+        key=lambda f: (f.get('event') or 0, f.get('kickoff_time') or '')
+    )
+    per_team = {}
+    for f in finished:
+        h, a = f['team_h'], f['team_a']
+        hs, as_ = f['team_h_score'], f['team_a_score']
+        per_team.setdefault(h, []).append((hs, as_))
+        per_team.setdefault(a, []).append((as_, hs))
+
+    form = {}
+    for tid, matches in per_team.items():
+        recent = matches[-window:]
+        n = len(recent)
+        scored = sum(m[0] for m in recent)
+        conceded = sum(m[1] for m in recent)
+        form[tid] = {
+            'scored_pm': scored / n,
+            'conceded_pm': conceded / n,
+            'cs': sum(1 for m in recent if m[1] == 0),
+            'played': n,
+        }
+    return form
+
+
+def calculate_expected_clean_sheets(fixtures_data, teams_df, anchor_gw,
+                                    num_gws=5, form_weight=0.6, form_window=6):
+    """
+    Expected clean sheets per team over the next `num_gws` gameweeks.
+
+    Per fixture, expected goals conceded is a multiplicative Poisson rate:
+
+        lambda = league_avg_goals x opponent-attack factor x own-defence factor
+
+    and P(clean sheet) = P(Poisson(lambda) = 0) = exp(-lambda). Expected CS
+    over the horizon is the SUM of per-fixture probabilities — which makes
+    it DGW/BGW aware for free (two fixtures add two chances; a blank adds
+    none).
+
+    Both factors blend a static component (FPL's venue-specific team
+    strength ratings) with a dynamic one (actual goals scored/conceded per
+    match in the team's last `form_window` finished games). The form share
+    of the blend is form_weight, scaled by how much of the window has
+    actually been played — so pre-season it's 100% strengths, and by ~3
+    played games form carries its full weight. That is what makes the number
+    recalculate to reflect form rather than being a season-long constant.
+
+    Returns {team_id: {xcs, avg_cs_prob, fixtures: [(gw, opp_short, venue,
+    cs_prob)], fixture_string, count, recent_conceded_pm, recent_cs,
+    recent_played}}.
+    """
+    strength_cols = ['strength_attack_home', 'strength_attack_away',
+                     'strength_defence_home', 'strength_defence_away']
+    if not all(c in teams_df.columns for c in strength_cols):
+        return {}
+
+    strengths = teams_df.set_index('id')[strength_cols].to_dict('index')
+    short = dict(zip(teams_df['id'], teams_df.get('short_name', teams_df['name'])))
+
+    mean_att = np.mean([s['strength_attack_home'] for s in strengths.values()] +
+                       [s['strength_attack_away'] for s in strengths.values()])
+    mean_def = np.mean([s['strength_defence_home'] for s in strengths.values()] +
+                       [s['strength_defence_away'] for s in strengths.values()])
+
+    recent = calculate_team_recent_form(fixtures_data, window=form_window)
+    played_vals = [v['scored_pm'] for v in recent.values() if v['played'] > 0]
+    league_avg_goals = float(np.mean(played_vals)) if played_vals else 1.40
+
+    def _w(tid):
+        """Effective form weight for a team: full after 3 played games."""
+        played = recent.get(tid, {}).get('played', 0)
+        return form_weight * min(1.0, played / 3.0)
+
+    def _att_factor(opp_id, opp_venue):
+        static = strengths[opp_id][f'strength_attack_{opp_venue}'] / mean_att
+        w = _w(opp_id)
+        form_f = recent.get(opp_id, {}).get('scored_pm', league_avg_goals) / league_avg_goals
+        return (1 - w) * static + w * form_f
+
+    def _def_factor(tid, venue):
+        # Stronger defence => factor below 1 => lower lambda
+        static = mean_def / strengths[tid][f'strength_defence_{venue}']
+        w = _w(tid)
+        form_f = recent.get(tid, {}).get('conceded_pm', league_avg_goals) / league_avg_goals
+        return (1 - w) * static + w * form_f
+
+    upcoming_gws = set(range(anchor_gw + 1, anchor_gw + num_gws + 1))
+    upcoming = sorted([f for f in fixtures_data if f.get('event') in upcoming_gws],
+                      key=lambda f: (f.get('event') or 0, f.get('kickoff_time') or ''))
+
+    result = {tid: {'xcs': 0.0, 'fixtures': [], 'count': 0} for tid in strengths}
+
+    def _add(tid, opp_id, venue, opp_venue, gw):
+        if tid not in strengths or opp_id not in strengths:
+            return
+        lam = league_avg_goals * _att_factor(opp_id, opp_venue) * _def_factor(tid, venue)
+        lam = float(np.clip(lam, 0.25, 3.5))
+        p_cs = float(np.exp(-lam))
+        result[tid]['xcs'] += p_cs
+        result[tid]['count'] += 1
+        result[tid]['fixtures'].append((gw, short.get(opp_id, '???'),
+                                        'H' if venue == 'home' else 'A', p_cs))
+
+    for f in upcoming:
+        _add(f['team_h'], f['team_a'], 'home', 'away', f.get('event'))
+        _add(f['team_a'], f['team_h'], 'away', 'home', f.get('event'))
+
+    for tid, v in result.items():
+        v['xcs'] = round(v['xcs'], 2)
+        v['avg_cs_prob'] = round(v['xcs'] / v['count'] * 100, 1) if v['count'] else 0.0
+        v['fixture_string'] = ', '.join(
+            f"{opp} ({ven}) {p * 100:.0f}%" for _gw, opp, ven, p in v['fixtures'])
+        rec = recent.get(tid, {})
+        v['recent_conceded_pm'] = round(rec.get('conceded_pm', np.nan), 2) if rec else None
+        v['recent_cs'] = rec.get('cs') if rec else None
+        v['recent_played'] = rec.get('played', 0) if rec else 0
+
     return result
 
 
@@ -2289,6 +2437,8 @@ app.layout = html.Div([
                             id='nav-fixture-ticker', className='nav-item', n_clicks=0),
                 html.Button('Fixture Difficulty',
                             id='nav-fixtures', className='nav-item', n_clicks=0),
+                html.Button('Expected Clean Sheets',
+                            id='nav-xcs', className='nav-item', n_clicks=0),
                 html.Button('Differentials',
                             id='nav-differentials', className='nav-item', n_clicks=0),
                 html.Button('Captain Optimiser',
@@ -3687,6 +3837,100 @@ app.layout = html.Div([
             # =================================================================
             # SQUAD BUILDER PAGE
             # MY SQUAD PAGE
+            # EXPECTED CLEAN SHEETS PAGE
+            html.Div(id='page-xcs', style={'display': 'none'}, children=[
+                html.Div([
+                    html.Div([
+                        html.H3("Expected Clean Sheets", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
+                        html.P([
+                            "Projected clean sheets per team over your chosen horizon, from a Poisson model: ",
+                            "each fixture's expected goals conceded comes from the opponent's attacking strength ",
+                            "and your team's defensive strength, both blended with ",
+                            html.Strong("actual recent results (last 6 games)"),
+                            " so the numbers move with form, not just reputation. ",
+                            "P(clean sheet) = e",
+                            html.Sup("\u2212\u03bb"),
+                            " per fixture; the horizon total simply sums them, so doubles count twice and blanks count zero."
+                        ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
+                        html.Div(id='xcs-form-note')
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+
+                    html.Div([
+                        html.Div([
+                            html.Div([
+                                html.Label("Horizon (gameweeks)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Slider(
+                                    id='xcs-horizon', min=1, max=10, step=1, value=5,
+                                    marks={i: str(i) for i in range(1, 11)},
+                                )
+                            ], style={'flex': '0 1 420px', 'minWidth': '260px',
+                                      'maxWidth': '420px', 'padding': '0 10px'}),
+                        ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-end'})
+                    ], style=CARD_STYLE),
+
+                    html.Div([
+                        html.H3(id='xcs-chart-title', style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+                        html.P("Hover a bar for the fixture-by-fixture clean sheet probabilities.",
+                               style={'color': COLORS['text_light']}),
+                        dcc.Graph(id='xcs-bar', config={'displayModeBar': False})
+                    ], style=CARD_STYLE),
+
+                    html.Div([
+                        html.H4("Team Clean Sheet Projections", style={'color': COLORS['primary'], 'marginBottom': '16px'}),
+                        dash_table.DataTable(
+                            id='xcs-team-table', data=[],
+                            columns=[
+                                {'name': 'Team', 'id': 'team'},
+                                {'name': 'xCS', 'id': 'xcs', 'type': 'numeric'},
+                                {'name': 'Avg CS% / match', 'id': 'avg_cs_prob', 'type': 'numeric'},
+                                {'name': 'Fixtures', 'id': 'count', 'type': 'numeric'},
+                                {'name': 'Conceded/game (last 6)', 'id': 'recent_conceded', 'type': 'numeric'},
+                                {'name': 'CS (last 6)', 'id': 'recent_cs'},
+                                {'name': 'Fixture-by-fixture CS%', 'id': 'fixture_string'},
+                            ],
+                            sort_action='native', page_size=20,
+                            style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
+                            style_data=TABLE_STYLE_DATA,
+                            style_data_conditional=[
+                                {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
+                                {'if': {'filter_query': '{avg_cs_prob} >= 40', 'column_id': 'avg_cs_prob'},
+                                 'backgroundColor': '#e8f5e9'},
+                                {'if': {'filter_query': '{avg_cs_prob} < 25', 'column_id': 'avg_cs_prob'},
+                                 'backgroundColor': '#ffebee'},
+                            ]
+                        )
+                    ], style=CARD_STYLE),
+
+                    html.Div([
+                        html.H4("Defender & Keeper Picks by Expected Clean Sheets",
+                                style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+                        html.P("GKP and DEF ranked by their team's xCS over the horizon — cross-referenced with "
+                               "price, projections and ownership so you can pick the cheapest reliable route "
+                               "into a good defence.",
+                               style={'color': COLORS['text_light'], 'marginBottom': '16px'}),
+                        dash_table.DataTable(
+                            id='xcs-player-table', data=[],
+                            columns=[
+                                {'name': 'Player', 'id': 'web_name'},
+                                {'name': 'Team', 'id': 'team_name'},
+                                {'name': 'Pos', 'id': 'position'},
+                                {'name': 'Price', 'id': 'price', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                {'name': 'Team xCS', 'id': 'team_xcs', 'type': 'numeric'},
+                                {'name': 'Proj Next 5', 'id': 'proj_pts_5', 'type': 'numeric',
+                                 'format': {'specifier': '.1f'}},
+                                {'name': 'CS/90', 'id': 'cs_per_90', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'Mins', 'id': 'minutes', 'type': 'numeric', 'format': {'specifier': ','}},
+                                {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                            ],
+                            sort_action='native', page_size=20,
+                            style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
+                            style_data=TABLE_STYLE_DATA,
+                            style_data_conditional=[{'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'}]
+                        )
+                    ], style=CARD_STYLE),
+                ], style={'padding': '20px 0'})
+            ]),
+
             # TRANSFER PLANNER PAGE
             html.Div(id='page-transfer-planner', style={'display': 'none'}, children=[
                 html.Div([
@@ -4098,7 +4342,7 @@ def render_stale_stats_banner(_n):
 ALL_PAGES = [
     'home', 'defcon-bonus', 'bonus-consistency', 'defcon',
     'xg', 'underlying', 'value', 'form', 'cs',
-    'fixture-ticker', 'fixtures', 'differentials',
+    'fixture-ticker', 'fixtures', 'xcs', 'differentials',
     'captain', 'transfers', 'transfer-planner', 'chip-planner',
     'rivals', 'my-squad', 'squad-builder',
 ]
@@ -6134,8 +6378,10 @@ def load_rivals(n_clicks, league_id, my_id):
     if not current_gw_info:
         target = data.get('next_gw_num', 1)
         table = dash_table.DataTable(
-            data=[{'rank': e['rank'], 'player_name': e['player_name'],
-                   'entry_name': e['entry_name'], 'total': e['total']} for e in entries],
+            data=[{'rank': e['rank'] if e['rank'] is not None else '\u2014',
+                   'player_name': e['player_name'],
+                   'entry_name': e['entry_name'],
+                   'total': e['total'] if e['rank'] is not None else '\u2014'} for e in entries],
             columns=[{'name': 'Rank', 'id': 'rank'}, {'name': 'Manager', 'id': 'player_name'},
                      {'name': 'Team', 'id': 'entry_name'}, {'name': 'Total', 'id': 'total'}],
             style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER, style_data=TABLE_STYLE_DATA,
@@ -6327,6 +6573,101 @@ def load_rivals(n_clicks, league_id, my_id):
             eo_table
         ], style=CARD_STYLE),
     ])
+
+
+# =============================================================================
+# EXPECTED CLEAN SHEETS CALLBACK
+# =============================================================================
+
+@callback(
+    [Output('xcs-bar', 'figure'), Output('xcs-team-table', 'data'),
+     Output('xcs-player-table', 'data'), Output('xcs-chart-title', 'children'),
+     Output('xcs-form-note', 'children')],
+    [Input('xcs-horizon', 'value'), Input('refresh-interval', 'n_intervals')]
+)
+def update_expected_clean_sheets(horizon, n):
+    data = get_data()
+    fixtures_data = data.get('fixtures_data', [])
+    teams_df = data.get('teams_df', pd.DataFrame())
+    dfa = data.get('df_active', pd.DataFrame())
+
+    anchor = data.get('fixture_anchor_gw')
+    if anchor is None:
+        cur = data.get('current_gw')
+        anchor = cur['id'] if cur else 0
+
+    horizon = int(horizon or 5)
+
+    def _empty(msg):
+        fig = go.Figure()
+        fig.add_annotation(text=msg, xref='paper', yref='paper', x=0.5, y=0.5,
+                           showarrow=False, font=dict(size=16, color=COLORS['text_light']))
+        fig.update_layout(template='plotly_white', height=420)
+        return [fig, [], [], "Expected Clean Sheets", None]
+
+    if teams_df.empty or not fixtures_data:
+        return _empty("Data loading \u2014 please wait...")
+
+    xcs = calculate_expected_clean_sheets(fixtures_data, teams_df, anchor, num_gws=horizon)
+    if not xcs:
+        return _empty("Team strength data unavailable.")
+
+    name_map = dict(zip(teams_df['id'], teams_df['name']))
+    rows = []
+    for tid, v in xcs.items():
+        rows.append({
+            'team': name_map.get(tid, str(tid)),
+            'xcs': v['xcs'], 'avg_cs_prob': v['avg_cs_prob'], 'count': v['count'],
+            'recent_conceded': v['recent_conceded_pm'],
+            'recent_cs': (f"{v['recent_cs']}/{v['recent_played']}"
+                          if v['recent_cs'] is not None else '\u2014'),
+            'fixture_string': v['fixture_string'],
+        })
+    rows.sort(key=lambda r: -r['xcs'])
+
+    bar_fig = go.Figure()
+    bar_fig.add_trace(go.Bar(
+        x=[r['team'] for r in rows],
+        y=[r['xcs'] for r in rows],
+        marker_color=[COLORS['success'] if r['avg_cs_prob'] >= 40 else
+                      (COLORS['warning'] if r['avg_cs_prob'] >= 25 else COLORS['danger'])
+                      for r in rows],
+        text=[f"{r['xcs']:.2f}" for r in rows], textposition='outside',
+        customdata=[r['fixture_string'] for r in rows],
+        hovertemplate='<b>%{x}</b><br>xCS: %{y:.2f}<br>%{customdata}<extra></extra>',
+    ))
+    bar_fig.update_layout(template='plotly_white', height=420, xaxis_tickangle=-45,
+                          yaxis_title=f'Expected clean sheets (next {horizon} GW{"s" if horizon > 1 else ""})',
+                          showlegend=False, font=dict(family='Arial, sans-serif'),
+                          margin=dict(t=30, b=80, l=50, r=20))
+
+    # Defender/keeper picks joined to team xCS
+    player_rows = []
+    if not dfa.empty:
+        team_xcs_map = {tid: v['xcs'] for tid, v in xcs.items()}
+        picks = dfa[dfa['position'].isin(['GKP', 'DEF'])].copy()
+        picks['team_xcs'] = picks['team'].map(team_xcs_map).round(2)
+        picks = picks.sort_values(['team_xcs', 'proj_pts_5'], ascending=[False, False]).head(60)
+        cols = ['web_name', 'team_name', 'position', 'price', 'team_xcs',
+                'proj_pts_5', 'cs_per_90', 'minutes', 'ownership']
+        player_rows = prepare_table_data(picks, cols)
+
+    # Form-blend status note: how much of the number is form vs reputation
+    played = [v['recent_played'] for v in xcs.values()]
+    max_played = max(played) if played else 0
+    if max_played == 0:
+        note = html.Span("Pre-season: no results yet, so projections are 100% team-strength "
+                         "based. Form blends in automatically from the first finished fixture.",
+                         style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
+                                'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
+    else:
+        note = html.Span(f"Form-aware: blending last-{min(max_played, 6)}-game results with team "
+                         f"strengths (up to 60% form weight).",
+                         style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
+                                'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
+
+    title = f"Expected Clean Sheets \u2014 Next {horizon} Gameweek{'s' if horizon > 1 else ''}"
+    return [bar_fig, rows, player_rows, title, note]
 
 
 if __name__ == '__main__':
