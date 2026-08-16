@@ -6591,7 +6591,7 @@ def load_rivals(n_clicks, league_id, my_id):
     )
 
     loaded_note = (f"Loaded {len(snapshots)}/{len(entries)} squads for GW{gw_num}. "
-                   f"League EO counts captains double and triple captains treble \u2014 "
+                   f"League EO counts captains double and triple captains treble"
                    f"100%+ means effectively more than one copy per rival squad.")
 
     return html.Div([
@@ -6651,7 +6651,7 @@ def update_expected_clean_sheets(horizon, n):
         return [fig, [], [], "Expected Clean Sheets", None]
 
     if teams_df.empty or not fixtures_data:
-        return _empty("Data loading \u2014 please wait...")
+        return _empty("Data loading. Please wait...")
 
     xcs = calculate_expected_clean_sheets(fixtures_data, teams_df, anchor, num_gws=horizon)
     if not xcs:
