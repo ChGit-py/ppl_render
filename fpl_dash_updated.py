@@ -6203,7 +6203,7 @@ def update_transfer_gain(out_id, in_id, horizon, hit):
             position_warning,
             html.P("Projections come from the expected-points engine (xG/xA, minutes security, "
                    "fixture-specific difficulty, DEFCON, availability). A projected gain under ~2 "
-                   "points is within model noise \u2014 treat it as a coin flip, not a signal.",
+                   "points is within model noise",
                    style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginTop': '14px'})
         ], style=CARD_STYLE)
     ])
@@ -6230,7 +6230,7 @@ def analyse_chip_windows(n_clicks, team_id):
     if not current_gw_info:
         target = data.get('next_gw_num', 1)
         return html.Div([html.Div([
-            html.P(f"The season hasn't started \u2014 squads (and therefore chip planning) "
+            html.P(f"The season hasn't started. Squads (and therefore chip planning) "
                    f"become available after the GW{target} deadline.",
                    style={'color': COLORS['text_light'], 'fontWeight': '600',
                           'textAlign': 'center', 'padding': '40px 0'})
@@ -6240,7 +6240,7 @@ def analyse_chip_windows(n_clicks, team_id):
     picks_data = fetch_team_picks(int(team_id), gw_num)
     if not picks_data or 'picks' not in picks_data:
         return html.Div([html.Div([
-            html.P("Could not load your squad \u2014 check the team ID.",
+            html.P("Could not load your squad. Check the team ID.",
                    style={'color': COLORS['danger'], 'fontWeight': '600'})
         ], style=CARD_STYLE)])
 
