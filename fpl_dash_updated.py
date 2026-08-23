@@ -1403,8 +1403,16 @@ def get_next_gameweek(data):
 
 
 def season_has_started(data):
-    """True once at least one gameweek has been played."""
-    return any(e.get('finished') for e in data.get('events', []))
+    """
+    True once the season is live. IMPORTANT: FPL only marks a gameweek
+    `finished` after ALL its matches are played and bonus is confirmed —
+    often days after football has actually happened. `is_current` flips at
+    the deadline, and player histories populate match by match from then on.
+    Waiting for `finished` made Phase 2 skip the entire history fetch all
+    weekend, blanking the consistency tab while GW1 was mid-flight.
+    """
+    return any(e.get('finished') or e.get('is_current')
+               for e in data.get('events', []))
 
 
 def get_target_gw_num(data):
@@ -1790,7 +1798,7 @@ def refresh_heavy_data():
         with DATA_LOCK:
             _cur = DATA.get('current_gw')
         _gwn = _cur['id'] if _cur else 0
-        _mins_lo = adaptive_min_minutes(60, _gwn)
+        _mins_lo = adaptive_min_minutes(200, _gwn)
         _mins_hi = adaptive_min_minutes(450, _gwn)
         defcon_positions = SEASON['defcon_positions']
         consistency_players = df_active[
@@ -1814,6 +1822,12 @@ def refresh_heavy_data():
             lambda x: consistency_data.get(x, {}).get('avg_defcon'))
         df_active['max_defcon_game'] = df_active['id'].map(lambda x: consistency_data.get(x, {}).get('max_defcon'))
         df_active['min_defcon_game'] = df_active['id'].map(lambda x: consistency_data.get(x, {}).get('min_defcon'))
+
+        # Commit consistency columns immediately — if any LATER Phase-2 step
+        # fails (home/away, EO, projections), these results must survive
+        # rather than being discarded with the local copy.
+        with DATA_LOCK:
+            DATA['df_active'] = df_active.copy()
 
         # Free consistency data to reclaim memory before next batch
         del consistency_data, consistency_thresholds, consistency_players
@@ -1848,6 +1862,10 @@ def refresh_heavy_data():
             lambda x: minutes_sec.get(x, {}).get('start_rate'))
         df_active['recent_minutes_pct'] = df_active['id'].map(
             lambda x: minutes_sec.get(x, {}).get('recent_minutes_pct'))
+
+        # Incremental commit: home/away + minutes security now safe too
+        with DATA_LOCK:
+            DATA['df_active'] = df_active.copy()
 
         # Free intermediate data to reclaim memory
         del home_away_splits, captain_candidates, minutes_sec
@@ -4881,7 +4899,24 @@ def update_bonus(position, team, max_price, min_minutes):
 def update_consistency(position, team, max_price, min_games, min_minutes, _n):
     # Filter to players with consistency data
     data = get_data()
-    filtered = data['df_active'][data['df_active']['qualifying_games'].notna()].copy()
+    dfa = data['df_active']
+    filtered = dfa[dfa['qualifying_games'].notna()].copy()
+
+    # GW1 fallback: with exactly one gameweek played, season totals ARE the
+    # single match — reconstruct per-match consistency exactly from
+    # aggregates while the history fetch is still loading in Phase 2.
+    if len(filtered) == 0:
+        cur = data.get('current_gw')
+        if cur and cur.get('id') == 1 and len(dfa) > 0:
+            synth = dfa[(dfa['minutes'] >= 60) & (dfa['minutes'] <= 90)].copy()
+            if len(synth) > 0:
+                synth['qualifying_games'] = 1
+                synth['bonus_games'] = (synth['defcon'] >= synth['bonus_threshold']).astype(int)
+                synth['hit_rate'] = synth['bonus_games'] * 100.0
+                synth['avg_defcon_qualifying'] = synth['defcon'].astype(float)
+                synth['max_defcon_game'] = synth['defcon']
+                synth['min_defcon_game'] = synth['defcon']
+                filtered = synth
 
     # If Phase 2 hasn't loaded yet, show loading message
     if len(filtered) == 0:
