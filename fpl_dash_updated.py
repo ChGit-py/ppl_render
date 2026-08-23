@@ -1790,7 +1790,7 @@ def refresh_heavy_data():
         with DATA_LOCK:
             _cur = DATA.get('current_gw')
         _gwn = _cur['id'] if _cur else 0
-        _mins_lo = adaptive_min_minutes(200, _gwn)
+        _mins_lo = adaptive_min_minutes(60, _gwn)
         _mins_hi = adaptive_min_minutes(450, _gwn)
         defcon_positions = SEASON['defcon_positions']
         consistency_players = df_active[
