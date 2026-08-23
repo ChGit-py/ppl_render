@@ -27,6 +27,19 @@ import pulp
 FPL_BASE_URL = "https://fantasy.premierleague.com/api"
 
 
+def adaptive_min_minutes(base, gw_elapsed):
+    """
+    Season-aware minutes threshold: early in the season nobody can have the
+    minutes a mid-season filter assumes (after GW1 the maximum is ~90, so a
+    450-minute default filters out the entire league). Ramp at ~60 useful
+    minutes per elapsed GW, floored at 45, capped at the mid-season value.
+    Reaches base=200 by GW4 and base=450 by GW8.
+    """
+    if not gw_elapsed or gw_elapsed <= 0:
+        return base  # pre-season: carried full-season stats, keep full filter
+    return min(base, max(45, int(gw_elapsed) * 60))
+
+
 def fetch_bootstrap_data():
     response = requests.get(f"{FPL_BASE_URL}/bootstrap-static/")
     response.raise_for_status()
@@ -1293,7 +1306,13 @@ def process_player_data(data):
     df['defcon_vs_bonus'] = df['defcon_per_90'] - df['bonus_threshold']
     df['bonus_rate'] = (df['defcon_per_90'] / df['bonus_threshold']) * 100
 
-    position_defcon_rates = df[df['minutes'] > 450].groupby('position')['defcon_per_90'].mean()
+    # Season-aware baseline pool: 450 minutes is impossible in the first
+    # weeks and an empty pool makes expected_defcon NaN for everyone
+    _gws_done = sum(1 for e in data.get('events', []) if e.get('finished'))
+    if _gws_done == 0 and any(e.get('is_current') for e in data.get('events', [])):
+        _gws_done = 1
+    _defcon_pool_mins = adaptive_min_minutes(450, _gws_done) if _gws_done else 450
+    position_defcon_rates = df[df['minutes'] >= _defcon_pool_mins].groupby('position')['defcon_per_90'].mean()
     df['position_avg_defcon_rate'] = df['position'].map(position_defcon_rates)
     df['expected_defcon'] = (df['minutes_safe'] / 90) * df['position_avg_defcon_rate']
     df['defcon_diff'] = df['defcon'] - df['expected_defcon']
@@ -1493,7 +1512,7 @@ _CACHE_KEYS = [
 # Bump whenever the shape of cached data changes, or at a season rollover.
 # A mismatch (or an over-age cache) forces a clean fetch instead of serving
 # last season's teams and players from disk.
-CACHE_VERSION = 4
+CACHE_VERSION = 5
 MAX_CACHE_AGE = REFRESH_INTERVAL
 
 
@@ -1768,9 +1787,14 @@ def refresh_heavy_data():
 
         # Bonus consistency data
         print("Fetching player match history for bonus consistency analysis...")
+        with DATA_LOCK:
+            _cur = DATA.get('current_gw')
+        _gwn = _cur['id'] if _cur else 0
+        _mins_lo = adaptive_min_minutes(200, _gwn)
+        _mins_hi = adaptive_min_minutes(450, _gwn)
         defcon_positions = SEASON['defcon_positions']
         consistency_players = df_active[
-            (df_active['minutes'] >= 200) &
+            (df_active['minutes'] >= _mins_lo) &
             (df_active['position'].isin(defcon_positions))
             ]['id'].tolist()
 
@@ -1798,7 +1822,7 @@ def refresh_heavy_data():
         # Home/Away splits
         print("Fetching player histories for captain & home/away analysis...")
         captain_candidates = df_active[
-            (df_active['minutes'] >= 450) &
+            (df_active['minutes'] >= _mins_hi) &
             (df_active['position'].isin(SEASON['outfield_positions']))
             ].nlargest(100, 'form')['id'].tolist()
 
@@ -1931,6 +1955,11 @@ next_gw_num = DATA['next_gw_num']
 player_histories = DATA['player_histories']
 
 # Chip name mapping (used by home tab callback)
+_GW_BOOT = DATA['current_gw']['id'] if DATA.get('current_gw') else 0
+DEF_MINS_HI = adaptive_min_minutes(450, _GW_BOOT)
+DEF_MINS_LO = adaptive_min_minutes(200, _GW_BOOT)
+DEF_MIN_GAMES = max(1, min(5, _GW_BOOT)) if _GW_BOOT else 5
+
 chip_name_map = {
     'bboost': 'Bench Boost',
     '3xc': 'Triple Captain',
@@ -2602,7 +2631,7 @@ app.layout = html.Div([
                             html.Div([
                                 html.Label("Min. minutes",
                                            style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Input(id='bonus-minutes', type='number', value=450, min=0, step=50,
+                                dcc.Input(id='bonus-minutes', type='number', value=DEF_MINS_HI, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px',
                                                  'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -2716,14 +2745,14 @@ app.layout = html.Div([
                             html.Div([
                                 html.Label("Min. games",
                                            style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Input(id='consistency-games', type='number', value=5, min=1, step=1,
+                                dcc.Input(id='consistency-games', type='number', value=DEF_MIN_GAMES, min=1, step=1,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px',
                                                  'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Min. minutes",
                                            style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Input(id='consistency-minutes', type='number', value=200, min=0, step=50,
+                                dcc.Input(id='consistency-minutes', type='number', value=DEF_MINS_LO, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px',
                                                  'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -2825,7 +2854,7 @@ app.layout = html.Div([
                             html.Div([
                                 html.Label("Min. minutes",
                                            style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Input(id='defcon-minutes', type='number', value=200, min=0, step=50,
+                                dcc.Input(id='defcon-minutes', type='number', value=DEF_MINS_LO, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px',
                                                  'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -2911,7 +2940,7 @@ app.layout = html.Div([
                             html.Div([
                                 html.Label("Min. minutes",
                                            style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Input(id='xg-minutes', type='number', value=200, min=0, step=50,
+                                dcc.Input(id='xg-minutes', type='number', value=DEF_MINS_LO, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px',
                                                  'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -3007,7 +3036,7 @@ app.layout = html.Div([
                             ], style={'flex': '2', 'minWidth': '200px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Min. minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Input(id='under-minutes', type='number', value=450, min=0, step=50,
+                                dcc.Input(id='under-minutes', type='number', value=DEF_MINS_HI, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
                         ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-end'})
@@ -3093,7 +3122,7 @@ app.layout = html.Div([
                             html.Div([
                                 html.Label("Min. minutes",
                                            style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Input(id='value-minutes', type='number', value=200, min=0, step=50,
+                                dcc.Input(id='value-minutes', type='number', value=DEF_MINS_LO, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px',
                                                  'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -3167,7 +3196,7 @@ app.layout = html.Div([
                             html.Div([
                                 html.Label("Min. minutes",
                                            style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Input(id='form-minutes', type='number', value=200, min=0, step=50,
+                                dcc.Input(id='form-minutes', type='number', value=DEF_MINS_LO, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px',
                                                  'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -3246,7 +3275,7 @@ app.layout = html.Div([
                             html.Div([
                                 html.Label("Min. minutes",
                                            style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Input(id='cs-minutes', type='number', value=200, min=0, step=50,
+                                dcc.Input(id='cs-minutes', type='number', value=DEF_MINS_LO, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px',
                                                  'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -3416,7 +3445,7 @@ app.layout = html.Div([
                             html.Div([
                                 html.Label("Min. minutes",
                                            style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Input(id='fdr-minutes', type='number', value=200, min=0, step=50,
+                                dcc.Input(id='fdr-minutes', type='number', value=DEF_MINS_LO, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px',
                                                  'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -3543,7 +3572,7 @@ app.layout = html.Div([
                             html.Div([
                                 html.Label("Min. minutes",
                                            style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Input(id='diff-minutes', type='number', value=450, min=0, step=50,
+                                dcc.Input(id='diff-minutes', type='number', value=DEF_MINS_HI, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px',
                                                  'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -3624,7 +3653,7 @@ app.layout = html.Div([
                             "This tool scores candidates 0\u2013100 with every input normalized across the pool, so the weights are true relative importances: ",
                             html.Strong(
                                 "Form (25%), xGI/90 (20%), PPG (15%), Attack-fixture ease (15%), BPS/90 (10%), Venue PPG (10%), Differential (5%)"),
-                            ". Scores are then discounted by availability flags and recent start rate. A great score means nothing on a 25% flag or a rotation risk."
+                            ". Scores are then discounted by availability flags and recent start rate \u2014 a great score means nothing on a 25% flag or a rotation risk."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div([
                             html.Span(f"Next fixture: GW{next_gw_num}",
@@ -3661,7 +3690,7 @@ app.layout = html.Div([
                             html.Div([
                                 html.Label("Min. minutes",
                                            style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Input(id='cap-minutes', type='number', value=450, min=0, step=50,
+                                dcc.Input(id='cap-minutes', type='number', value=DEF_MINS_HI, min=0, step=50,
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px',
                                                  'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
@@ -4033,7 +4062,7 @@ app.layout = html.Div([
                     html.Div([
                         html.H3("Chip Planner", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
                         html.P([
-                            "Chips are 30\u201360 points a season decided in a handful of choices and the right week ",
+                            "Chips are 30\u201360 points a season decided in a handful of choices \u2014 and the right week ",
                             "depends on ", html.Strong("your specific fifteen"), ", not the community consensus. ",
                             "This projects your actual squad gameweek by gameweek (DGW/BGW aware) and scores the best ",
                             "windows for ", html.Strong("Bench Boost"), " (bench projection), ",
@@ -4072,7 +4101,7 @@ app.layout = html.Div([
                     html.Div([
                         html.H3("Mini-League Rivals", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
                         html.P([
-                            "A mini-league isn't scored in points, it's scored in ", html.Strong("gaps"),
+                            "A mini-league isn't scored in points \u2014 it's scored in ", html.Strong("gaps"),
                             ". Players you share with a rival cancel out; only the differences move the table. ",
                             "This loads every squad in your league and shows the ", html.Strong("threats"),
                             " (they own, you don't), your ", html.Strong("leverage"), " (you own, they don't), ",
@@ -4547,8 +4576,9 @@ def update_home_tab(n):
     # Top players
     top_scorer_now = df_now.nlargest(1, 'total_points').iloc[0] if len(df_now) > 0 else None
     most_selected_now = df_now.nlargest(1, 'ownership').iloc[0] if len(df_now) > 0 else None
-    best_value_now = df_now[df_now['minutes'] > 450].nlargest(1, 'points_per_million').iloc[0] if len(
-        df_now[df_now['minutes'] > 450]) > 0 else None
+    _home_thr = adaptive_min_minutes(450, current_gw_now['id'] if current_gw_now else 0)
+    best_value_now = df_now[df_now['minutes'] >= _home_thr].nlargest(1, 'points_per_million').iloc[0] if len(
+        df_now[df_now['minutes'] >= _home_thr]) > 0 else None
     top_form_now = df_now.nlargest(1, 'form').iloc[0] if len(df_now) > 0 else None
 
     # Most captained
@@ -4603,7 +4633,7 @@ def update_home_tab(n):
         chip_fig.update_layout(template='plotly_white', height=300)
 
     # Position breakdown chart
-    pos_data = df_now[df_now['minutes'] > 450]
+    pos_data = df_now[df_now['minutes'] >= _home_thr]
     if len(pos_data) > 0:
         position_stats = pos_data.groupby('position').agg({
             'total_points': 'mean', 'points_per_million': 'mean', 'price': 'mean'
@@ -5376,7 +5406,10 @@ def update_differentials(position, team, max_price, max_own, min_minutes):
         color_discrete_map={'GKP': '#666', 'DEF': COLORS['primary'], 'MID': COLORS['accent'], 'FWD': COLORS['info']}
     )
     if len(filtered) > 0:
-        median_ppg = get_data()['df_active'][get_data()['df_active']['minutes'] >= 450]['ppg'].median()
+        _d = get_data()
+        _cgd = _d.get('current_gw')
+        _thr = adaptive_min_minutes(450, _cgd['id'] if _cgd else 0)
+        median_ppg = _d['df_active'][_d['df_active']['minutes'] >= _thr]['ppg'].median()
         scatter_fig.add_hline(y=median_ppg, line_dash='dash', line_color='#999',
                               annotation_text=f'Median PPG ({median_ppg:.1f})', annotation_position='top right')
     scatter_fig.update_layout(template='plotly_white', height=400, xaxis_title='Ownership %',
@@ -6115,7 +6148,7 @@ def update_transfer_gain(out_id, in_id, horizon, hit):
 
     if out_id == in_id:
         return html.Div([
-            html.P("That's the same player twice. The projected gain of doing nothing is reassuringly zero.",
+            html.P("That's the same player twice \u2014 the projected gain of doing nothing is reassuringly zero.",
                    style={'color': COLORS['text_light'], 'textAlign': 'center', 'padding': '30px 0'})
         ], style=CARD_STYLE)
 
@@ -6124,7 +6157,7 @@ def update_transfer_gain(out_id, in_id, horizon, hit):
     out_rows = dfa[dfa['id'] == out_id]
     in_rows = dfa[dfa['id'] == in_id]
     if out_rows.empty or in_rows.empty:
-        return html.Div([html.P("Player data not found. Try reloading the page.",
+        return html.Div([html.P("Player data not found \u2014 try reloading the page.",
                                 style={'color': COLORS['danger']})], style=CARD_STYLE)
     p_out, p_in = out_rows.iloc[0], in_rows.iloc[0]
 
@@ -6203,7 +6236,7 @@ def update_transfer_gain(out_id, in_id, horizon, hit):
             position_warning,
             html.P("Projections come from the expected-points engine (xG/xA, minutes security, "
                    "fixture-specific difficulty, DEFCON, availability). A projected gain under ~2 "
-                   "points is within model noise",
+                   "points is within model noise \u2014 treat it as a coin flip, not a signal.",
                    style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginTop': '14px'})
         ], style=CARD_STYLE)
     ])
@@ -6230,7 +6263,7 @@ def analyse_chip_windows(n_clicks, team_id):
     if not current_gw_info:
         target = data.get('next_gw_num', 1)
         return html.Div([html.Div([
-            html.P(f"The season hasn't started. Squads (and therefore chip planning) "
+            html.P(f"The season hasn't started \u2014 squads (and therefore chip planning) "
                    f"become available after the GW{target} deadline.",
                    style={'color': COLORS['text_light'], 'fontWeight': '600',
                           'textAlign': 'center', 'padding': '40px 0'})
@@ -6240,7 +6273,7 @@ def analyse_chip_windows(n_clicks, team_id):
     picks_data = fetch_team_picks(int(team_id), gw_num)
     if not picks_data or 'picks' not in picks_data:
         return html.Div([html.Div([
-            html.P("Could not load your squad. Check the team ID.",
+            html.P("Could not load your squad \u2014 check the team ID.",
                    style={'color': COLORS['danger'], 'fontWeight': '600'})
         ], style=CARD_STYLE)])
 
@@ -6591,7 +6624,7 @@ def load_rivals(n_clicks, league_id, my_id):
     )
 
     loaded_note = (f"Loaded {len(snapshots)}/{len(entries)} squads for GW{gw_num}. "
-                   f"League EO counts captains double and triple captains treble"
+                   f"League EO counts captains double and triple captains treble \u2014 "
                    f"100%+ means effectively more than one copy per rival squad.")
 
     return html.Div([
@@ -6651,7 +6684,7 @@ def update_expected_clean_sheets(horizon, n):
         return [fig, [], [], "Expected Clean Sheets", None]
 
     if teams_df.empty or not fixtures_data:
-        return _empty("Data loading. Please wait...")
+        return _empty("Data loading \u2014 please wait...")
 
     xcs = calculate_expected_clean_sheets(fixtures_data, teams_df, anchor, num_gws=horizon)
     if not xcs:
@@ -6711,7 +6744,7 @@ def update_expected_clean_sheets(horizon, n):
                          style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
                                 'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
 
-    title = f"Expected Clean Sheets: Next {horizon} Gameweek{'s' if horizon > 1 else ''}"
+    title = f"Expected Clean Sheets \u2014 Next {horizon} Gameweek{'s' if horizon > 1 else ''}"
     return [bar_fig, rows, player_rows, title, note]
 
 
