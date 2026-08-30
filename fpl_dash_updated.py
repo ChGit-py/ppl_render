@@ -296,15 +296,46 @@ def calculate_fixture_difficulty(fixtures, teams_df, current_gw, num_gameweeks=N
     return team_fixtures
 
 
-def fetch_player_history(player_id):
-    """Fetch individual player's match-by-match history."""
+def fetch_player_summary(player_id):
+    """Full element-summary payload: this-season history AND past seasons."""
     try:
         response = requests.get(f"{FPL_BASE_URL}/element-summary/{player_id}/", timeout=10)
         response.raise_for_status()
-        return response.json().get('history', [])
+        return response.json()
     except Exception as e:
         print(f"Error fetching player {player_id}: {e}")
-        return []
+        return {}
+
+
+def fetch_player_history(player_id):
+    """Fetch individual player's match-by-match history."""
+    return fetch_player_summary(player_id).get('history', []) or []
+
+
+def extract_last_season_prior(summary):
+    """
+    Per-90 attacking prior from the most recent PAST season in an
+    element-summary payload. Only trusted with 900+ minutes (10 full games) —
+    below that, last season is itself noise and the position prior is safer.
+    Returns {'xg90', 'xa90', 'mins'} or None.
+    """
+    past = summary.get('history_past') or []
+    if not past:
+        return None
+    last = past[-1]
+    try:
+        mins = float(last.get('minutes') or 0)
+        if mins < 900:
+            return None
+        xg = float(last.get('expected_goals') or 0)
+        xa = float(last.get('expected_assists') or 0)
+        if xg == 0 and xa == 0:
+            return None  # xG columns absent for that season
+        return {'xg90': round(xg / mins * 90, 3),
+                'xa90': round(xa / mins * 90, 3),
+                'mins': int(mins)}
+    except (TypeError, ValueError):
+        return None
 
 
 def calculate_bonus_consistency(player_ids, player_thresholds, min_minutes=60):
@@ -314,17 +345,20 @@ def calculate_bonus_consistency(player_ids, player_thresholds, min_minutes=60):
     Returns dict of player_id -> stats
     """
     results = {}
+    priors = {}
 
     def process_player(player_id):
-        history = fetch_player_history(player_id)
+        summary = fetch_player_summary(player_id)
+        prior = extract_last_season_prior(summary)
+        history = summary.get('history', []) or []
         if not history:
-            return player_id, None
+            return player_id, None, prior
 
         # Filter to games with 60+ minutes
         qualifying_games = [g for g in history if g.get('minutes', 0) >= min_minutes]
 
         if not qualifying_games:
-            return player_id, None
+            return player_id, None, prior
 
         # Count games hitting bonus threshold (position-aware)
         threshold = player_thresholds.get(player_id, 10)
@@ -342,17 +376,19 @@ def calculate_bonus_consistency(player_ids, player_thresholds, min_minutes=60):
             'min_defcon': min(defcon_values) if defcon_values else 0,
             'threshold': threshold,
         }
-        return player_id, stats
+        return player_id, stats, prior
 
     # Use threading for faster fetching (capped at 8 to limit memory on free tier)
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {executor.submit(process_player, pid): pid for pid in player_ids}
         for future in as_completed(futures):
-            player_id, stats = future.result()
+            player_id, stats, prior = future.result()
             if stats:
                 results[player_id] = stats
+            if prior:
+                priors[player_id] = prior
 
-    return results
+    return results, priors
 
 
 def fetch_player_history_batch(player_ids, max_workers=8):
@@ -742,97 +778,153 @@ def _fdr_mult(fdr_series, index, invert=False):
     return (1.0 + FDR_SENSITIVITY * delta).reindex(index).fillna(1.0)
 
 
-def compute_expected_points(df, gw_elapsed=38):
+def _shrink_per90(obs90, minutes, prior90, k=450):
     """
-    Per-player projected FPL points for the next gameweek (`proj_pts_next`)
-    and the next five (`proj_pts_5`), built strictly from data already in the
-    frame — no extra API calls.
+    Empirical-Bayes shrinkage of a per-90 rate toward a prior:
+    shrunk = (observed_total + prior_rate x k) / (minutes + k), in per-90
+    space. With 90 minutes played the estimate is ~85% prior; by ~450
+    minutes the observed data dominates; by 1000+ shrinkage is negligible.
+    This is what stops one hot opening game projecting like a season.
+    """
+    obs = pd.to_numeric(obs90, errors='coerce')
+    mins = pd.to_numeric(minutes, errors='coerce').fillna(0).clip(lower=0)
+    pri = pd.to_numeric(prior90, errors='coerce').fillna(0)
+    return ((obs.fillna(pri) * mins + pri * k) / (mins + k)).fillna(pri)
 
-    The model is a sum of expected-value components under FPL's actual
-    scoring rules:
 
-      minutes    exp_mins = 90 × minutes-share × availability, where the
-                 share comes from recent start/minutes data when Phase 2 has
-                 run, falling back to season minutes ÷ (gw_elapsed × 90).
-                 p60 (prob. of 60+ mins) gates appearance, CS and DEFCON pts.
-      goals      xG/90 × exp90 × attack-fixture mult × position goal value
-      assists    xA/90 × exp90 × attack-fixture mult × 3
-      clean      P(CS) = ½·realised CS rate + ½·defence-fixture-implied rate,
-      sheet      × p60 × position CS value
-      conceded   −½ × GC/90 × exp90 × fixture mult (GKP/DEF only; E[⌊gc/2⌋]≈gc/2)
-      DEFCON     2 × P(hit threshold) × p60, using the measured per-match
-                 hit_rate when available, else a rate-implied estimate
-      saves      GKP: saves/90 ÷ 3 × exp90
-      bonus      realised bonus/90 × exp90 (capped at 3)
+def _position_prior_per90(df, stat_total_col):
+    """
+    Pooled position-level per-90 prior computed from the whole league's
+    season totals: sum(stat) / sum(minutes) x 90 per position. Pooling
+    across ~150 players per position makes even opening-weekend data a
+    stable prior.
+    """
+    mins = pd.to_numeric(df['minutes'], errors='coerce').fillna(0)
+    stat = pd.to_numeric(df[stat_total_col], errors='coerce').fillna(0) \
+        if stat_total_col in df.columns else pd.Series(0.0, index=df.index)
+    grp = pd.DataFrame({'pos': df['position'], 'stat': stat, 'mins': mins}).groupby('pos')
+    agg = grp.sum()
+    rate = (agg['stat'] / agg['mins'].replace(0, np.nan) * 90).fillna(0)
+    return df['position'].map(rate).fillna(0)
 
-    Next-GW uses next-fixture FDRs; the 5-GW figure re-uses the same per-GW
-    model with 5-GW average FDRs and multiplies by fixture_count, which makes
-    it DGW/BGW-aware automatically. Fixture multipliers are linear in FDR
-    with FDR 3 neutral — deliberately simple and inspectable rather than
-    fitted; the FPL xP column exists as an external benchmark.
 
-    Returns (exp_mins, proj_next, proj_5) as Series aligned to df.
+def compute_expected_points(df, gw_elapsed=38, priors=None):
+    """
+    Per-player projected FPL points for the next gameweek (`proj_pts_next`),
+    the next five (`proj_pts_5`) and next eight (`proj_pts_8`), plus haul
+    probability, built strictly from data already in the frame.
+
+    SHRINKAGE (v2): every attacking per-90 rate is shrunk toward a prior
+    before use — the player's OWN last-season per-90s when available (900+
+    minutes last season, harvested from the same element-summary calls Phase
+    2 already makes), otherwise the pooled position-level rate. Weighting is
+    minutes-proportional (k=450), so early-season projections stop being
+    one-game extrapolations and the shrinkage fades to nothing by
+    mid-season automatically. Defensive rates (CS, GC) shrink toward
+    position priors only — team context changes too much across seasons for
+    individual defensive priors to be safe.
+
+    Components (per GW, under real FPL scoring): appearance, goals (xG/90 x
+    position value), assists, clean sheets, goals-conceded penalty, DEFCON
+    (measured hit rate when present), keeper saves, realised bonus rate —
+    all gated by expected minutes (recent start rate x availability) and
+    scaled by attack/defence-specific fixture difficulty.
+
+    `proj_pts_5` / `proj_pts_8` re-use the per-GW model with horizon-average
+    FDRs x fixture counts (DGW/BGW aware). `haul_pct` is the Poisson
+    probability of 2+ goal involvements next GW — the ceiling metric for
+    chase-mode captaincy.
+
+    Returns (exp_mins, proj_next, proj_5, proj_8, haul_pct).
     """
     idx = df.index
     n = lambda col: pd.to_numeric(df[col], errors='coerce') if col in df.columns \
         else pd.Series(np.nan, index=idx)
 
     pos = df['position']
+    priors = priors or {}
+    mins_raw = n('minutes').fillna(0)
+
+    # --- Shrunk attacking rates ------------------------------------------
+    pos_xg90 = _position_prior_per90(df, 'expected_goals')
+    pos_xa90 = _position_prior_per90(df, 'expected_assists')
+    ind_xg90 = df['id'].map(lambda i: (priors.get(i) or {}).get('xg90')) \
+        if 'id' in df.columns else pd.Series(np.nan, index=idx)
+    ind_xa90 = df['id'].map(lambda i: (priors.get(i) or {}).get('xa90')) \
+        if 'id' in df.columns else pd.Series(np.nan, index=idx)
+    prior_xg90 = pd.to_numeric(ind_xg90, errors='coerce').fillna(pos_xg90)
+    prior_xa90 = pd.to_numeric(ind_xa90, errors='coerce').fillna(pos_xa90)
+
+    xg90s = _shrink_per90(n('xg_per_90'), mins_raw, prior_xg90)
+    xa90s = _shrink_per90(n('xa_per_90'), mins_raw, prior_xa90)
+    bonus90s = _shrink_per90(n('bonus_per_90'), mins_raw, _position_prior_per90(df, 'bonus'))
+
+    # Defensive rates: position priors only
+    cs90s = _shrink_per90(n('cs_per_90'), mins_raw, _position_prior_per90(df, 'clean_sheets')).clip(0, 0.8)
+    gc90s = _shrink_per90(n('gc_per_90'), mins_raw, _position_prior_per90(df, 'goals_conceded'))
+
+    saves_obs90 = (n('saves').fillna(0) / mins_raw.replace(0, np.nan) * 90)
+    saves90s = _shrink_per90(saves_obs90, mins_raw, _position_prior_per90(df, 'saves'))
 
     # --- Expected minutes -------------------------------------------------
     avail = n('avail_pct').fillna(100).clip(0, 100) / 100
 
-    season_share = (n('minutes').fillna(0) / (max(int(gw_elapsed), 1) * 90)).clip(0, 1)
+    season_share = (mins_raw / (max(int(gw_elapsed), 1) * 90)).clip(0, 1)
     recent_share = (n('recent_minutes_pct') / 100).clip(0, 1)
     share = recent_share.fillna(season_share)
 
-    p60_fallback = (share * 1.05).clip(0, 1)          # heavy minutes ⇒ starts
+    p60_fallback = (share * 1.05).clip(0, 1)
     p60 = (n('start_rate') / 100).clip(0, 1).fillna(p60_fallback) * avail
     p_any = (share * 1.15 + 0.05).clip(0, 1).where(share > 0, 0) * avail
-    p_any = pd.concat([p_any, p60], axis=1).max(axis=1)   # p_any ≥ p60
+    p_any = pd.concat([p_any, p60], axis=1).max(axis=1)
 
-    exp90 = share * avail                              # expected match-share
+    exp90 = share * avail
     exp_mins = (exp90 * 90).round(0)
 
     appearance_pts = 2 * p60 + 1 * (p_any - p60)
 
-    # --- Per-GW component model (parameterised by fixture columns) --------
+    # --- Per-GW component model ------------------------------------------
     def per_gw(att_fdr_col, def_fdr_col):
         att_mult = _fdr_mult(df.get(att_fdr_col), idx)
-        def_mult_cs = _fdr_mult(df.get(def_fdr_col), idx)            # easier ⇒ more CS
-        def_mult_gc = _fdr_mult(df.get(def_fdr_col), idx, invert=True)  # harder ⇒ more GC
+        def_mult_cs = _fdr_mult(df.get(def_fdr_col), idx)
+        def_mult_gc = _fdr_mult(df.get(def_fdr_col), idx, invert=True)
 
-        goal_pts = n('xg_per_90').fillna(0) * exp90 * att_mult * pos.map(GOAL_POINTS).fillna(4)
-        assist_pts = n('xa_per_90').fillna(0) * exp90 * att_mult * ASSIST_POINTS
+        goal_pts = xg90s * exp90 * att_mult * pos.map(GOAL_POINTS).fillna(4)
+        assist_pts = xa90s * exp90 * att_mult * ASSIST_POINTS
 
-        cs_realised = n('cs_per_90').fillna(0).clip(0, 0.8)
         cs_fixture = (0.50 - 0.08 * (pd.to_numeric(df.get(def_fdr_col), errors='coerce')
                                      .fillna(3.0) - 1)).clip(0.05, 0.55) * def_mult_cs.clip(0.8, 1.2)
-        cs_prob = (0.5 * cs_realised + 0.5 * cs_fixture).clip(0, 0.75)
+        cs_prob = (0.5 * cs90s + 0.5 * cs_fixture).clip(0, 0.75)
         cs_pts = cs_prob * p60 * pos.map(CS_POINTS).fillna(0)
 
         is_def_unit = pos.isin(['GKP', 'DEF'])
-        gc_pts = (-0.5 * n('gc_per_90').fillna(0) * exp90 * def_mult_gc).where(is_def_unit, 0)
+        gc_pts = (-0.5 * gc90s * exp90 * def_mult_gc).where(is_def_unit, 0)
 
         threshold = n('bonus_threshold').fillna(10)
         p_hit_est = (0.5 * n('defcon_per_90').fillna(0) / threshold).clip(0, 0.85)
         p_hit = (n('hit_rate') / 100).clip(0, 1).fillna(p_hit_est)
         defcon_pts = DEFCON_POINTS * p_hit * p60
 
-        saves_per_90 = (n('saves').fillna(0) / n('minutes').replace(0, np.nan) * 90).fillna(0)
-        save_pts = (saves_per_90 / 3 * exp90).where(pos == 'GKP', 0)
-
-        bonus_pts = (n('bonus_per_90').fillna(0) * exp90).clip(0, 3)
+        save_pts = (saves90s / 3 * exp90).where(pos == 'GKP', 0)
+        bonus_pts = (bonus90s * exp90).clip(0, 3)
 
         return (appearance_pts + goal_pts + assist_pts + cs_pts +
                 gc_pts + defcon_pts + save_pts + bonus_pts)
 
     proj_next = per_gw('next_att_fdr', 'next_def_fdr').round(2)
 
+    horizon_per_gw = per_gw('att_fdr_5', 'def_fdr_5')
     fixture_count = n('fixture_count').fillna(5).clip(0, 10)
-    proj_5 = (per_gw('att_fdr_5', 'def_fdr_5') * fixture_count).round(1)
+    proj_5 = (horizon_per_gw * fixture_count).round(1)
+    fixture_count_8 = n('fixture_count_8').fillna(8).clip(0, 16)
+    proj_8 = (horizon_per_gw * fixture_count_8).round(1)
 
-    return exp_mins, proj_next, proj_5
+    # --- Haul probability: P(2+ goal involvements) next GW ----------------
+    att_mult_next = _fdr_mult(df.get('next_att_fdr'), idx)
+    lam_i = ((xg90s + xa90s) * exp90 * att_mult_next).clip(lower=0)
+    haul_pct = ((1 - np.exp(-lam_i) * (1 + lam_i)) * 100).round(1)
+
+    return exp_mins, proj_next, proj_5, proj_8, haul_pct
 
 
 def calculate_minutes_security(player_histories, window=6):
@@ -958,7 +1050,8 @@ def calculate_team_recent_form(fixtures_data, window=6):
 
 
 def calculate_expected_clean_sheets(fixtures_data, teams_df, anchor_gw,
-                                    num_gws=5, form_weight=0.6, form_window=6):
+                                    num_gws=5, form_weight=0.6, form_window=6,
+                                    odds_lambdas=None):
     """
     Expected clean sheets per team over the next `num_gws` gameweeks.
 
@@ -1070,6 +1163,14 @@ def calculate_expected_clean_sheets(fixtures_data, teams_df, anchor_gw,
             lam = lam_static * ((1 - wT) + wT * own_form) * ((1 - wO) + wO * opp_form)
         if not np.isfinite(lam):
             lam = league_avg_goals
+        # Market blend: when the bookmakers have priced THIS team's next
+        # fixture against THIS opponent, average our model with the market's
+        # goals-against rate — the market prices in team news hours before
+        # any stats feed does.
+        if odds_lambdas:
+            mk = odds_lambdas.get(tid)
+            if mk and mk.get('opp_id') == opp_id:
+                lam = 0.5 * lam + 0.5 * mk['lam_against']
         lam = float(np.clip(lam, 0.25, 3.5))
         p_cs = float(np.exp(-lam))
         result[tid]['xcs'] += p_cs
@@ -1183,6 +1284,241 @@ def load_snapshot_baseline(days=7):
     }
     conn.close()
     return baseline, baseline_date
+
+
+# =============================================================================
+# BOOKMAKER ODDS — market-implied goal expectations (optional)
+# =============================================================================
+# Set ODDS_API_KEY (free tier at the-odds-api.com) to enable. Without a key
+# everything below is a silent no-op and the models use their own maths.
+
+ODDS_API_KEY = os.environ.get('ODDS_API_KEY', '').strip()
+ODDS_API_URL = ("https://api.the-odds-api.com/v4/sports/soccer_epl/odds"
+                "?regions=uk&markets=h2h,totals&oddsFormat=decimal")
+
+_ODDS_TEAM_ALIASES = {
+    'spurs': 'tottenham', 'tottenham hotspur': 'tottenham',
+    'manchester united': 'man utd', 'manchester utd': 'man utd',
+    'manchester city': 'man city',
+    'nottingham forest': "nott'm forest",
+    'wolverhampton wanderers': 'wolves', 'wolverhampton': 'wolves',
+    'brighton and hove albion': 'brighton', 'brighton & hove albion': 'brighton',
+    'west ham united': 'west ham', 'newcastle united': 'newcastle',
+    'leeds united': 'leeds', 'afc bournemouth': 'bournemouth',
+    'leicester city': 'leicester', 'ipswich': 'ipswich town',
+    'sheffield united': 'sheffield utd', 'luton town': 'luton',
+}
+
+
+def _norm_team_name(name):
+    n = (name or '').lower().replace(' fc', '').replace('.', '').strip()
+    return _ODDS_TEAM_ALIASES.get(n, n)
+
+
+def match_odds_team_to_fpl(odds_name, fpl_names_by_id):
+    """Map a bookmaker team name to an FPL team id (exact, containment,
+    then fuzzy). Returns team id or None."""
+    target = _norm_team_name(odds_name)
+    normed = {tid: _norm_team_name(nm) for tid, nm in fpl_names_by_id.items()}
+    for tid, nm in normed.items():
+        if nm == target:
+            return tid
+    for tid, nm in normed.items():
+        if nm and (nm in target or target in nm):
+            return tid
+    import difflib
+    best = difflib.get_close_matches(target, list(normed.values()), n=1, cutoff=0.75)
+    if best:
+        for tid, nm in normed.items():
+            if nm == best[0]:
+                return tid
+    return None
+
+
+def derive_match_lambdas(h2h_probs, total_line, over_prob):
+    """
+    Expected goals per side from market prices.
+
+    h2h_probs: de-vigged (p_home, p_draw, p_away). total_line: the main
+    over/under line (e.g. 2.5). over_prob: de-vigged P(over).
+
+    Total goals: nudge the line by how the market leans (a 60% over at 2.5
+    implies a true total nearer 2.8). Supremacy: s ≈ 1.3 x (pH − pA) is a
+    standard first-order mapping from outcome probabilities to goal
+    difference for football scorelines. Split total ± supremacy and clip to
+    sane per-side rates.
+    """
+    p_home, _p_draw, p_away = h2h_probs
+    lam_total = max(0.5, float(total_line) + (float(over_prob) - 0.5) * 1.2)
+    supremacy = 1.3 * (p_home - p_away)
+    lam_home = float(np.clip((lam_total + supremacy) / 2, 0.2, 4.0))
+    lam_away = float(np.clip((lam_total - supremacy) / 2, 0.2, 4.0))
+    return lam_home, lam_away
+
+
+def _devig(prices):
+    """Decimal odds -> normalised implied probabilities."""
+    inv = [1.0 / p for p in prices if p and p > 1.0]
+    if len(inv) != len(prices) or not inv:
+        return None
+    total = sum(inv)
+    return [v / total for v in inv]
+
+
+def fetch_market_lambdas(teams_df):
+    """
+    One call per refresh cycle: for each upcoming EPL match with h2h+totals
+    prices, expected goals for and against per team. Returns
+    {team_id: {'lam_for': x, 'lam_against': y, 'opp_id': tid}} for teams
+    with a priced next fixture, or {} when no key / any failure.
+    """
+    if not ODDS_API_KEY:
+        return {}
+    try:
+        r = requests.get(f"{ODDS_API_URL}&apiKey={ODDS_API_KEY}", timeout=15)
+        r.raise_for_status()
+        events = r.json()
+    except Exception as e:
+        print(f"  Odds fetch failed (non-fatal): {e}")
+        return {}
+
+    fpl_names = dict(zip(teams_df['id'], teams_df['name']))
+    out = {}
+    for ev in events:
+        home_id = match_odds_team_to_fpl(ev.get('home_team'), fpl_names)
+        away_id = match_odds_team_to_fpl(ev.get('away_team'), fpl_names)
+        if not home_id or not away_id or home_id in out or away_id in out:
+            continue
+        h2h, totals = None, None
+        for bm in ev.get('bookmakers', []):
+            for mk in bm.get('markets', []):
+                if mk['key'] == 'h2h' and h2h is None and len(mk.get('outcomes', [])) == 3:
+                    prices = {o['name']: o['price'] for o in mk['outcomes']}
+                    ph = prices.get(ev.get('home_team'))
+                    pa = prices.get(ev.get('away_team'))
+                    pd_ = prices.get('Draw')
+                    if ph and pa and pd_:
+                        probs = _devig([ph, pd_, pa])
+                        if probs:
+                            h2h = (probs[0], probs[1], probs[2])
+                if mk['key'] == 'totals' and totals is None:
+                    overs = [o for o in mk.get('outcomes', []) if o.get('name') == 'Over']
+                    unders = [o for o in mk.get('outcomes', []) if o.get('name') == 'Under']
+                    if overs and unders and overs[0].get('point') is not None:
+                        probs = _devig([overs[0]['price'], unders[0]['price']])
+                        if probs:
+                            totals = (overs[0]['point'], probs[0])
+            if h2h and totals:
+                break
+        if not h2h or not totals:
+            continue
+        lam_h, lam_a = derive_match_lambdas(h2h, totals[0], totals[1])
+        out[home_id] = {'lam_for': lam_h, 'lam_against': lam_a, 'opp_id': away_id}
+        out[away_id] = {'lam_for': lam_a, 'lam_against': lam_h, 'opp_id': home_id}
+    if out:
+        print(f"  Market lambdas derived for {len(out)} teams")
+    return out
+
+
+# =============================================================================
+# MODEL CALIBRATION — log projections, score them once results are in
+# =============================================================================
+
+def log_projections(df_active, target_gw):
+    """
+    Record this refresh's next-GW projections (ours and FPL's ep_next) for
+    the gameweek being planned. INSERT OR REPLACE means the last write
+    before the deadline is the one that gets scored — exactly the number a
+    user would have acted on.
+    """
+    conn = _snapshot_conn()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS projection_log (
+            gw        INTEGER NOT NULL,
+            player_id INTEGER NOT NULL,
+            proj      REAL,
+            fpl_ep    REAL,
+            PRIMARY KEY (gw, player_id)
+        )""")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS actual_points (
+            gw        INTEGER NOT NULL,
+            player_id INTEGER NOT NULL,
+            pts       INTEGER,
+            PRIMARY KEY (gw, player_id)
+        )""")
+    rows = []
+    for r in df_active.itertuples():
+        proj = getattr(r, 'proj_pts_next', None)
+        ep = getattr(r, 'ep_next', None)
+        rows.append((int(target_gw), int(r.id),
+                     None if pd.isna(proj) else float(proj),
+                     None if pd.isna(ep) else float(ep)))
+    with conn:
+        conn.executemany("INSERT OR REPLACE INTO projection_log VALUES (?,?,?,?)", rows)
+    conn.close()
+
+
+def log_actual_points(df_active, current_gw_num):
+    """
+    Record realised points for the in-flight gameweek from bootstrap's
+    event_points. Overwritten each refresh while the GW runs, so the stored
+    values converge to finals without needing to detect 'finished'.
+    """
+    if 'event_points' not in df_active.columns:
+        return
+    conn = _snapshot_conn()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS actual_points (
+            gw INTEGER NOT NULL, player_id INTEGER NOT NULL, pts INTEGER,
+            PRIMARY KEY (gw, player_id))""")
+    rows = [(int(current_gw_num), int(r.id),
+             int(r.event_points) if pd.notna(r.event_points) else None)
+            for r in df_active.itertuples()]
+    with conn:
+        conn.executemany("INSERT OR REPLACE INTO actual_points VALUES (?,?,?)", rows)
+    conn.close()
+
+
+def compute_calibration(min_actual_minutes_players=50):
+    """
+    Score logged projections against realised points on every completed
+    gameweek: mean absolute error for this model vs FPL's ep_next, overall
+    and per gameweek. The number that answers 'is my model worth obeying?'
+    Returns dict or None if nothing is scoreable yet.
+    """
+    try:
+        conn = _snapshot_conn()
+        rows = conn.execute("""
+            SELECT p.gw, p.proj, p.fpl_ep, a.pts
+            FROM projection_log p JOIN actual_points a
+              ON a.gw = p.gw AND a.player_id = p.player_id
+            WHERE p.proj IS NOT NULL AND a.pts IS NOT NULL
+        """).fetchall()
+        conn.close()
+    except Exception as e:
+        print(f"  Calibration query failed: {e}")
+        return None
+    if len(rows) < min_actual_minutes_players:
+        return None
+    by_gw = {}
+    for gw, proj, fpl_ep, pts in rows:
+        by_gw.setdefault(gw, []).append((proj, fpl_ep, pts))
+    per_gw = []
+    for gw in sorted(by_gw):
+        sample = by_gw[gw]
+        mae_model = float(np.mean([abs(p - a) for p, _f, a in sample]))
+        fp = [(f, a) for _p, f, a in sample if f is not None]
+        mae_fpl = float(np.mean([abs(f - a) for f, a in fp])) if fp else None
+        per_gw.append({'gw': gw, 'n': len(sample),
+                       'mae_model': round(mae_model, 3),
+                       'mae_fpl': round(mae_fpl, 3) if mae_fpl is not None else None})
+    all_rows = [x for sample in by_gw.values() for x in sample]
+    mae_model = round(float(np.mean([abs(p - a) for p, _f, a in all_rows])), 3)
+    fp = [(f, a) for _p, f, a in all_rows if f is not None]
+    mae_fpl = round(float(np.mean([abs(f - a) for f, a in fp])), 3) if fp else None
+    return {'per_gw': per_gw, 'mae_model': mae_model, 'mae_fpl': mae_fpl,
+            'n': len(all_rows), 'gws': len(per_gw)}
 
 
 # =============================================================================
@@ -1369,6 +1705,8 @@ def process_player_data(data):
         df['avail_pct'] = 100.0
     df['news'] = df['news'].fillna('') if 'news' in df.columns else ''
     df['ep_next'] = pd.to_numeric(df['ep_next'], errors='coerce') if 'ep_next' in df.columns else np.nan
+    df['event_points'] = pd.to_numeric(df['event_points'], errors='coerce') \
+        if 'event_points' in df.columns else np.nan
 
     # --- Set-piece duties (P=penalties, C=corners/indirect FKs, F=direct FKs) ---
     # First or second in a duty order is a real xGI driver hiding in the payload.
@@ -1515,12 +1853,13 @@ _CACHE_KEYS = [
     'total_managers', 'fixtures_data', 'teams_df', 'fixture_difficulty',
     'player_histories', 'sorted_teams', 'next_gw_num', 'last_refresh',
     'heavy_loaded', 'fixture_anchor_gw', 'season_started', 'season_label',
+    'last_season_priors', 'calibration',
 ]
 
 # Bump whenever the shape of cached data changes, or at a season rollover.
 # A mismatch (or an over-age cache) forces a clean fetch instead of serving
 # last season's teams and players from disk.
-CACHE_VERSION = 5
+CACHE_VERSION = 6
 MAX_CACHE_AGE = REFRESH_INTERVAL
 
 
@@ -1647,6 +1986,11 @@ def refresh_core_data():
             df_active[col] = df_active['team'].map(lambda x, k=key: custom_fdr.get(x, {}).get(k))
         print(f"  Attack/defence FDR computed for {len(custom_fdr)} teams")
 
+        # Market-implied goal expectations (no-op without ODDS_API_KEY)
+        odds_lambdas = fetch_market_lambdas(teams_df)
+        with DATA_LOCK:
+            DATA['odds_lambdas'] = odds_lambdas
+
         total_managers = bootstrap_data['total_players']
 
         # Next fixture venue & FDR
@@ -1680,13 +2024,35 @@ def refresh_core_data():
         print("Computing initial captain scores...")
         df_active['captain_score'] = compute_captain_scores(df_active)
 
+        # 8-GW fixture counts (for the wildcard-horizon projection)
+        _gws8 = set(range(fixture_anchor_gw + 1, fixture_anchor_gw + 9))
+        _c8 = Counter()
+        for _f in fixtures_data:
+            if _f.get('event') in _gws8:
+                _c8[_f['team_h']] += 1
+                _c8[_f['team_a']] += 1
+        df_active['fixture_count_8'] = df_active['team'].map(_c8).fillna(0)
+
         # Expected points projection (Phase-1 pass: season minutes share;
-        # Phase 2 re-runs it with recent start data and measured hit rates)
+        # Phase 2 re-runs it with recent start data, priors and hit rates)
         print("Computing expected points projections...")
         gw_elapsed = current_gw['id'] if current_gw else 38
+        with DATA_LOCK:
+            _priors = DATA.get('last_season_priors', {})
         (df_active['exp_mins_next'],
          df_active['proj_pts_next'],
-         df_active['proj_pts_5']) = compute_expected_points(df_active, gw_elapsed)
+         df_active['proj_pts_5'],
+         df_active['proj_pts_8'],
+         df_active['haul_pct']) = compute_expected_points(df_active, gw_elapsed, priors=_priors)
+
+        # Neutral per-GW base (flat FDR-3, single fixture) — reused by the
+        # chip planner and the squad builder's chip-target emphasis
+        _neutral = df_active.copy()
+        _neutral['next_att_fdr'] = 3.0
+        _neutral['next_def_fdr'] = 3.0
+        df_active['proj_neutral_gw'] = compute_expected_points(
+            _neutral, gw_elapsed, priors=_priors)[1]
+        del _neutral
 
         # Transfer trend / price prediction
         print("Computing price change likelihood scores...")
@@ -1706,6 +2072,17 @@ def refresh_core_data():
         # and realised price movement over the last week.
         try:
             save_daily_snapshot(df_active, next_gw_num)
+            # Calibration bookkeeping: log what we predict, record what happened
+            log_projections(df_active, next_gw_num)
+            if current_gw:
+                log_actual_points(df_active, current_gw['id'])
+            cal = compute_calibration()
+            if cal:
+                DATA_CAL_MSG = (f"  Calibration: model MAE {cal['mae_model']} vs "
+                                f"FPL {cal['mae_fpl']} over {cal['gws']} GW(s)")
+                print(DATA_CAL_MSG)
+            with DATA_LOCK:
+                DATA['calibration'] = cal
             baseline, baseline_date = load_snapshot_baseline(days=7)
             if baseline:
                 df_active['own_delta_7d'] = (
@@ -1811,8 +2188,12 @@ def refresh_heavy_data():
             df_active.loc[df_active['id'].isin(consistency_players), 'id'],
             df_active.loc[df_active['id'].isin(consistency_players), 'position'].map(SEASON['thresholds'])
         ))
-        consistency_data = calculate_bonus_consistency(consistency_players, consistency_thresholds)
-        print(f"  Retrieved data for {len(consistency_data)} players")
+        consistency_data, season_priors = calculate_bonus_consistency(
+            consistency_players, consistency_thresholds)
+        print(f"  Retrieved data for {len(consistency_data)} players "
+              f"(+ last-season priors for {len(season_priors)})")
+        with DATA_LOCK:
+            DATA['last_season_priors'] = season_priors
 
         df_active['qualifying_games'] = df_active['id'].map(
             lambda x: consistency_data.get(x, {}).get('qualifying_games'))
@@ -1903,10 +2284,19 @@ def refresh_heavy_data():
         print("Recalculating expected points with Phase-2 data...")
         with DATA_LOCK:
             cur_for_proj = DATA.get('current_gw')
+            _priors = DATA.get('last_season_priors', {})
         gw_elapsed = cur_for_proj['id'] if cur_for_proj else 38
         (df_active['exp_mins_next'],
          df_active['proj_pts_next'],
-         df_active['proj_pts_5']) = compute_expected_points(df_active, gw_elapsed)
+         df_active['proj_pts_5'],
+         df_active['proj_pts_8'],
+         df_active['haul_pct']) = compute_expected_points(df_active, gw_elapsed, priors=_priors)
+        _neutral = df_active.copy()
+        _neutral['next_att_fdr'] = 3.0
+        _neutral['next_def_fdr'] = 3.0
+        df_active['proj_neutral_gw'] = compute_expected_points(
+            _neutral, gw_elapsed, priors=_priors)[1]
+        del _neutral
 
         # Swap into global store
         with DATA_LOCK:
@@ -2543,6 +2933,8 @@ app.layout = html.Div([
                             id='nav-chip-planner', className='nav-item', n_clicks=0),
                 html.Button('Mini-League Rivals',
                             id='nav-rivals', className='nav-item', n_clicks=0),
+                html.Button('Deadline Dashboard',
+                            id='nav-deadline', className='nav-item', n_clicks=0),
                 html.Button('My Squad',
                             id='nav-my-squad', className='nav-item', n_clicks=0),
                 html.Button('Squad Builder',
@@ -3222,6 +3614,48 @@ app.layout = html.Div([
                     ], style=CARD_STYLE),
 
                     html.Div([
+                        html.H3("Regression Watchlist", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+                        html.P("The discipline tool against chasing hauls. SELL: scoring well above underlying xGI "
+                               "(the goals are borrowed — expect payback). BUY EARLY: elite underlying numbers the "
+                               "goals haven't caught up with yet — get in before the price and ownership move.",
+                               style={'color': COLORS['text_light']}),
+                        html.Div([
+                            html.Div([
+                                html.H4("Sell-High Candidates", style={'color': COLORS['danger'], 'marginBottom': '10px'}),
+                                dash_table.DataTable(
+                                    id='regress-sell-table', data=[],
+                                    columns=[
+                                        {'name': 'Player', 'id': 'web_name'},
+                                        {'name': 'Team', 'id': 'team_name'},
+                                        {'name': 'GI/90', 'id': 'gi_per_90', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                        {'name': 'xGI/90', 'id': 'xgi_per_90', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                        {'name': 'Overperf', 'id': 'xgi_diff_per_90', 'type': 'numeric', 'format': {'specifier': '+.2f'}},
+                                        {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                    ],
+                                    page_size=8, style_cell=TABLE_STYLE_CELL,
+                                    style_header=TABLE_STYLE_HEADER, style_data=TABLE_STYLE_DATA,
+                                )
+                            ], style={'flex': '1', 'minWidth': '320px', 'paddingRight': '10px'}),
+                            html.Div([
+                                html.H4("Buy-Early Candidates", style={'color': COLORS['success'], 'marginBottom': '10px'}),
+                                dash_table.DataTable(
+                                    id='regress-buy-table', data=[],
+                                    columns=[
+                                        {'name': 'Player', 'id': 'web_name'},
+                                        {'name': 'Team', 'id': 'team_name'},
+                                        {'name': 'GI/90', 'id': 'gi_per_90', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                        {'name': 'xGI/90', 'id': 'xgi_per_90', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                        {'name': 'Underperf', 'id': 'xgi_diff_per_90', 'type': 'numeric', 'format': {'specifier': '+.2f'}},
+                                        {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                    ],
+                                    page_size=8, style_cell=TABLE_STYLE_CELL,
+                                    style_header=TABLE_STYLE_HEADER, style_data=TABLE_STYLE_DATA,
+                                )
+                            ], style={'flex': '1', 'minWidth': '320px'}),
+                        ], style={'display': 'flex', 'flexWrap': 'wrap'})
+                    ], style=CARD_STYLE),
+
+                    html.Div([
                         html.H3("Form vs Season Average", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
                         html.P("Players trending up or down from their season average.",
                                style={'color': COLORS['text_light']}),
@@ -3468,6 +3902,46 @@ app.layout = html.Div([
                                                  'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
                         ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-end'})
+                    ], style=CARD_STYLE),
+
+                    # Fixture swing detector
+                    html.Div([
+                        html.H3("Fixture Swings — Buy the Run Early", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+                        html.P("Teams whose attacking fixtures change sharply between the next 3 GWs and the 3 after. "
+                               "A big improvement means buy their attackers BEFORE the run starts — getting there a "
+                               "week early is the cheap edge. Negative swing = fixtures about to turn bad.",
+                               style={'color': COLORS['text_light']}),
+                        dash_table.DataTable(
+                            id='fdr-swing-table', data=[],
+                            columns=[
+                                {'name': 'Team', 'id': 'team'},
+                                {'name': 'aFDR GW+1..3', 'id': 'now_att', 'type': 'numeric'},
+                                {'name': 'aFDR GW+4..6', 'id': 'later_att', 'type': 'numeric'},
+                                {'name': 'Attack Swing', 'id': 'att_swing', 'type': 'numeric',
+                                 'format': {'specifier': '+.2f'}},
+                                {'name': 'dFDR GW+1..3', 'id': 'now_def', 'type': 'numeric'},
+                                {'name': 'dFDR GW+4..6', 'id': 'later_def', 'type': 'numeric'},
+                                {'name': 'Defence Swing', 'id': 'def_swing', 'type': 'numeric',
+                                 'format': {'specifier': '+.2f'}},
+                            ],
+                            sort_action='native', page_size=20,
+                            style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
+                            style_data=TABLE_STYLE_DATA,
+                            style_data_conditional=[
+                                {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
+                                {'if': {'filter_query': '{att_swing} <= -0.4', 'column_id': 'att_swing'},
+                                 'backgroundColor': '#e8f5e9', 'fontWeight': '600'},
+                                {'if': {'filter_query': '{att_swing} >= 0.4', 'column_id': 'att_swing'},
+                                 'backgroundColor': '#ffebee'},
+                                {'if': {'filter_query': '{def_swing} <= -0.4', 'column_id': 'def_swing'},
+                                 'backgroundColor': '#e8f5e9', 'fontWeight': '600'},
+                                {'if': {'filter_query': '{def_swing} >= 0.4', 'column_id': 'def_swing'},
+                                 'backgroundColor': '#ffebee'},
+                            ]
+                        ),
+                        html.P("Negative swing (green) = later fixtures are EASIER than the current window — buy window. "
+                               "Swings under \u00b10.4 are noise.",
+                               style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginTop': '10px'})
                     ], style=CARD_STYLE),
 
                     # Team FDR Chart
@@ -3745,6 +4219,8 @@ app.layout = html.Div([
                                  'format': {'specifier': '.1f'}},
                                 {'name': 'Proj Pts', 'id': 'proj_pts_next', 'type': 'numeric',
                                  'format': {'specifier': '.2f'}},
+                                {'name': 'Haul %', 'id': 'haul_pct', 'type': 'numeric',
+                                 'format': {'specifier': '.1f'}},
                                 {'name': 'FPL xP', 'id': 'ep_next', 'type': 'numeric',
                                  'format': {'specifier': '.1f'}},
                                 {'name': 'Form', 'id': 'form', 'type': 'numeric', 'format': {'specifier': '.1f'}},
@@ -3848,6 +4324,25 @@ app.layout = html.Div([
                                                  'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
                         ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-end'})
+                    ], style=CARD_STYLE),
+
+                    html.Div([
+                        html.H3("Your Price Alerts", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+                        html.P("Protecting team value early season compounds into an extra player by January. "
+                               "Load your squad: players at risk of dropping tonight (sell or accept), plus the "
+                               "top-projected non-owned players about to rise (buy before the price does).",
+                               style={'color': COLORS['text_light'], 'marginBottom': '12px'}),
+                        html.Div([
+                            dcc.Input(id='pa-team-id', type='number', placeholder='FPL Team ID',
+                                      style={'padding': '10px 14px', 'borderRadius': '6px',
+                                             'border': f'2px solid {COLORS["primary"]}',
+                                             'fontSize': '15px', 'width': '180px', 'marginRight': '12px'}),
+                            html.Button("Check My Price Risk", id='pa-load-btn', n_clicks=0,
+                                        style={'backgroundColor': COLORS['primary'], 'color': 'white',
+                                               'border': 'none', 'padding': '10px 24px', 'borderRadius': '6px',
+                                               'fontSize': '14px', 'fontWeight': '700', 'cursor': 'pointer'}),
+                        ], style={'display': 'flex', 'alignItems': 'center', 'flexWrap': 'wrap', 'gap': '8px'}),
+                        dcc.Loading(html.Div(id='pa-result'), type='circle', color=COLORS['primary'])
                     ], style=CARD_STYLE),
 
                     html.Div([
@@ -4097,6 +4592,21 @@ app.layout = html.Div([
                                            'border': f'2px solid {COLORS["primary"]}',
                                            'fontSize': '16px', 'width': '200px', 'marginRight': '12px'}
                                 ),
+                                dcc.Input(
+                                    id='cp-league-id', type='number',
+                                    placeholder='League ID (optional)',
+                                    style={'padding': '10px 14px', 'borderRadius': '6px',
+                                           'border': '1px solid #999',
+                                           'fontSize': '16px', 'width': '200px', 'marginRight': '12px'}
+                                ),
+                                dcc.RadioItems(
+                                    id='cp-horizon',
+                                    options=[{'label': ' Next 8 GWs', 'value': 8},
+                                             {'label': ' Full season roadmap', 'value': 38}],
+                                    value=8, inline=True,
+                                    inputStyle={'marginRight': '4px', 'marginLeft': '10px'},
+                                    style={'marginRight': '12px'}
+                                ),
                                 html.Button(
                                     "Analyse Chip Windows", id='cp-load-btn', n_clicks=0,
                                     style={'backgroundColor': COLORS['primary'], 'color': 'white',
@@ -4110,6 +4620,30 @@ app.layout = html.Div([
                     ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
                     dcc.Loading(html.Div(id='cp-content'), type='circle', color=COLORS['primary'])
+                ], style={'padding': '20px 0'})
+            ]),
+
+            # DEADLINE DASHBOARD PAGE
+            html.Div(id='page-deadline', style={'display': 'none'}, children=[
+                html.Div([
+                    html.Div([
+                        html.H3("Deadline Dashboard", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
+                        html.P(["One screen, one hour before the deadline. Most rank improvement is ",
+                                html.Strong("consistency of process"), " — this enforces it: lineup vs optimal, "
+                                "captain EV and ceiling, availability flags, and price risk, all in one pass."],
+                               style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '16px'}),
+                        html.Div([
+                            dcc.Input(id='dd-team-id', type='number', placeholder='FPL Team ID',
+                                      style={'padding': '10px 14px', 'borderRadius': '6px',
+                                             'border': f'2px solid {COLORS["primary"]}',
+                                             'fontSize': '16px', 'width': '180px', 'marginRight': '12px'}),
+                            html.Button("Run Pre-Deadline Check", id='dd-load-btn', n_clicks=0,
+                                        style={'backgroundColor': COLORS['primary'], 'color': 'white',
+                                               'border': 'none', 'padding': '10px 28px', 'borderRadius': '6px',
+                                               'fontSize': '15px', 'fontWeight': '700', 'cursor': 'pointer'}),
+                        ], style={'display': 'flex', 'alignItems': 'center', 'flexWrap': 'wrap', 'gap': '8px'}),
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+                    dcc.Loading(html.Div(id='dd-content'), type='circle', color=COLORS['primary'])
                 ], style={'padding': '20px 0'})
             ]),
 
@@ -4282,10 +4816,19 @@ app.layout = html.Div([
                                         {'label': 'Blended (PPG + Form + xGI)', 'value': 'blended'},
                                         {'label': 'Projected Points (next GW)', 'value': 'proj_pts_next'},
                                         {'label': 'Projected Points (next 5 GWs)', 'value': 'proj_pts_5'},
+                                        {'label': 'Wildcard: Projected Points (next 8 GWs)', 'value': 'proj_pts_8'},
                                     ],
                                     value='ppg', clearable=False
                                 )
                             ], style={'flex': '2', 'minWidth': '220px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Build toward chip GW (optional)",
+                                           style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Dropdown(
+                                    id='sq-chip-gw', options=[], placeholder='None',
+                                    clearable=True
+                                )
+                            ], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
 
                         ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-end',
                                   'marginBottom': '20px'}),
@@ -4436,7 +4979,7 @@ ALL_PAGES = [
     'xg', 'underlying', 'value', 'form', 'cs',
     'fixture-ticker', 'fixtures', 'xcs', 'differentials',
     'captain', 'transfers', 'transfer-planner', 'chip-planner',
-    'rivals', 'my-squad', 'squad-builder',
+    'rivals', 'deadline', 'my-squad', 'squad-builder',
 ]
 
 # --- NAV: clicks → active-page store ---
@@ -4675,8 +5218,27 @@ def update_home_tab(n):
     else:
         pos_fig = go.Figure()
 
+    # Model calibration card (populated once a logged GW has completed)
+    cal = data.get('calibration')
+    if cal and cal.get('mae_model') is not None:
+        beats = cal.get('mae_fpl') is not None and cal['mae_model'] < cal['mae_fpl']
+        cal_card = html.Div([
+            html.H3("Projection Model Calibration", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+            html.P([
+                f"Over {cal['gws']} scored gameweek(s) ({cal['n']:,} player-predictions): this model's mean "
+                f"absolute error is ", html.Strong(f"{cal['mae_model']:.2f} pts"),
+                f" vs FPL's own xP at ", html.Strong(f"{cal['mae_fpl']:.2f} pts" if cal['mae_fpl'] else 'n/a'),
+                ". " + ("The model is currently beating FPL's projections — trust the Proj Pts columns."
+                        if beats else
+                        "FPL's xP is currently ahead — treat Proj Pts as a second opinion, not gospel."),
+            ], style={'color': COLORS['text_dark'], 'margin': 0}),
+        ], style={**CARD_STYLE, 'backgroundColor': '#f0faf4' if beats else '#fdf6ec'})
+    else:
+        cal_card = html.Div()
+
     # Build and return layout
     return html.Div([
+        cal_card,
         html.Div([
             html.H2("Season Overview", style={'color': COLORS['primary'], 'margin': '0 0 4px 0'}),
             html.P(f"Key statistics from the {data.get('season_label', SEASON['label'])} FPL season",
@@ -5493,11 +6055,72 @@ def sync_own_slider(input_val):
     return max(5, min(100, input_val))
 
 
+# --- REGRESSION WATCHLIST ---
+@callback(
+    [Output('regress-sell-table', 'data'), Output('regress-buy-table', 'data')],
+    Input('refresh-interval', 'n_intervals')
+)
+def update_regression_watchlist(_n):
+    data = get_data()
+    dfa = data.get('df_active', pd.DataFrame())
+    if dfa.empty or 'xgi_diff_per_90' not in dfa.columns:
+        return [], []
+    cur = data.get('current_gw')
+    thr = adaptive_min_minutes(450, cur['id'] if cur else 0)
+    pool = dfa[(dfa['minutes'] >= thr) &
+               (dfa['position'].isin(['DEF', 'MID', 'FWD']))].copy()
+    pool = pool.dropna(subset=['xgi_diff_per_90', 'xgi_per_90'])
+    cols = ['web_name', 'team_name', 'gi_per_90', 'xgi_per_90', 'xgi_diff_per_90', 'ownership']
+    # SELL: producing well above xGI, meaningfully owned (someone to sell)
+    sell = pool[(pool['xgi_diff_per_90'] >= 0.30) & (pool['ownership'] >= 5)]
+    sell = sell.nlargest(8, 'xgi_diff_per_90')
+    # BUY: elite underlying, output lagging
+    buy = pool[(pool['xgi_diff_per_90'] <= -0.20) & (pool['xgi_per_90'] >= 0.35)]
+    buy = buy.nsmallest(8, 'xgi_diff_per_90')
+    return prepare_table_data(sell, cols), prepare_table_data(buy, cols)
+
+
+# --- FIXTURE SWING DETECTOR ---
+@callback(
+    Output('fdr-swing-table', 'data'),
+    Input('refresh-interval', 'n_intervals')
+)
+def update_fixture_swings(_n):
+    data = get_data()
+    fixtures_data = data.get('fixtures_data', [])
+    teams_df = data.get('teams_df', pd.DataFrame())
+    anchor = data.get('fixture_anchor_gw')
+    if anchor is None:
+        cur = data.get('current_gw')
+        anchor = cur['id'] if cur else 0
+    if teams_df.empty or not fixtures_data:
+        return []
+    near = calculate_custom_fdr(fixtures_data, teams_df, anchor, num_gameweeks=3)
+    far = calculate_custom_fdr(fixtures_data, teams_df, anchor + 3, num_gameweeks=3)
+    name_map = dict(zip(teams_df['id'], teams_df['name']))
+    rows = []
+    for tid in name_map:
+        n_ = near.get(tid, {})
+        f_ = far.get(tid, {})
+        if n_.get('att_fdr') is None or f_.get('att_fdr') is None:
+            continue
+        rows.append({
+            'team': name_map[tid],
+            'now_att': n_['att_fdr'], 'later_att': f_['att_fdr'],
+            'att_swing': round(f_['att_fdr'] - n_['att_fdr'], 2),
+            'now_def': n_.get('def_fdr'), 'later_def': f_.get('def_fdr'),
+            'def_swing': round((f_.get('def_fdr') or 3) - (n_.get('def_fdr') or 3), 2),
+        })
+    rows.sort(key=lambda r: r['att_swing'])
+    return rows
+
+
 # --- CAPTAIN Optimiser ---
 @callback(
     [Output('cap-bar', 'figure'), Output('cap-ha-scatter', 'figure'), Output('cap-table', 'data')],
     [Input('cap-position', 'value'), Input('cap-team', 'value'), Input('cap-price', 'value'),
-     Input('cap-minutes', 'value'), Input('refresh-interval', 'n_intervals')]
+     Input('cap-minutes', 'value'), Input('cap-mode', 'value'),
+     Input('refresh-interval', 'n_intervals')]
 )
 def update_captain(position, team, max_price, min_minutes, _n):
     filtered = filter_data(position, team, max_price, min_minutes, positions_allowed=SEASON['outfield_positions'])
@@ -5512,10 +6135,10 @@ def update_captain(position, team, max_price, min_minutes, _n):
         empty_fig.update_layout(template='plotly_white', height=400)
         return empty_fig, empty_fig, []
 
-    top_20 = filtered.nlargest(20, 'captain_score')
+    top_20 = filtered.nlargest(20, rank_col)
     bar_fig = go.Figure()
     bar_fig.add_trace(go.Bar(
-        x=top_20['web_name'], y=top_20['captain_score'],
+        x=top_20['web_name'], y=top_20[rank_col],
         marker_color=[COLORS['success'] if v == 'H' else COLORS['info'] for v in top_20['next_venue']],
         text=[f"{s:.1f}" for s in top_20['captain_score']],
         textposition='outside',
@@ -5548,12 +6171,12 @@ def update_captain(position, team, max_price, min_minutes, _n):
                              font=dict(family='Arial, sans-serif'))
 
     cols = ['web_name', 'team_name', 'position', 'price', 'captain_score', 'proj_pts_next',
-            'ep_next', 'form', 'ppg',
+            'haul_pct', 'ep_next', 'form', 'ppg',
             'xgi_per_90', 'next_att_fdr', 'venue_ppg', 'start_rate', 'avail_pct',
             'set_pieces', 'top_eo',
             'expected_goal_involvements', 'next_opponent', 'next_venue', 'next_fdr',
             'home_ppg', 'away_ppg', 'bps_per_90', 'ownership']
-    table_data = prepare_table_data(filtered.nlargest(50, 'captain_score'), cols)
+    table_data = prepare_table_data(filtered.nlargest(50, rank_col), cols)
 
     return bar_fig, ha_scatter, table_data
 
@@ -5623,6 +6246,202 @@ def update_transfers(position, team, max_price, min_minutes):
     return risers_fig, fallers_fig, scatter_fig, table_data
 
 
+# --- DEADLINE DASHBOARD ---
+@callback(
+    Output('dd-content', 'children'),
+    Input('dd-load-btn', 'n_clicks'),
+    State('dd-team-id', 'value'),
+    prevent_initial_call=True
+)
+def run_deadline_check(n_clicks, team_id):
+    if not team_id:
+        return html.Div([html.P("Enter your team ID.", style={'color': COLORS['text_light'],
+                                'textAlign': 'center', 'padding': '30px 0'})], style=CARD_STYLE)
+    data = get_data()
+    cur = data.get('current_gw')
+    nxt = data.get('next_gw')
+    if not cur:
+        return html.Div([html.P("Season not started — nothing to check yet.",
+                                style={'color': COLORS['text_light'], 'textAlign': 'center',
+                                       'padding': '30px 0'})], style=CARD_STYLE)
+    picks_data = fetch_team_picks(int(team_id), cur['id'])
+    if not picks_data or 'picks' not in picks_data:
+        return html.Div([html.P("Could not load your squad — check the team ID.",
+                                style={'color': COLORS['danger']})], style=CARD_STYLE)
+    dfa = data.get('df_active', pd.DataFrame())
+    squad_ids = [pk['element'] for pk in picks_data['picks']]
+    squad = dfa[dfa['id'].isin(squad_ids)].copy()
+    cards = []
+
+    # 1. Deadline
+    if nxt and nxt.get('deadline_time'):
+        dl = datetime.fromisoformat(nxt['deadline_time'].replace('Z', '+00:00'))
+        cards.append(html.Div([
+            html.H4(f"Next deadline: {nxt['name'].replace('Gameweek ', 'GW')} — "
+                    f"{dl.strftime('%a %d %b, %H:%M')} UTC",
+                    style={'color': COLORS['primary'], 'margin': 0})
+        ], style={**CARD_STYLE, 'backgroundColor': '#f0e6f5'}))
+
+    # 2. Availability flags in squad
+    flagged = squad[pd.to_numeric(squad.get('avail_pct'), errors='coerce').fillna(100) < 100]
+    if len(flagged) > 0:
+        items = [html.Li(f"{r.web_name} — {r.avail_pct:.0f}% ({r.news or 'no detail'})",
+                         style={'marginBottom': '4px'}) for r in flagged.itertuples()]
+        cards.append(html.Div([
+            html.H4(f"\u26a0 Flagged players ({len(flagged)})", style={'color': COLORS['danger'],
+                    'marginBottom': '8px'}),
+            html.Ul(items, style={'paddingLeft': '18px', 'margin': 0})
+        ], style=CARD_STYLE))
+    else:
+        cards.append(html.Div([html.P("\u2713 No availability flags in your squad.",
+                              style={'color': COLORS['success'], 'fontWeight': '600', 'margin': 0})],
+                              style=CARD_STYLE))
+
+    # 3. Captain EV + ceiling from YOUR squad
+    if 'proj_pts_next' in squad.columns and len(squad) > 0:
+        ev = squad.nlargest(3, 'proj_pts_next')
+        ceil = squad.nlargest(3, 'haul_pct') if 'haul_pct' in squad.columns else ev
+        cards.append(html.Div([
+            html.H4("Captaincy", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+            html.P([html.Strong("Protect (EV): "),
+                    ',  '.join(f"{r.web_name} ({r.proj_pts_next:.1f})" for r in ev.itertuples())],
+                   style={'marginBottom': '6px'}),
+            html.P([html.Strong("Chase (ceiling): "),
+                    ',  '.join(f"{r.web_name} ({r.haul_pct:.0f}% haul)" for r in ceil.itertuples())],
+                   style={'marginBottom': '6px'}),
+            html.P("Protecting a lead? Take EV. Chasing? The doubled captain is your variance lever.",
+                   style={'color': COLORS['text_light'], 'fontSize': '13px', 'margin': 0}),
+        ], style=CARD_STYLE))
+
+    # 4. XI vs optimal + bench order
+    try:
+        players = []
+        for r in squad.itertuples():
+            proj = 0.0 if pd.isna(r.proj_pts_next) else float(r.proj_pts_next)
+            sec = 1.0 if pd.isna(getattr(r, 'start_rate', np.nan)) else float(r.start_rate) / 100
+            players.append({'id': int(r.id), 'name': r.web_name, 'position': r.position,
+                            'proj': proj, 'order_score': proj * max(sec, 0.3)})
+        if len(players) >= 11:
+            xi, bench = pick_best_xi(players)
+            xi_total = sum(pl['proj'] for pl in xi)
+            bench_gk = [pl for pl in bench if pl['position'] == 'GKP']
+            bench_out = sorted([pl for pl in bench if pl['position'] != 'GKP'],
+                               key=lambda pl: -pl['order_score'])
+            cards.append(html.Div([
+                html.H4(f"Optimal XI projects {xi_total:.1f} pts", style={'color': COLORS['primary'],
+                        'marginBottom': '8px'}),
+                html.P([html.Strong("XI: "), ', '.join(pl['name'] for pl in xi)],
+                       style={'marginBottom': '6px'}),
+                html.P([html.Strong("Bench order: "),
+                        '  \u2192  '.join(f"{i}. {pl['name']}"
+                                          for i, pl in enumerate(bench_gk + bench_out, 1))],
+                       style={'margin': 0}),
+            ], style=CARD_STYLE))
+    except Exception as _e:
+        print(f"  Deadline XI check failed: {_e}")
+
+    # 5. Price risk tonight
+    if 'price_change_likelihood' in squad.columns:
+        risk = squad[squad['price_change_likelihood'] <= -40]
+        if len(risk) > 0:
+            cards.append(html.Div([
+                html.H4("Price-fall risk in your squad", style={'color': COLORS['warning'],
+                        'marginBottom': '8px'}),
+                html.P(', '.join(f"{r.web_name} ({r.price_change_likelihood:.0f})"
+                                 for r in risk.itertuples()), style={'margin': 0})
+            ], style=CARD_STYLE))
+
+    return html.Div(cards)
+
+
+# --- PRICE ALERTS (squad-aware) ---
+@callback(
+    Output('pa-result', 'children'),
+    Input('pa-load-btn', 'n_clicks'),
+    State('pa-team-id', 'value'),
+    prevent_initial_call=True
+)
+def check_price_alerts(n_clicks, team_id):
+    if not team_id:
+        return html.P("Enter your team ID.", style={'color': COLORS['text_light'], 'marginTop': '10px'})
+    data = get_data()
+    cur = data.get('current_gw')
+    if not cur:
+        return html.P("Squads load after the GW1 deadline.",
+                      style={'color': COLORS['text_light'], 'marginTop': '10px'})
+    picks_data = fetch_team_picks(int(team_id), cur['id'])
+    if not picks_data or 'picks' not in picks_data:
+        return html.P("Could not load that squad — check the team ID.",
+                      style={'color': COLORS['danger'], 'marginTop': '10px'})
+    squad_ids = {pk['element'] for pk in picks_data['picks']}
+    dfa = data.get('df_active', pd.DataFrame())
+    if dfa.empty or 'price_change_likelihood' not in dfa.columns:
+        return html.P("Price data still loading.", style={'color': COLORS['text_light']})
+
+    mine = dfa[dfa['id'].isin(squad_ids)]
+    fall_risk = mine[mine['price_change_likelihood'] <= -40].sort_values('price_change_likelihood')
+    # Buy-before-rise: strong projections you DON'T own, near a rise
+    others = dfa[~dfa['id'].isin(squad_ids)]
+    rise_soon = others[(others['price_change_likelihood'] >= 40)]
+    rise_soon = rise_soon.nlargest(8, 'proj_pts_5')
+
+    def _mini_table(frame, extra_col, extra_name):
+        cols = ['web_name', 'team_name', 'position', 'price', extra_col, 'proj_pts_5', 'own_delta_7d']
+        return dash_table.DataTable(
+            data=prepare_table_data(frame, cols),
+            columns=[
+                {'name': 'Player', 'id': 'web_name'}, {'name': 'Team', 'id': 'team_name'},
+                {'name': 'Pos', 'id': 'position'},
+                {'name': 'Price', 'id': 'price', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                {'name': extra_name, 'id': extra_col, 'type': 'numeric', 'format': {'specifier': '.0f'}},
+                {'name': 'Proj Next 5', 'id': 'proj_pts_5', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                {'name': 'Own \u03947d', 'id': 'own_delta_7d', 'type': 'numeric', 'format': {'specifier': '+.1f'}},
+            ],
+            style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER, style_data=TABLE_STYLE_DATA,
+        )
+
+    blocks = []
+    if len(fall_risk) > 0:
+        blocks.append(html.H4(f"\u26a0 Fall risk in YOUR squad ({len(fall_risk)})",
+                              style={'color': COLORS['danger'], 'margin': '16px 0 8px 0'}))
+        blocks.append(_mini_table(fall_risk, 'price_change_likelihood', 'Fall Risk'))
+    else:
+        blocks.append(html.P("\u2713 No imminent fall risk in your squad.",
+                             style={'color': COLORS['success'], 'fontWeight': '600', 'marginTop': '12px'}))
+    if len(rise_soon) > 0:
+        blocks.append(html.H4("Rising soon (you don't own — buy before the price does)",
+                              style={'color': COLORS['success'], 'margin': '16px 0 8px 0'}))
+        blocks.append(_mini_table(rise_soon, 'price_change_likelihood', 'Rise Score'))
+    return html.Div(blocks)
+
+
+# --- SQUAD BUILDER chip-target options ---
+@callback(
+    Output('sq-chip-gw', 'options'),
+    Input('active-page', 'data')
+)
+def populate_chip_gw_options(page):
+    data = get_data()
+    anchor_gw = data.get('fixture_anchor_gw')
+    if anchor_gw is None:
+        cur = data.get('current_gw')
+        anchor_gw = cur['id'] if cur else 0
+    gws = [g for g in range(anchor_gw + 1, anchor_gw + 11) if g <= 38]
+    # Flag likely DGWs from fixture counts so the dropdown self-documents
+    fixtures_data = data.get('fixtures_data', [])
+    counts = {}
+    for f in fixtures_data:
+        g = f.get('event')
+        if g in gws:
+            counts[g] = counts.get(g, 0) + 1
+    opts = []
+    for g in gws:
+        n_fix = counts.get(g, 0)
+        tag = ' (DGW!)' if n_fix > 10 else (' (blanks)' if 0 < n_fix < 10 else '')
+        opts.append({'label': f'GW{g}{tag}', 'value': g})
+    return opts
+
+
 # --- SQUAD BUILDER ---
 @callback(
     Output('sq-results', 'children'),
@@ -5630,14 +6449,36 @@ def update_transfers(position, team, max_price, min_minutes):
     [State('sq-budget', 'value'),
      State('sq-objective', 'value'),
      State('sq-must-include', 'value'),
-     State('sq-must-exclude', 'value')],
+     State('sq-must-exclude', 'value'),
+     State('sq-chip-gw', 'value')],
     prevent_initial_call=True
 )
-def build_squad(n_clicks, budget, objective, must_include, must_exclude):
+def build_squad(n_clicks, budget, objective, must_include, must_exclude, chip_gw):
     import traceback
     try:
         data = get_data()
         df_now = data['df_active'].copy()
+
+        # Chip-target emphasis: add each player's projection in the target
+        # GW to the objective, so the wildcard draft is pulled toward squads
+        # that peak (bench included) exactly when you plan to Bench Boost.
+        if chip_gw and 'proj_neutral_gw' in df_now.columns:
+            try:
+                lookup = build_gw_fixture_lookup(
+                    data.get('fixtures_data', []), data.get('teams_df', pd.DataFrame()),
+                    [int(chip_gw)]).get(int(chip_gw), {})
+                df_now['chip_gw_proj'] = [
+                    project_player_gw(
+                        0 if pd.isna(r.proj_neutral_gw) else r.proj_neutral_gw,
+                        r.position, r.team, lookup)
+                    for r in df_now.itertuples()]
+                base_obj = objective if objective in df_now.columns else 'ppg'
+                df_now['chip_weighted'] = (
+                    pd.to_numeric(df_now[base_obj], errors='coerce').fillna(0) +
+                    df_now['chip_gw_proj'])
+                objective = 'chip_weighted'
+            except Exception as _e:
+                print(f"  Chip emphasis failed (using base objective): {_e}")
 
         result = build_optimal_squad(
             df_now,
@@ -5667,6 +6508,8 @@ def build_squad(n_clicks, budget, objective, must_include, must_exclude):
             'blended': 'Blended Score',
             'proj_pts_next': 'Projected Points (next GW)',
             'proj_pts_5': 'Projected Points (next 5 GWs)',
+            'proj_pts_8': 'Projected Points (next 8 GWs)',
+            'chip_weighted': 'Chip-Weighted Projection',
         }
         obj_label = obj_labels.get(objective, objective)
 
@@ -6123,8 +6966,61 @@ def load_my_squad(n_clicks, team_id):
             html.Div(items)
         ], style={**CARD_STYLE, 'borderLeft': f'4px solid {COLORS["danger"]}'})
 
+    # --- Lineup advisor: optimal XI vs your picks + projected bench order ---
+    lineup_section = html.Div()
+    try:
+        dfa = data.get('df_active', pd.DataFrame())
+        squad_ids = [pk['element'] for pk in picks_data['picks']]
+        adv = dfa[dfa['id'].isin(squad_ids)].copy()
+        if len(adv) >= 11 and 'proj_pts_next' in adv.columns:
+            players = []
+            for r in adv.itertuples():
+                proj = 0.0 if pd.isna(r.proj_pts_next) else float(r.proj_pts_next)
+                sec = 1.0 if pd.isna(getattr(r, 'start_rate', np.nan)) else float(r.start_rate) / 100
+                players.append({'id': int(r.id), 'name': r.web_name, 'position': r.position,
+                                'proj': proj, 'order_score': proj * max(sec, 0.3)})
+            xi, bench = pick_best_xi(players)
+            xi_ids = {pl['id'] for pl in xi}
+            current_xi_ids = {pk['element'] for pk in picks_data['picks']
+                              if pk.get('multiplier', 0) > 0 or pk.get('position', 16) <= 11}
+            promote = [pl for pl in xi if pl['id'] not in current_xi_ids]
+            demote_ids = current_xi_ids - xi_ids
+            demote = [pl for pl in players if pl['id'] in demote_ids]
+
+            bench_gk = [pl for pl in bench if pl['position'] == 'GKP']
+            bench_out = sorted([pl for pl in bench if pl['position'] != 'GKP'],
+                               key=lambda pl: -pl['order_score'])
+            bench_order = bench_gk + bench_out
+
+            advice = []
+            if promote:
+                for pin, pout in zip(promote, demote):
+                    advice.append(html.P([
+                        "\u2192 Start ", html.Strong(pin['name']),
+                        f" ({pin['proj']:.1f} proj) over ",
+                        html.Strong(pout['name']), f" ({pout['proj']:.1f} proj)"],
+                        style={'color': COLORS['text_dark'], 'marginBottom': '6px'}))
+            else:
+                advice.append(html.P("\u2713 Your XI already matches the projected-optimal lineup.",
+                                     style={'color': COLORS['success'], 'fontWeight': '600',
+                                            'marginBottom': '6px'}))
+            advice.append(html.P([html.Strong("Recommended bench order: "),
+                                  '  \u2192  '.join(
+                                      f"{i}. {pl['name']}" for i, pl in enumerate(bench_order, 1))],
+                                 style={'color': COLORS['text_dark'], 'marginTop': '10px'}))
+            advice.append(html.P("Bench order decides which auto-subs you get — highest "
+                                 "projection x start-security first (bench GK is fixed in slot 1).",
+                                 style={'color': COLORS['text_light'], 'fontSize': '13px'}))
+            lineup_section = html.Div([
+                html.H3("Lineup Advisor", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
+                *advice
+            ], style=CARD_STYLE)
+    except Exception as _e:
+        print(f"  Lineup advisor failed (non-fatal): {_e}")
+
     return html.Div([
         manager_card,
+        lineup_section,
         starters_section,
         bench_section,
         injury_section or html.Div(),
@@ -6284,10 +7180,11 @@ def update_transfer_gain(out_id, in_id, horizon, hit):
 @callback(
     Output('cp-content', 'children'),
     Input('cp-load-btn', 'n_clicks'),
-    State('cp-team-id', 'value'),
+    [State('cp-team-id', 'value'), State('cp-horizon', 'value'),
+     State('cp-league-id', 'value')],
     prevent_initial_call=True
 )
-def analyse_chip_windows(n_clicks, team_id):
+def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
     if not team_id:
         return html.Div([html.P("Enter your FPL team ID above.",
                                 style={'color': COLORS['text_light'], 'textAlign': 'center',
@@ -6321,16 +7218,21 @@ def analyse_chip_windows(n_clicks, team_id):
         return html.Div([html.P("No projection data found for this squad.",
                                 style={'color': COLORS['danger']})], style=CARD_STYLE)
 
-    # Neutral per-GW base: the projection engine run with flat FDR-3 fixtures.
-    neutral = squad.copy()
-    neutral['next_att_fdr'] = 3.0
-    neutral['next_def_fdr'] = 3.0
-    _, neutral_proj, _ = compute_expected_points(neutral, gw_elapsed=max(gw_num, 1))
-    squad['neutral_base'] = neutral_proj.values
+    # Neutral per-GW base: precomputed in the refresh (falls back to a
+    # fresh engine run if the column predates this feature)
+    if 'proj_neutral_gw' in squad.columns and squad['proj_neutral_gw'].notna().any():
+        squad['neutral_base'] = squad['proj_neutral_gw'].fillna(0)
+    else:
+        neutral = squad.copy()
+        neutral['next_att_fdr'] = 3.0
+        neutral['next_def_fdr'] = 3.0
+        squad['neutral_base'] = compute_expected_points(
+            neutral, gw_elapsed=max(gw_num, 1))[1].values
 
     fixtures_data = data.get('fixtures_data', [])
     teams_df = data.get('teams_df', pd.DataFrame())
-    future_gws = [g for g in range(gw_num + 1, gw_num + 9) if g <= 38]
+    horizon = int(horizon or 8)
+    future_gws = [g for g in range(gw_num + 1, gw_num + 1 + horizon) if g <= 38]
     if not future_gws:
         return html.Div([html.P("No future gameweeks left this season.",
                                 style={'color': COLORS['text_light']})], style=CARD_STYLE)
@@ -6362,14 +7264,22 @@ def analyse_chip_windows(n_clicks, team_id):
     best_tc = max(rows, key=lambda r: r['tc_pts'])
     fh_rows = [r for r in rows if r['with_fixture'] < 11]
 
+    # Chip EV in points, not rankings: value of the best window vs the
+    # median window over the horizon — i.e. what perfect timing is WORTH.
+    import statistics as _stats
+    med_bench = _stats.median(r['bench'] for r in rows)
+    med_tc = _stats.median(r['tc_pts'] for r in rows)
+    bb_ev_delta = round(best_bb['bench'] - med_bench, 1)
+    tc_ev_delta = round(best_tc['tc_pts'] - med_tc, 1)
+
     rec_lines = [
         html.P([html.Strong("Bench Boost: "),
-                f"GW{best_bb['gw']} \u2014 your bench projects {best_bb['bench']:.1f} pts there, "
-                f"the most of the next {len(rows)} gameweeks."],
+                f"GW{best_bb['gw']} \u2014 bench projects {best_bb['bench']:.1f} pts there. "
+                f"Timing it right is worth +{bb_ev_delta} pts vs an average window."],
                style={'color': COLORS['text_dark'], 'marginBottom': '8px'}),
         html.P([html.Strong("Triple Captain: "),
-                f"{best_tc['tc_name']} in GW{best_tc['gw']} \u2014 projected {best_tc['tc_pts']:.1f} pts, "
-                f"so the extra captain multiplier is worth ~{best_tc['tc_pts']:.1f} more."],
+                f"{best_tc['tc_name']} in GW{best_tc['gw']} \u2014 the extra multiplier is worth "
+                f"~{best_tc['tc_pts']:.1f} pts (+{tc_ev_delta} vs an average week's best pick)."],
                style={'color': COLORS['text_dark'], 'marginBottom': '8px'}),
     ]
     if fh_rows:
@@ -6386,6 +7296,38 @@ def analyse_chip_windows(n_clicks, team_id):
         rec_lines.append(html.P(f"Note: {missing} squad player(s) had no projection data "
                                 f"(usually zero minutes so far) and count as 0.",
                                 style={'color': COLORS['text_light'], 'fontSize': '13px'}))
+
+    # Rival chip-window collision: can anyone in your league answer your
+    # planned window? A BB into a week the leader has already spent his on
+    # is worth double its raw points in league terms.
+    if league_id:
+        try:
+            _lname, _entries = fetch_league_standings(int(league_id))
+            if _entries:
+                _used = {'bboost': 0, '3xc': 0, 'freehit': 0, 'wildcard': 0}
+                _n_rivals = 0
+                with ThreadPoolExecutor(max_workers=8) as _ex:
+                    _futs = [_ex.submit(fetch_entry_chips, e['entry'])
+                             for e in _entries if e['entry'] != int(team_id)]
+                    for _f in as_completed(_futs):
+                        _chips = _f.result()
+                        _n_rivals += 1
+                        for _c in _chips:
+                            if _c.get('name') in _used:
+                                _used[_c['name']] += 1
+                rec_lines.append(html.P([
+                    html.Strong(f"League collision check ({_lname}): "),
+                    f"{_used['bboost']}/{_n_rivals} rivals have burned Bench Boost, "
+                    f"{_used['3xc']}/{_n_rivals} Triple Captain, "
+                    f"{_used['freehit']}/{_n_rivals} Free Hit, "
+                    f"{_used['wildcard']}/{_n_rivals} a Wildcard. "
+                    f"Every rival who has already spent a chip CANNOT answer your window with it."],
+                    style={'color': COLORS['text_dark'], 'marginBottom': '8px',
+                           'backgroundColor': '#f0e6f5', 'padding': '10px',
+                           'borderRadius': '6px'}))
+        except Exception as _e:
+            rec_lines.append(html.P(f"League chip check failed: {_e}",
+                                    style={'color': COLORS['text_light'], 'fontSize': '13px'}))
 
     bench_fig = go.Figure()
     bench_fig.add_trace(go.Bar(
@@ -6721,7 +7663,8 @@ def update_expected_clean_sheets(horizon, n):
     if teams_df.empty or not fixtures_data:
         return _empty("Data loading \u2014 please wait...")
 
-    xcs = calculate_expected_clean_sheets(fixtures_data, teams_df, anchor, num_gws=horizon)
+    xcs = calculate_expected_clean_sheets(fixtures_data, teams_df, anchor, num_gws=horizon,
+                                          odds_lambdas=data.get('odds_lambdas'))
     if not xcs:
         return _empty("Team strength data unavailable.")
 
