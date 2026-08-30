@@ -546,45 +546,57 @@ def build_league_ownership(snapshots):
 
 def build_gw_fixture_lookup(fixtures_data, teams_df, gws):
     """
-    For each gameweek in `gws`, per team: fixture count and average
-    attack/defence difficulty (1-5, from venue-specific team strengths —
-    same scaling as calculate_custom_fdr). Returns
-    {gw: {team_id: {'count': n, 'att_fdr': x, 'def_fdr': y}}}.
+    For each gameweek in `gws`, per team: fixture count, average
+    attack/defence difficulty (1-5), fixture-specific ATTACKING GOAL
+    ENVIRONMENT (form + strengths blended; 1.0 = neutral), and the
+    opponent string. Returns
+    {gw: {team_id: {'count', 'att_fdr', 'def_fdr', 'att_env', 'opp'}}}.
     """
     lookup = {}
     for gw in gws:
         per_gw = calculate_custom_fdr(fixtures_data, teams_df,
                                       anchor_gw=gw - 1, num_gameweeks=1)
+        env_gw = calculate_goal_environment(fixtures_data, teams_df,
+                                            anchor_gw=gw - 1, num_gws=1)
         counts = Counter()
         for f in fixtures_data:
             if f.get('event') == gw:
                 counts[f['team_h']] += 1
                 counts[f['team_a']] += 1
-        lookup[gw] = {
-            tid: {'count': counts.get(tid, 0),
-                  'att_fdr': (v.get('att_fdr') if v.get('att_fdr') is not None else 3.0),
-                  'def_fdr': (v.get('def_fdr') if v.get('def_fdr') is not None else 3.0)}
-            for tid, v in per_gw.items()
-        }
-        for tid in counts:
-            lookup[gw].setdefault(tid, {'count': counts[tid],
-                                        'att_fdr': 3.0, 'def_fdr': 3.0})
+        lookup[gw] = {}
+        for tid in set(list(per_gw.keys()) + list(counts.keys()) + list(env_gw.keys())):
+            v = per_gw.get(tid, {})
+            e = env_gw.get(tid, {})
+            lookup[gw][tid] = {
+                'count': counts.get(tid, 0),
+                'att_fdr': (v.get('att_fdr') if v.get('att_fdr') is not None else 3.0),
+                'def_fdr': (v.get('def_fdr') if v.get('def_fdr') is not None else 3.0),
+                'att_env': e.get('att_env_avg', 1.0),
+                'opp': (f"{e.get('opp_next', '')} ({e.get('venue_next', '')})"
+                        if e.get('opp_next') else ''),
+            }
     return lookup
 
 
 def project_player_gw(neutral_base, position, team_id, gw_lookup_for_gw):
     """
     One player's projected points in one specific future GW: the neutral
-    (FDR-3, single-fixture) per-GW base scaled by that GW's fixture
-    difficulty and multiplied by fixture count (0 for a blank, 2 for a
-    double). GKP/DEF scale off defensive difficulty (their points are
-    CS-driven), MID/FWD off attacking difficulty.
+    (FDR-3, single-fixture) per-GW base scaled by that GW's fixture and
+    multiplied by fixture count (0 for a blank, 2 for a double).
+
+    MID/FWD scale by the ATTACKING GOAL ENVIRONMENT (0.55-1.80) — so a
+    striker at home to a promoted side gets the real ~1.5x his fixture
+    deserves, not a ±12% nudge, and recency alone can no longer outrank the
+    fixture of the season. GKP/DEF stay on defensive difficulty (their
+    points are CS-driven).
     """
     info = gw_lookup_for_gw.get(team_id)
     if not info or info['count'] == 0:
         return 0.0
-    fdr = info['def_fdr'] if position in ('GKP', 'DEF') else info['att_fdr']
-    mult = 1.0 + FDR_SENSITIVITY * (3.0 - fdr)
+    if position in ('GKP', 'DEF'):
+        mult = FDR_STEP_RATIO ** (3.0 - info['def_fdr'])
+    else:
+        mult = float(np.clip(info.get('att_env', 1.0) or 1.0, *ATT_ENV_CLIP))
     return round(neutral_base * mult * info['count'], 2)
 
 
@@ -767,15 +779,19 @@ DEFCON_POINTS = 2
 
 # How strongly fixture difficulty scales output. FDR 3 is neutral; each step
 # away moves output by this fraction (FDR 1 → ×1.24 attack, FDR 5 → ×0.76).
-FDR_SENSITIVITY = 0.12
+# Geometric ratio per FDR step (was linear ±12%, which compressed fixture
+# differences so hard a dream fixture could never overturn a modest baseline
+# gap). FDR 1 → ×1.39, 2 → ×1.18, 3 → ×1.00, 4 → ×0.85, 5 → ×0.72.
+FDR_STEP_RATIO = 1.18
+FDR_SENSITIVITY = FDR_STEP_RATIO - 1.0  # legacy alias
 
 
 def _fdr_mult(fdr_series, index, invert=False):
-    """Fixture multiplier centred on FDR 3. invert=True for 'harder = more'
-    quantities (goals conceded, saves faced)."""
+    """Geometric fixture multiplier centred on FDR 3 (ratio per step).
+    invert=True for 'harder = more' quantities (goals conceded)."""
     fdr = pd.to_numeric(fdr_series, errors='coerce').fillna(3.0)
     delta = (fdr - 3.0) if invert else (3.0 - fdr)
-    return (1.0 + FDR_SENSITIVITY * delta).reindex(index).fillna(1.0)
+    return pd.Series(np.power(FDR_STEP_RATIO, delta), index=fdr.index).reindex(index).fillna(1.0)
 
 
 def _shrink_per90(obs90, minutes, prior90, k=450):
@@ -884,8 +900,18 @@ def compute_expected_points(df, gw_elapsed=38, priors=None):
     appearance_pts = 2 * p60 + 1 * (p_any - p60)
 
     # --- Per-GW component model ------------------------------------------
-    def per_gw(att_fdr_col, def_fdr_col):
-        att_mult = _fdr_mult(df.get(att_fdr_col), idx)
+    def per_gw(att_fdr_col, def_fdr_col, att_env_col=None):
+        # Attacking side: prefer the goal-environment ratio (expected goals
+        # for this fixture / league average) — it spreads real fixtures
+        # (promoted side at home ~1.5x, top defence away ~0.7x) where the
+        # old linear FDR multiplier compressed everything into ±12%.
+        att_mult = None
+        if att_env_col and att_env_col in df.columns:
+            env = pd.to_numeric(df[att_env_col], errors='coerce')
+            if env.notna().any():
+                att_mult = env.clip(*ATT_ENV_CLIP).fillna(1.0)
+        if att_mult is None:
+            att_mult = _fdr_mult(df.get(att_fdr_col), idx)
         def_mult_cs = _fdr_mult(df.get(def_fdr_col), idx)
         def_mult_gc = _fdr_mult(df.get(def_fdr_col), idx, invert=True)
 
@@ -902,7 +928,24 @@ def compute_expected_points(df, gw_elapsed=38, priors=None):
 
         threshold = n('bonus_threshold').fillna(10)
         p_hit_est = (0.5 * n('defcon_per_90').fillna(0) / threshold).clip(0, 0.85)
-        p_hit = (n('hit_rate') / 100).clip(0, 1).fillna(p_hit_est)
+        # Shrink the MEASURED hit rate toward the position average, weighted
+        # by qualifying games (k=4). After 1-2 games a raw 100% hit rate was
+        # handing accumulator mids ~2 near-certain points a week that
+        # explosive forwards structurally can't earn — the single biggest
+        # early-season distorter of TC/captain rankings.
+        q_games = n('qualifying_games').fillna(0).clip(lower=0)
+        raw_hit = (n('hit_rate') / 100).clip(0, 1)
+        _hit_pool = pd.DataFrame({'pos': pos, 'hit': raw_hit, 'q': q_games})
+        _hit_pool = _hit_pool[_hit_pool['hit'].notna() & (_hit_pool['q'] > 0)]
+        if len(_hit_pool) > 0:
+            _wavg = (_hit_pool.assign(w=_hit_pool['hit'] * _hit_pool['q'])
+                     .groupby('pos').apply(lambda g: g['w'].sum() / max(g['q'].sum(), 1)))
+            pos_hit_prior = pos.map(_wavg)
+        else:
+            pos_hit_prior = pd.Series(np.nan, index=idx)
+        p_hit_prior = pos_hit_prior.fillna(p_hit_est)
+        p_hit_meas = raw_hit.fillna(p_hit_est)
+        p_hit = ((p_hit_meas * q_games + p_hit_prior * 4) / (q_games + 4)).clip(0, 1)
         defcon_pts = DEFCON_POINTS * p_hit * p60
 
         save_pts = (saves90s / 3 * exp90).where(pos == 'GKP', 0)
@@ -911,20 +954,24 @@ def compute_expected_points(df, gw_elapsed=38, priors=None):
         return (appearance_pts + goal_pts + assist_pts + cs_pts +
                 gc_pts + defcon_pts + save_pts + bonus_pts)
 
-    proj_next = per_gw('next_att_fdr', 'next_def_fdr').round(2)
+    proj_next = per_gw('next_att_fdr', 'next_def_fdr', att_env_col='att_env_next').round(2)
 
-    horizon_per_gw = per_gw('att_fdr_5', 'def_fdr_5')
+    horizon_per_gw = per_gw('att_fdr_5', 'def_fdr_5', att_env_col='att_env_5')
     fixture_count = n('fixture_count').fillna(5).clip(0, 10)
     proj_5 = (horizon_per_gw * fixture_count).round(1)
     fixture_count_8 = n('fixture_count_8').fillna(8).clip(0, 16)
     proj_8 = (horizon_per_gw * fixture_count_8).round(1)
 
     # --- Haul probability: P(2+ goal involvements) next GW ----------------
-    att_mult_next = _fdr_mult(df.get('next_att_fdr'), idx)
-    lam_i = ((xg90s + xa90s) * exp90 * att_mult_next).clip(lower=0)
+    if 'att_env_next' in df.columns and pd.to_numeric(df['att_env_next'], errors='coerce').notna().any():
+        att_mult_next = pd.to_numeric(df['att_env_next'], errors='coerce').clip(*ATT_ENV_CLIP).fillna(1.0)
+    else:
+        att_mult_next = _fdr_mult(df.get('next_att_fdr'), idx)
+    lam_neutral = ((xg90s + xa90s) * exp90).clip(lower=0)
+    lam_i = (lam_neutral * att_mult_next).clip(lower=0)
     haul_pct = ((1 - np.exp(-lam_i) * (1 + lam_i)) * 100).round(1)
 
-    return exp_mins, proj_next, proj_5, proj_8, haul_pct
+    return exp_mins, proj_next, proj_5, proj_8, haul_pct, lam_neutral.round(3)
 
 
 def calculate_minutes_security(player_histories, window=6):
@@ -1421,6 +1468,128 @@ def fetch_market_lambdas(teams_df):
 
 
 # =============================================================================
+# GOAL ENVIRONMENT — fixture-specific expected-goals scaling
+# =============================================================================
+
+# Why this exists: a linear "±12% per FDR step" multiplier compresses fixture
+# reality. Against a newly promoted side at home, an elite striker's goal
+# expectation can be ~1.5-1.8x his average — a 1.18x cap lets one recent
+# hattrick outrank the fixture of the season. This model scales attacking
+# output by the actual goals a fixture should produce: Poisson-style
+# lambda = league_avg x own-attack factor x opponent-defence weakness, with
+# both factors blending static strengths and recent results (same machinery
+# and same fallbacks as the Expected Clean Sheets model), optionally
+# sharpened by bookmaker lambdas when ODDS_API_KEY is set.
+
+ATT_ENV_CLIP = (0.55, 1.80)
+_FDR_ENV_FALLBACK = {1: 1.40, 2: 1.18, 3: 1.00, 4: 0.85, 5: 0.72}
+
+
+def calculate_goal_environment(fixtures_data, teams_df, anchor_gw, num_gws=5,
+                               form_weight=0.6, form_window=6, odds_lambdas=None):
+    """
+    Per-team attacking environment over the next `num_gws` gameweeks.
+    Returns {team_id: {'att_env_next', 'att_env_avg', 'opp_next',
+    'venue_next', 'n_fixtures'}} where env is expected-goals-scored divided
+    by the league average (1.0 = neutral fixture, 1.5 = a fixture that
+    should produce 50% more goals than average for this team).
+    """
+    if teams_df.empty:
+        return {}
+    strength_cols = ['strength_attack_home', 'strength_attack_away',
+                     'strength_defence_home', 'strength_defence_away']
+    st = teams_df.set_index('id').reindex(columns=strength_cols)
+    st = st.apply(pd.to_numeric, errors='coerce')
+    st = st.where(np.isfinite(st) & (st > 100))
+    valid_teams = int(st.notna().all(axis=1).sum())
+    strengths_ok = valid_teams >= max(2, len(teams_df) // 2)
+    if strengths_ok:
+        st = st.fillna(st.mean())
+        strengths = st.to_dict('index')
+        mean_att = float(np.mean([[v['strength_attack_home'], v['strength_attack_away']]
+                                  for v in strengths.values()]))
+        mean_def = float(np.mean([[v['strength_defence_home'], v['strength_defence_away']]
+                                  for v in strengths.values()]))
+    else:
+        strengths, mean_att, mean_def = {}, 1.0, 1.0
+
+    short = dict(zip(teams_df['id'], teams_df.get('short_name', teams_df['name'])))
+    recent = calculate_team_recent_form(fixtures_data, window=form_window)
+    played_vals = [v['scored_pm'] for v in recent.values() if v['played'] > 0]
+    league_avg = float(np.mean(played_vals)) if played_vals else 1.40
+    if not np.isfinite(league_avg) or league_avg <= 0:
+        league_avg = 1.40
+
+    def _w(tid):
+        return form_weight * min(1.0, recent.get(tid, {}).get('played', 0) / 3.0)
+
+    def _att_factor(tid, venue):
+        static = (strengths[tid][f'strength_attack_{venue}'] / mean_att) if strengths_ok else 1.0
+        w = _w(tid)
+        # Clip: a single 4-goal fluke shouldn't double a team's rating
+        form_f = float(np.clip(
+            recent.get(tid, {}).get('scored_pm', league_avg) / league_avg, 0.5, 1.7))
+        return (1 - w) * static + w * form_f
+
+    def _opp_def_weakness(opp_id, opp_venue):
+        static = (mean_def / strengths[opp_id][f'strength_defence_{opp_venue}']) if strengths_ok else 1.0
+        w = _w(opp_id)
+        form_f = float(np.clip(
+            recent.get(opp_id, {}).get('conceded_pm', league_avg) / league_avg, 0.5, 1.7))
+        return (1 - w) * static + w * form_f
+
+    upcoming_gws = set(range(anchor_gw + 1, anchor_gw + num_gws + 1))
+    upcoming = sorted([f for f in fixtures_data if f.get('event') in upcoming_gws],
+                      key=lambda f: (f.get('event') or 0, f.get('kickoff_time') or ''))
+
+    envs = {tid: [] for tid in teams_df['id']}
+    meta = {tid: {'opp_next': '', 'venue_next': ''} for tid in teams_df['id']}
+
+    def _env_for(tid, opp_id, venue, opp_venue, own_difficulty):
+        if strengths_ok:
+            lam = league_avg * _att_factor(tid, venue) * _opp_def_weakness(opp_id, opp_venue)
+        else:
+            d = own_difficulty if own_difficulty in (1, 2, 3, 4, 5) else 3
+            lam = league_avg * _FDR_ENV_FALLBACK[d]
+            # form still bends the fallback
+            wT, wO = _w(tid), _w(opp_id)
+            own_f = recent.get(tid, {}).get('scored_pm', league_avg) / league_avg
+            opp_f = recent.get(opp_id, {}).get('conceded_pm', league_avg) / league_avg
+            lam = lam * ((1 - wT) + wT * own_f) * ((1 - wO) + wO * opp_f)
+        # Market blend for priced fixtures
+        if odds_lambdas:
+            mk = odds_lambdas.get(tid)
+            if mk and mk.get('opp_id') == opp_id:
+                lam = 0.5 * lam + 0.5 * mk['lam_for']
+        if not np.isfinite(lam):
+            lam = league_avg
+        return float(np.clip(lam / league_avg, *ATT_ENV_CLIP))
+
+    for f in upcoming:
+        h, a = f['team_h'], f['team_a']
+        if h in envs:
+            env = _env_for(h, a, 'home', 'away', f.get('team_h_difficulty'))
+            if not envs[h]:
+                meta[h] = {'opp_next': short.get(a, '???'), 'venue_next': 'H'}
+            envs[h].append(env)
+        if a in envs:
+            env = _env_for(a, h, 'away', 'home', f.get('team_a_difficulty'))
+            if not envs[a]:
+                meta[a] = {'opp_next': short.get(h, '???'), 'venue_next': 'A'}
+            envs[a].append(env)
+
+    out = {}
+    for tid, vals in envs.items():
+        out[tid] = {
+            'att_env_next': round(vals[0], 3) if vals else 1.0,
+            'att_env_avg': round(float(np.mean(vals)), 3) if vals else 1.0,
+            'n_fixtures': len(vals),
+            **meta[tid],
+        }
+    return out
+
+
+# =============================================================================
 # MODEL CALIBRATION — log projections, score them once results are in
 # =============================================================================
 
@@ -1859,7 +2028,7 @@ _CACHE_KEYS = [
 # Bump whenever the shape of cached data changes, or at a season rollover.
 # A mismatch (or an over-age cache) forces a clean fetch instead of serving
 # last season's teams and players from disk.
-CACHE_VERSION = 6
+CACHE_VERSION = 8
 MAX_CACHE_AGE = REFRESH_INTERVAL
 
 
@@ -1991,6 +2160,19 @@ def refresh_core_data():
         with DATA_LOCK:
             DATA['odds_lambdas'] = odds_lambdas
 
+        # Fixture-specific goal environments (form + strengths + market)
+        goal_env_next = calculate_goal_environment(
+            fixtures_data, teams_df, fixture_anchor_gw, num_gws=1,
+            odds_lambdas=odds_lambdas)
+        goal_env_5 = calculate_goal_environment(
+            fixtures_data, teams_df, fixture_anchor_gw, num_gws=5,
+            odds_lambdas=odds_lambdas)
+        df_active['att_env_next'] = df_active['team'].map(
+            lambda t: goal_env_next.get(t, {}).get('att_env_next'))
+        df_active['att_env_5'] = df_active['team'].map(
+            lambda t: goal_env_5.get(t, {}).get('att_env_avg'))
+        print(f"  Goal environments computed for {len(goal_env_next)} teams")
+
         total_managers = bootstrap_data['total_players']
 
         # Next fixture venue & FDR
@@ -2043,7 +2225,8 @@ def refresh_core_data():
          df_active['proj_pts_next'],
          df_active['proj_pts_5'],
          df_active['proj_pts_8'],
-         df_active['haul_pct']) = compute_expected_points(df_active, gw_elapsed, priors=_priors)
+         df_active['haul_pct'],
+         df_active['xgi_lam_neutral']) = compute_expected_points(df_active, gw_elapsed, priors=_priors)
 
         # Neutral per-GW base (flat FDR-3, single fixture) — reused by the
         # chip planner and the squad builder's chip-target emphasis
@@ -2290,7 +2473,8 @@ def refresh_heavy_data():
          df_active['proj_pts_next'],
          df_active['proj_pts_5'],
          df_active['proj_pts_8'],
-         df_active['haul_pct']) = compute_expected_points(df_active, gw_elapsed, priors=_priors)
+         df_active['haul_pct'],
+         df_active['xgi_lam_neutral']) = compute_expected_points(df_active, gw_elapsed, priors=_priors)
         _neutral = df_active.copy()
         _neutral['next_att_fdr'] = 3.0
         _neutral['next_def_fdr'] = 3.0
@@ -4186,6 +4370,18 @@ app.layout = html.Div([
                                           style={'width': '100%', 'padding': '8px', 'borderRadius': '4px',
                                                  'border': '1px solid #ccc'})
                             ], style={'flex': '1', 'minWidth': '100px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Mode", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.RadioItems(
+                                    id='cap-mode',
+                                    options=[
+                                        {'label': ' Protect (expected pts)', 'value': 'ev'},
+                                        {'label': ' Chase (haul ceiling)', 'value': 'ceiling'},
+                                    ],
+                                    value='ev', inline=True,
+                                    inputStyle={'marginRight': '4px', 'marginLeft': '10px'}
+                                )
+                            ], style={'flex': '2', 'minWidth': '300px', 'padding': '0 10px'}),
                         ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-end'})
                     ], style=CARD_STYLE),
 
@@ -4221,6 +4417,8 @@ app.layout = html.Div([
                                  'format': {'specifier': '.2f'}},
                                 {'name': 'Haul %', 'id': 'haul_pct', 'type': 'numeric',
                                  'format': {'specifier': '.1f'}},
+                                {'name': 'Env \u00d7', 'id': 'att_env_next', 'type': 'numeric',
+                                 'format': {'specifier': '.2f'}},
                                 {'name': 'FPL xP', 'id': 'ep_next', 'type': 'numeric',
                                  'format': {'specifier': '.1f'}},
                                 {'name': 'Form', 'id': 'form', 'type': 'numeric', 'format': {'specifier': '.1f'}},
@@ -6134,63 +6332,103 @@ def update_fixture_swings(_n):
      Input('cap-minutes', 'value'), Input('cap-mode', 'value'),
      Input('refresh-interval', 'n_intervals')]
 )
-def update_captain(position, team, max_price, min_minutes, _n):
-    filtered = filter_data(position, team, max_price, min_minutes, positions_allowed=SEASON['outfield_positions'])
-    filtered = filtered.dropna(subset=['captain_score'])
-    filtered = filtered[filtered['captain_score'] > 0]
+def update_captain(position, team, max_price, min_minutes, mode, _n):
+    """
+    Captain ranking, env-aware. Protect mode ranks by projected points
+    (which now scale attacking output by the fixture's goal environment, so
+    'elite striker vs promoted side at home' beats 'good week last week').
+    Chase mode ranks by haul probability — when you're behind, the doubled
+    captain is your variance lever and P(2+ involvements) is the metric.
+    Defensive: any failure renders an error message, never a dead page.
+    """
+    try:
+        filtered = filter_data(position, team, max_price, min_minutes,
+                               positions_allowed=SEASON['outfield_positions'])
+        filtered = filtered.dropna(subset=['captain_score'])
+        filtered = filtered[filtered['captain_score'] > 0]
 
-    if len(filtered) == 0:
-        empty_fig = go.Figure()
-        empty_fig.add_annotation(text="No captain candidates found. Try reducing the min. minutes",
-                                 xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
-                                 font=dict(size=14, color=COLORS['text_light']))
-        empty_fig.update_layout(template='plotly_white', height=400)
-        return empty_fig, empty_fig, []
+        if mode == 'ceiling' and 'haul_pct' in filtered.columns and filtered['haul_pct'].notna().any():
+            rank_col, rank_label = 'haul_pct', 'Haul probability (%)'
+        elif 'proj_pts_next' in filtered.columns and filtered['proj_pts_next'].notna().any():
+            rank_col, rank_label = 'proj_pts_next', 'Projected points (next GW)'
+        else:
+            rank_col, rank_label = 'captain_score', 'Captain score'
 
-    top_20 = filtered.nlargest(20, rank_col)
-    bar_fig = go.Figure()
-    bar_fig.add_trace(go.Bar(
-        x=top_20['web_name'], y=top_20[rank_col],
-        marker_color=[COLORS['success'] if v == 'H' else COLORS['info'] for v in top_20['next_venue']],
-        text=[f"{s:.1f}" for s in top_20['captain_score']],
-        textposition='outside',
-        hovertemplate=(
-            '%{x}<br>'
-            'Score: %{y:.2f}<br>'
-            'vs %{customdata[0]} (%{customdata[1]})<br>'
-            'FDR: %{customdata[2]}<br>'
-            'Form: %{customdata[3]:.1f}<extra></extra>'
-        ),
-        customdata=top_20[['next_opponent', 'next_venue', 'next_fdr', 'form']].values
-    ))
-    bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
-                          yaxis_title='Captain Score', showlegend=False,
-                          yaxis=dict(range=[0, top_20['captain_score'].max() * 1.1]),
-                          font=dict(family='Arial, sans-serif'))
+        if len(filtered) == 0:
+            empty_fig = go.Figure()
+            empty_fig.add_annotation(text="No captain candidates found. Try reducing the min. minutes",
+                                     xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
+                                     font=dict(size=14, color=COLORS['text_light']))
+            empty_fig.update_layout(template='plotly_white', height=400)
+            return empty_fig, empty_fig, []
 
-    ha_filtered = filtered.dropna(subset=['home_ppg', 'away_ppg'])
-    ha_scatter = px.scatter(
-        ha_filtered, x='away_ppg', y='home_ppg', color='position',
-        hover_name='web_name',
-        hover_data=['team_name', 'next_opponent', 'next_venue', 'price'],
-        color_discrete_map={'DEF': COLORS['primary'], 'MID': COLORS['accent'], 'FWD': COLORS['info']}
-    )
-    if len(ha_filtered) > 0:
-        max_val = max(ha_filtered['home_ppg'].max(), ha_filtered['away_ppg'].max(), 1)
-        ha_scatter.add_trace(go.Scatter(x=[0, max_val], y=[0, max_val], mode='lines',
-                                        line=dict(dash='dash', color='#999'), name='Equal'))
-    ha_scatter.update_layout(template='plotly_white', height=400, xaxis_title='Away PPG', yaxis_title='Home PPG',
-                             font=dict(family='Arial, sans-serif'))
+        top_20 = filtered.nlargest(20, rank_col)
+        env_series = pd.to_numeric(top_20.get('att_env_next'), errors='coerce').fillna(1.0) \
+            if 'att_env_next' in top_20.columns else pd.Series(1.0, index=top_20.index)
+        bar_fig = go.Figure()
+        bar_fig.add_trace(go.Bar(
+            x=top_20['web_name'], y=top_20[rank_col],
+            marker_color=[COLORS['success'] if v == 'H' else COLORS['info']
+                          for v in top_20['next_venue']],
+            text=[f"{v:.1f}" for v in top_20[rank_col]],
+            textposition='outside',
+            hovertemplate=('%{x}<br>' + rank_label + ': %{y:.2f}<br>'
+                           'vs %{customdata[0]} (%{customdata[1]})<br>'
+                           'Attack env: \u00d7%{customdata[2]:.2f}<br>'
+                           'Proj: %{customdata[3]:.2f}  |  Haul: %{customdata[4]:.0f}%'
+                           '<extra></extra>'),
+            customdata=np.column_stack([
+                top_20['next_opponent'].fillna(''),
+                top_20['next_venue'].fillna(''),
+                env_series,
+                pd.to_numeric(top_20.get('proj_pts_next'), errors='coerce').fillna(0),
+                pd.to_numeric(top_20.get('haul_pct'), errors='coerce').fillna(0),
+            ]),
+        ))
+        bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
+                              yaxis_title=rank_label, showlegend=False,
+                              yaxis=dict(range=[0, float(top_20[rank_col].max()) * 1.15]),
+                              font=dict(family='Arial, sans-serif'))
 
-    cols = ['web_name', 'team_name', 'position', 'price', 'captain_score', 'proj_pts_next',
-            'haul_pct', 'ep_next', 'form', 'ppg',
-            'xgi_per_90', 'next_att_fdr', 'venue_ppg', 'start_rate', 'avail_pct',
-            'set_pieces', 'top_eo',
-            'expected_goal_involvements', 'next_opponent', 'next_venue', 'next_fdr',
-            'home_ppg', 'away_ppg', 'bps_per_90', 'ownership']
-    table_data = prepare_table_data(filtered.nlargest(50, rank_col), cols)
+        ha_filtered = filtered.dropna(subset=['home_ppg', 'away_ppg'])
+        ha_scatter = px.scatter(
+            ha_filtered, x='away_ppg', y='home_ppg', color='position',
+            hover_name='web_name',
+            hover_data=['team_name', 'next_opponent', 'next_venue', 'price'],
+            color_discrete_map={'DEF': COLORS['primary'], 'MID': COLORS['accent'],
+                                'FWD': COLORS['info']}
+        )
+        if len(ha_filtered) > 0:
+            max_val = max(ha_filtered['home_ppg'].max(), ha_filtered['away_ppg'].max(), 1)
+            ha_scatter.add_trace(go.Scatter(x=[0, max_val], y=[0, max_val], mode='lines',
+                                            line=dict(dash='dash', color='#999'), name='Equal'))
+        else:
+            ha_scatter.add_annotation(text="Home/away splits appear once enough matches are played",
+                                      xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
+                                      font=dict(size=13, color=COLORS['text_light']))
+        ha_scatter.update_layout(template='plotly_white', height=400,
+                                 xaxis_title='Away PPG', yaxis_title='Home PPG')
 
-    return bar_fig, ha_scatter, table_data
+        cols = ['web_name', 'team_name', 'position', 'price', 'captain_score', 'proj_pts_next',
+                'haul_pct', 'att_env_next', 'ep_next', 'form', 'ppg',
+                'xgi_per_90', 'next_att_fdr', 'venue_ppg', 'start_rate', 'avail_pct',
+                'set_pieces', 'top_eo',
+                'next_opponent', 'next_venue', 'next_fdr',
+                'home_ppg', 'away_ppg', 'bps_per_90', 'ownership']
+        cols = [c for c in cols if c in filtered.columns]
+        table_data = prepare_table_data(filtered.nlargest(50, rank_col), cols)
+
+        return bar_fig, ha_scatter, table_data
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        err_fig = go.Figure()
+        err_fig.add_annotation(text=f"Captain page error: {e}", xref="paper", yref="paper",
+                               x=0.5, y=0.5, showarrow=False,
+                               font=dict(size=13, color=COLORS['danger']))
+        err_fig.update_layout(template='plotly_white', height=400)
+        return err_fig, err_fig, []
 
 
 # --- TRANSFER TRENDS ---
@@ -7251,29 +7489,51 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
 
     gw_lookup = build_gw_fixture_lookup(fixtures_data, teams_df, future_gws)
 
+    has_lam = 'xgi_lam_neutral' in squad.columns
     rows = []
     for g in future_gws:
         players = []
         blanks = 0
         for r in squad.itertuples():
+            info = gw_lookup.get(g, {}).get(r.team, {})
             proj = project_player_gw(r.neutral_base, r.position, r.team, gw_lookup.get(g, {}))
             if proj == 0:
                 blanks += 1
-            players.append({'name': r.web_name, 'position': r.position, 'proj': proj})
+            # Ceiling in THIS gameweek: Poisson P(2+ involvements) with the
+            # neutral xGI rate scaled by this fixture's goal environment and
+            # fixture count. Triple Captain multiplies a hoped-for haul, not
+            # an average — so the TC pick is scored on EV x ceiling, which
+            # is how an explosive striker at home to a promoted side beats a
+            # steady accumulator whose mean is marginally higher.
+            lam_n = float(getattr(r, 'xgi_lam_neutral', 0) or 0) if has_lam else 0.0
+            env = float(np.clip(info.get('att_env', 1.0) or 1.0, *ATT_ENV_CLIP))
+            lam_g = max(lam_n * env * max(info.get('count', 0), 0), 0.0)
+            p_haul = float(1 - np.exp(-lam_g) * (1 + lam_g)) if lam_g > 0 else 0.0
+            tc_score = proj * (0.6 + 0.8 * p_haul)
+            players.append({'name': r.web_name, 'position': r.position, 'proj': proj,
+                            'team_id': r.team, 'haul': round(p_haul * 100, 1),
+                            'tc_score': round(tc_score, 2)})
         xi, bench = pick_best_xi(players)
         xi_total = sum(p['proj'] for p in xi)
         bench_total = sum(p['proj'] for p in bench)
         with_fixture = len(players) - blanks
-        best = max(players, key=lambda p: p['proj'])
+        by_tc = sorted(players, key=lambda p: -p['tc_score'])
+        best = by_tc[0]
+        runner = by_tc[1] if len(by_tc) > 1 else None
+        _binfo = gw_lookup.get(g, {}).get(best.get('team_id'), {})
         rows.append({
             'gw': g, 'xi': round(xi_total, 1), 'bench': round(bench_total, 1),
             'squad_total': round(xi_total + bench_total, 1),
             'tc_name': best['name'], 'tc_pts': round(best['proj'], 1),
+            'tc_haul': best['haul'], 'tc_score': best['tc_score'],
+            'tc_alt': (f"{runner['name']} ({runner['haul']:.0f}%)" if runner else ''),
+            'tc_opp': _binfo.get('opp', ''),
+            'tc_env': _binfo.get('att_env', 1.0),
             'blanks': blanks, 'with_fixture': with_fixture,
         })
 
     best_bb = max(rows, key=lambda r: r['bench'])
-    best_tc = max(rows, key=lambda r: r['tc_pts'])
+    best_tc = max(rows, key=lambda r: r['tc_score'])
     fh_rows = [r for r in rows if r['with_fixture'] < 11]
 
     # Chip EV in points, not rankings: value of the best window vs the
@@ -7290,8 +7550,14 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
                 f"Timing it right is worth +{bb_ev_delta} pts vs an average window."],
                style={'color': COLORS['text_dark'], 'marginBottom': '8px'}),
         html.P([html.Strong("Triple Captain: "),
-                f"{best_tc['tc_name']} in GW{best_tc['gw']} \u2014 the extra multiplier is worth "
-                f"~{best_tc['tc_pts']:.1f} pts (+{tc_ev_delta} vs an average week's best pick)."],
+                f"{best_tc['tc_name']} in GW{best_tc['gw']}"
+                + (f" vs {best_tc['tc_opp']}" if best_tc.get('tc_opp') else "")
+                + f" \u2014 {best_tc['tc_pts']:.1f} projected with a "
+                + f"{best_tc.get('tc_haul', 0):.0f}% haul probability "
+                + f"(+{tc_ev_delta} vs an average week). Picks are ranked on "
+                + f"EV \u00d7 ceiling, not average alone \u2014 TC multiplies a haul, "
+                + f"not a mean."
+                + (f" Alternative: {best_tc['tc_alt']}." if best_tc.get('tc_alt') else "")],
                style={'color': COLORS['text_dark'], 'marginBottom': '8px'}),
     ]
     if fh_rows:
@@ -7356,7 +7622,8 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
     table_rows = [{
         'gw': f"GW{r['gw']}", 'xi': r['xi'], 'bench': r['bench'],
         'squad_total': r['squad_total'],
-        'tc': f"{r['tc_name']} ({r['tc_pts']:.1f})",
+        'tc': f"{r['tc_name']} ({r['tc_pts']:.1f} pts, {r.get('tc_haul', 0):.0f}% haul"
+              + (f" vs {r['tc_opp']}" if r.get('tc_opp') else "") + ")",
         'blanks': r['blanks'],
     } for r in rows]
 
