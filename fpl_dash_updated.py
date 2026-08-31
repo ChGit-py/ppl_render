@@ -782,19 +782,26 @@ DEFCON_POINTS = 2
 # Geometric ratio per FDR step (was linear ±12%, which compressed fixture
 # differences so hard a dream fixture could never overturn a modest baseline
 # gap). FDR 1 → ×1.39, 2 → ×1.18, 3 → ×1.00, 4 → ×0.85, 5 → ×0.72.
-FDR_STEP_RATIO = 1.18
+# Tunable via environment without code changes — the Model Lab's parameter
+# sweep tells you what to set them to once enough gameweeks are logged.
+FDR_STEP_RATIO = float(os.environ.get('FPL_FDR_RATIO', '1.18'))
+SHRINK_K = float(os.environ.get('FPL_SHRINK_K', '450'))
 FDR_SENSITIVITY = FDR_STEP_RATIO - 1.0  # legacy alias
 
 
 def _fdr_mult(fdr_series, index, invert=False):
     """Geometric fixture multiplier centred on FDR 3 (ratio per step).
-    invert=True for 'harder = more' quantities (goals conceded)."""
+    invert=True for 'harder = more' quantities (goals conceded). Robust to
+    a missing column (None / scalar) — e.g. replay frames that only carry
+    next-GW fixture data — which resolves to a neutral 1.0 multiplier."""
+    if fdr_series is None or np.isscalar(fdr_series):
+        return pd.Series(1.0, index=index)
     fdr = pd.to_numeric(fdr_series, errors='coerce').fillna(3.0)
     delta = (fdr - 3.0) if invert else (3.0 - fdr)
     return pd.Series(np.power(FDR_STEP_RATIO, delta), index=fdr.index).reindex(index).fillna(1.0)
 
 
-def _shrink_per90(obs90, minutes, prior90, k=450):
+def _shrink_per90(obs90, minutes, prior90, k=None):
     """
     Empirical-Bayes shrinkage of a per-90 rate toward a prior:
     shrunk = (observed_total + prior_rate x k) / (minutes + k), in per-90
@@ -802,6 +809,8 @@ def _shrink_per90(obs90, minutes, prior90, k=450):
     minutes the observed data dominates; by 1000+ shrinkage is negligible.
     This is what stops one hot opening game projecting like a season.
     """
+    if k is None:
+        k = SHRINK_K
     obs = pd.to_numeric(obs90, errors='coerce')
     mins = pd.to_numeric(minutes, errors='coerce').fillna(0).clip(lower=0)
     pri = pd.to_numeric(prior90, errors='coerce').fillna(0)
@@ -872,6 +881,17 @@ def compute_expected_points(df, gw_elapsed=38, priors=None):
     prior_xa90 = pd.to_numeric(ind_xa90, errors='coerce').fillna(pos_xa90)
 
     xg90s = _shrink_per90(n('xg_per_90'), mins_raw, prior_xg90)
+
+    # Penalty duty uplift: a first-choice taker carries ~0.10 xG/90 of
+    # near-deterministic volume (~0.13 team pens/match x 0.79 xG each) that
+    # position-prior shrinkage otherwise dilutes to nothing. Deliberately
+    # conservative at +0.06 (not the full 0.10) because established takers'
+    # observed and prior rates already contain the pens they took —
+    # the uplift mainly credits NEW takers the data hasn't caught up with.
+    if 'pen_rank' in df.columns:
+        pen_rank = pd.to_numeric(df['pen_rank'], errors='coerce')
+        pen_uplift = pen_rank.map({1: 0.06, 2: 0.015}).fillna(0.0)
+        xg90s = xg90s + pen_uplift
     xa90s = _shrink_per90(n('xa_per_90'), mins_raw, prior_xa90)
     bonus90s = _shrink_per90(n('bonus_per_90'), mins_raw, _position_prior_per90(df, 'bonus'))
 
@@ -918,8 +938,8 @@ def compute_expected_points(df, gw_elapsed=38, priors=None):
         goal_pts = xg90s * exp90 * att_mult * pos.map(GOAL_POINTS).fillna(4)
         assist_pts = xa90s * exp90 * att_mult * ASSIST_POINTS
 
-        cs_fixture = (0.50 - 0.08 * (pd.to_numeric(df.get(def_fdr_col), errors='coerce')
-                                     .fillna(3.0) - 1)).clip(0.05, 0.55) * def_mult_cs.clip(0.8, 1.2)
+        cs_fixture = (0.50 - 0.08 * (n(def_fdr_col).fillna(3.0) - 1)
+                      ).clip(0.05, 0.55) * def_mult_cs.clip(0.8, 1.2)
         cs_prob = (0.5 * cs90s + 0.5 * cs_fixture).clip(0, 0.75)
         cs_pts = cs_prob * p60 * pos.map(CS_POINTS).fillna(0)
 
@@ -999,6 +1019,66 @@ def calculate_minutes_security(player_histories, window=6):
             'recent_games': n,
         }
     return security
+
+
+def calculate_schedule_adjusted_form(player_histories, teams_df, window=4,
+                                     min_match_minutes=45):
+    """
+    'True form': rolling xGI per 90 over the last `window` matches, with each
+    match's xGI re-weighted by the quality of the defence it came against
+    (venue-adjusted strength, relative to league mean). Three involvements
+    against promoted sides and one against Arsenal are different assets —
+    raw form treats them identically; this doesn't.
+
+    factor > 1 means the run came against tough defences (production is
+    UNDERSTATED by raw form); factor < 1 means it was farmed against weak
+    ones (OVERSTATED — regression candidate one level deeper than the
+    xGI-vs-GI watchlist).
+
+    Returns {pid: {'adj_xgi90', 'raw_xgi90', 'sched_factor', 'matches'}}.
+    """
+    strength_cols = ['strength_defence_home', 'strength_defence_away']
+    if teams_df.empty or not all(c in teams_df.columns for c in strength_cols):
+        return {}
+    st = teams_df.set_index('id')[strength_cols].apply(pd.to_numeric, errors='coerce')
+    st = st.where(np.isfinite(st) & (st > 100))
+    if st.notna().sum().sum() == 0:
+        return {}
+    mean_def = float(np.nanmean(st.values))
+    st = st.fillna(mean_def)
+    defs = st.to_dict('index')
+
+    out = {}
+    for pid, matches in player_histories.items():
+        recent = sorted(matches, key=lambda m: (m.get('round') or 0))
+        recent = [m for m in recent if m.get('minutes', 0) >= min_match_minutes][-window:]
+        if not recent:
+            continue
+        tot_mins, tot_xgi, tot_adj, factors = 0.0, 0.0, 0.0, []
+        for m in recent:
+            mins = m.get('minutes', 0)
+            try:
+                xgi = float(m.get('expected_goal_involvements') or 0)
+            except (TypeError, ValueError):
+                xgi = 0.0
+            opp = m.get('opponent_team')
+            # The opponent defended at THEIR venue: player home => opp away
+            key = 'strength_defence_away' if m.get('was_home') else 'strength_defence_home'
+            opp_def = defs.get(opp, {}).get(key, mean_def)
+            factor = opp_def / mean_def if mean_def else 1.0
+            tot_mins += mins
+            tot_xgi += xgi
+            tot_adj += xgi * factor
+            factors.append(factor)
+        if tot_mins < min_match_minutes:
+            continue
+        out[pid] = {
+            'raw_xgi90': round(tot_xgi / tot_mins * 90, 3),
+            'adj_xgi90': round(tot_adj / tot_mins * 90, 3),
+            'sched_factor': round(float(np.mean(factors)), 3),
+            'matches': len(recent),
+        }
+    return out
 
 
 def calculate_custom_fdr(fixtures, teams_df, anchor_gw, num_gameweeks=5):
@@ -1691,6 +1771,109 @@ def compute_calibration(min_actual_minutes_players=50):
 
 
 # =============================================================================
+# MODEL LAB — feature store, replay engine, parameter sweep
+# =============================================================================
+# The engine's constants (FDR ratio, shrinkage k) are judgement calls. This
+# stores the exact inputs behind every logged projection so they can be
+# REPLAYED under different constants and scored against realised points —
+# converting the model from "plausible" to "measured".
+
+FEATURE_COLS = ['id', 'position', 'minutes', 'avail_pct', 'recent_minutes_pct',
+                'start_rate', 'xg_per_90', 'xa_per_90', 'cs_per_90', 'gc_per_90',
+                'bonus_threshold', 'defcon_per_90', 'hit_rate', 'qualifying_games',
+                'saves', 'bonus_per_90', 'next_att_fdr', 'next_def_fdr',
+                'att_env_next', 'pen_rank', 'expected_goals', 'expected_assists',
+                'clean_sheets', 'goals_conceded', 'bonus']
+
+
+def log_model_features(df_active, target_gw, priors):
+    """Store the engine's raw inputs (and priors) for the GW being planned —
+    last write before the deadline wins, mirroring projection_log."""
+    conn = _snapshot_conn()
+    conn.execute("""CREATE TABLE IF NOT EXISTS feature_log (
+        gw INTEGER NOT NULL, player_id INTEGER NOT NULL, feats TEXT,
+        PRIMARY KEY (gw, player_id))""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS priors_log (
+        gw INTEGER PRIMARY KEY, priors TEXT)""")
+    cols = [c for c in FEATURE_COLS if c in df_active.columns]
+    sub = df_active[cols].replace([np.inf, -np.inf], np.nan)
+    rows = [(int(target_gw), int(rec['id']), json.dumps(
+                {k: (None if (isinstance(v, float) and pd.isna(v)) else v)
+                 for k, v in rec.items()}))
+            for rec in json.loads(sub.to_json(orient='records'))]
+    with conn:
+        conn.executemany("INSERT OR REPLACE INTO feature_log VALUES (?,?,?)", rows)
+        conn.execute("INSERT OR REPLACE INTO priors_log VALUES (?,?)",
+                     (int(target_gw), json.dumps(priors or {})))
+    conn.close()
+
+
+def _load_replay_frames():
+    """GWs with both stored features and realised points, as
+    [(gw, features_df, priors_dict, actuals_dict)]."""
+    conn = _snapshot_conn()
+    try:
+        gws = [r[0] for r in conn.execute(
+            """SELECT DISTINCT f.gw FROM feature_log f
+               JOIN actual_points a ON a.gw = f.gw LIMIT 20""")]
+    except Exception:
+        conn.close()
+        return []
+    frames = []
+    for gw in gws:
+        feats = [json.loads(r[0]) for r in conn.execute(
+            "SELECT feats FROM feature_log WHERE gw = ?", (gw,))]
+        pri_row = conn.execute("SELECT priors FROM priors_log WHERE gw = ?", (gw,)).fetchone()
+        priors = {int(k): v for k, v in json.loads(pri_row[0]).items()} if pri_row else {}
+        actuals = {pid: pts for pid, pts in conn.execute(
+            "SELECT player_id, pts FROM actual_points WHERE gw = ? AND pts IS NOT NULL", (gw,))}
+        if feats and actuals:
+            frames.append((gw, pd.DataFrame(feats), priors, actuals))
+    conn.close()
+    return frames
+
+
+def run_parameter_sweep(fdr_ratios=(1.10, 1.18, 1.26, 1.34),
+                        shrink_ks=(250, 450, 700)):
+    """
+    Replay every scoreable gameweek under each parameter combination and
+    score projection MAE against realised points. Single-threaded, mutates
+    the module constants under a try/finally restore — do not call from
+    concurrent contexts (Dash callbacks are fine; they serialise per worker).
+    Returns sorted results + how the current live config ranks.
+    """
+    global FDR_STEP_RATIO, SHRINK_K
+    frames = _load_replay_frames()
+    if not frames:
+        return None
+    saved = (FDR_STEP_RATIO, SHRINK_K)
+    results = []
+    try:
+        for ratio in fdr_ratios:
+            for k in shrink_ks:
+                FDR_STEP_RATIO, SHRINK_K = ratio, k
+                errs = []
+                for gw, fdf, priors, actuals in frames:
+                    proj = compute_expected_points(fdf, gw_elapsed=max(gw - 1, 1),
+                                                   priors=priors)[1]
+                    for pid, p in zip(fdf['id'], proj):
+                        a = actuals.get(int(pid))
+                        if a is not None and pd.notna(p):
+                            errs.append(abs(float(p) - a))
+                if errs:
+                    results.append({'fdr_ratio': ratio, 'shrink_k': k,
+                                    'mae': round(float(np.mean(errs)), 4),
+                                    'n': len(errs)})
+    finally:
+        FDR_STEP_RATIO, SHRINK_K = saved
+    results.sort(key=lambda r: r['mae'])
+    current = next((r for r in results
+                    if r['fdr_ratio'] == saved[0] and r['shrink_k'] == saved[1]), None)
+    return {'results': results, 'current': current,
+            'gws': len(frames), 'live': {'fdr_ratio': saved[0], 'shrink_k': saved[1]}}
+
+
+# =============================================================================
 # EFFECTIVE OWNERSHIP — sampled from the top of the overall league
 # =============================================================================
 
@@ -1885,6 +2068,10 @@ def process_player_data(data):
         order = pd.to_numeric(df[col], errors='coerce')
         return order.map(lambda v: f"{tag}{int(v)}" if pd.notna(v) and v <= 2 else '')
 
+    # Numeric penalty rank for the projection engine (1 = first choice)
+    df['pen_rank'] = pd.to_numeric(df['penalties_order'], errors='coerce') \
+        if 'penalties_order' in df.columns else np.nan
+
     duties = pd.concat([
         _duty('penalties_order', 'P'),
         _duty('corners_and_indirect_freekicks_order', 'C'),
@@ -2028,7 +2215,7 @@ _CACHE_KEYS = [
 # Bump whenever the shape of cached data changes, or at a season rollover.
 # A mismatch (or an over-age cache) forces a clean fetch instead of serving
 # last season's teams and players from disk.
-CACHE_VERSION = 8
+CACHE_VERSION = 9
 MAX_CACHE_AGE = REFRESH_INTERVAL
 
 
@@ -2257,6 +2444,7 @@ def refresh_core_data():
             save_daily_snapshot(df_active, next_gw_num)
             # Calibration bookkeeping: log what we predict, record what happened
             log_projections(df_active, next_gw_num)
+            log_model_features(df_active, next_gw_num, _priors)
             if current_gw:
                 log_actual_points(df_active, current_gw['id'])
             cal = compute_calibration()
@@ -2406,6 +2594,18 @@ def refresh_heavy_data():
 
         print(f"  Fetching match history for {len(captain_candidates)} captain candidates...")
         player_histories = fetch_player_history_batch(captain_candidates)
+
+        # Schedule-adjusted 'true form' from the same histories
+        with DATA_LOCK:
+            _tdf = DATA.get('teams_df', pd.DataFrame())
+        sched_form = calculate_schedule_adjusted_form(player_histories, _tdf)
+        df_active['adj_xgi90'] = df_active['id'].map(
+            lambda x: sched_form.get(x, {}).get('adj_xgi90'))
+        df_active['raw_recent_xgi90'] = df_active['id'].map(
+            lambda x: sched_form.get(x, {}).get('raw_xgi90'))
+        df_active['sched_factor'] = df_active['id'].map(
+            lambda x: sched_form.get(x, {}).get('sched_factor'))
+        print(f"  Schedule-adjusted form computed for {len(sched_form)} players")
         print(f"  Retrieved history for {len(player_histories)} players")
 
         home_away_splits = calculate_home_away_splits(player_histories)
@@ -3071,6 +3271,8 @@ app.layout = html.Div([
                 html.P('Overview', className='nav-group-label'),
                 html.Button('Home',
                             id='nav-home', className='nav-item active', n_clicks=0),
+                html.Button('Model Lab',
+                            id='nav-model-lab', className='nav-item', n_clicks=0),
 
                 # DEFENSIVE
                 html.P('Defensive', className='nav-group-label'),
@@ -3860,6 +4062,10 @@ app.layout = html.Div([
                                 {'name': 'Season PPG', 'id': 'ppg', 'type': 'numeric', 'format': {'specifier': '.2f'}},
                                 {'name': 'Form Diff', 'id': 'form_vs_season', 'type': 'numeric',
                                  'format': {'specifier': '.2f'}},
+                                {'name': 'True xGI/90', 'id': 'adj_xgi90', 'type': 'numeric',
+                                 'format': {'specifier': '.2f'}},
+                                {'name': 'Sched', 'id': 'sched_factor', 'type': 'numeric',
+                                 'format': {'specifier': '.2f'}},
                                 {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                             ],
                             sort_action='native',
@@ -4622,6 +4828,39 @@ app.layout = html.Div([
             # =================================================================
             # SQUAD BUILDER PAGE
             # MY SQUAD PAGE
+            # MODEL LAB PAGE
+            html.Div(id='page-model-lab', style={'display': 'none'}, children=[
+                html.Div([
+                    html.Div([
+                        html.H3("Model Lab", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
+                        html.P(["Every refresh logs the projections AND the exact inputs behind them; every "
+                                "finished gameweek logs what actually happened. This page scores the model "
+                                "against reality, and the parameter sweep ", html.Strong("replays history under "
+                                "different constants"), " to find the settings that would have predicted best — "
+                                "converting judgement calls into measured ones."],
+                               style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+
+                    html.Div([
+                        html.H4("Calibration by Gameweek", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
+                        html.Div(id='lab-calibration')
+                    ], style=CARD_STYLE),
+
+                    html.Div([
+                        html.H4("Parameter Sweep", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+                        html.P("Grid-searches the fixture-response ratio and shrinkage strength over every "
+                               "scoreable gameweek. Needs at least one completed GW with logged features; "
+                               "results sharpen as gameweeks accumulate — re-run every few weeks.",
+                               style={'color': COLORS['text_light'], 'marginBottom': '12px'}),
+                        html.Button("Run Parameter Sweep", id='lab-sweep-btn', n_clicks=0,
+                                    style={'backgroundColor': COLORS['primary'], 'color': 'white',
+                                           'border': 'none', 'padding': '10px 28px', 'borderRadius': '6px',
+                                           'fontSize': '15px', 'fontWeight': '700', 'cursor': 'pointer'}),
+                        dcc.Loading(html.Div(id='lab-sweep-result'), type='circle', color=COLORS['primary'])
+                    ], style=CARD_STYLE),
+                ], style={'padding': '20px 0'})
+            ]),
+
             # EXPECTED CLEAN SHEETS PAGE
             html.Div(id='page-xcs', style={'display': 'none'}, children=[
                 html.Div([
@@ -5173,7 +5412,7 @@ def render_stale_stats_banner(_n):
 
 # All page values in order
 ALL_PAGES = [
-    'home', 'defcon-bonus', 'bonus-consistency', 'defcon',
+    'home', 'model-lab', 'defcon-bonus', 'bonus-consistency', 'defcon',
     'xg', 'underlying', 'value', 'form', 'cs',
     'fixture-ticker', 'fixtures', 'xcs', 'differentials',
     'captain', 'transfers', 'transfer-planner', 'chip-planner',
@@ -5463,11 +5702,8 @@ def update_home_tab(n):
             html.Div([build_stat_card("Next Deadline",
                                       next_gw_now['name'].replace('Gameweek ', 'GW') if next_gw_now else "N/A",
                                       datetime.fromisoformat(
-                                          next_gw_now['deadline_time'].replace('Z', '+00:00')
-                                      ).astimezone(
-                                          ZoneInfo("Europe/London")
-                                      ).strftime('%a %d %b, %H:%M')
-                                      if next_gw_now else "")],
+                                          next_gw_now['deadline_time'].replace('Z', '+00:00')).strftime(
+                                          '%a %d %b, %H:%M') if next_gw_now else "")],
                      style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
         ], style={'display': 'flex', 'flexWrap': 'wrap', 'margin': '0 -10px 40px -10px'}),
 
@@ -5904,7 +6140,8 @@ def update_form(position, team, max_price, min_minutes):
     fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
                       font=dict(family='Arial, sans-serif'))
 
-    cols = ['web_name', 'team_name', 'position', 'price', 'form', 'ppg', 'form_vs_season', 'ownership']
+    cols = ['web_name', 'team_name', 'position', 'price', 'form', 'ppg', 'form_vs_season',
+            'adj_xgi90', 'sched_factor', 'ownership']
     table_data = prepare_table_data(filtered.sort_values('form_vs_season', ascending=False).head(50), cols)
 
     return fig, table_data
@@ -6497,6 +6734,113 @@ def update_transfers(position, team, max_price, min_minutes):
     table_data = prepare_table_data(sorted_by_activity.nlargest(50, 'abs_net'), cols)
 
     return risers_fig, fallers_fig, scatter_fig, table_data
+
+
+# --- MODEL LAB ---
+@callback(
+    Output('lab-calibration', 'children'),
+    Input('active-page', 'data')
+)
+def render_lab_calibration(page):
+    if page != 'model-lab':
+        return html.Div()
+    cal = compute_calibration()
+    if not cal:
+        return html.P("Nothing scoreable yet — calibration appears once a logged gameweek "
+                      "has finished. The logging is already running in the background.",
+                      style={'color': COLORS['text_light']})
+    rows = [{'gw': f"GW{r['gw']}", 'n': r['n'], 'mae_model': r['mae_model'],
+             'mae_fpl': r['mae_fpl'],
+             'edge': (round(r['mae_fpl'] - r['mae_model'], 3)
+                      if r['mae_fpl'] is not None else None)}
+            for r in cal['per_gw']]
+    verdict = ("Model is beating FPL's xP overall — trust the Proj columns."
+               if (cal['mae_fpl'] is not None and cal['mae_model'] < cal['mae_fpl'])
+               else "FPL's xP is ahead overall — run the sweep and consider its suggested constants.")
+    return html.Div([
+        dash_table.DataTable(
+            data=rows,
+            columns=[
+                {'name': 'GW', 'id': 'gw'},
+                {'name': 'Players', 'id': 'n', 'type': 'numeric'},
+                {'name': 'Model MAE', 'id': 'mae_model', 'type': 'numeric'},
+                {'name': 'FPL xP MAE', 'id': 'mae_fpl', 'type': 'numeric'},
+                {'name': 'Edge vs FPL', 'id': 'edge', 'type': 'numeric',
+                 'format': {'specifier': '+.3f'}},
+            ],
+            style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
+            style_data=TABLE_STYLE_DATA,
+            style_data_conditional=[
+                {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
+                {'if': {'filter_query': '{edge} > 0', 'column_id': 'edge'},
+                 'backgroundColor': '#e8f5e9'},
+                {'if': {'filter_query': '{edge} < 0', 'column_id': 'edge'},
+                 'backgroundColor': '#ffebee'},
+            ]),
+        html.P([html.Strong(f"Overall: model {cal['mae_model']:.3f} vs FPL "
+                            f"{cal['mae_fpl']:.3f} MAE over {cal['gws']} GW(s). "), verdict],
+               style={'color': COLORS['text_dark'], 'marginTop': '12px'}),
+    ])
+
+
+@callback(
+    Output('lab-sweep-result', 'children'),
+    Input('lab-sweep-btn', 'n_clicks'),
+    prevent_initial_call=True
+)
+def run_lab_sweep(n_clicks):
+    sweep = run_parameter_sweep()
+    if not sweep or not sweep['results']:
+        return html.P("Not enough logged data yet — needs at least one finished gameweek "
+                      "with stored features.",
+                      style={'color': COLORS['text_light'], 'marginTop': '12px'})
+    best = sweep['results'][0]
+    live = sweep['live']
+    cur = sweep['current']
+    rows = [{'fdr_ratio': r['fdr_ratio'], 'shrink_k': r['shrink_k'],
+             'mae': r['mae'],
+             'tag': ('BEST' if r is best else '') +
+                    (' LIVE' if (r['fdr_ratio'] == live['fdr_ratio'] and
+                                 r['shrink_k'] == live['shrink_k']) else '')}
+            for r in sweep['results']]
+    advice = []
+    if cur and best['mae'] < cur['mae'] - 0.005:
+        advice.append(html.P([
+            html.Strong("Suggested change: "),
+            f"FDR ratio {best['fdr_ratio']}, shrinkage k {best['shrink_k']} would have cut MAE "
+            f"from {cur['mae']:.4f} to {best['mae']:.4f} over {sweep['gws']} GW(s). Apply by "
+            f"setting env vars FPL_FDR_RATIO={best['fdr_ratio']} and "
+            f"FPL_SHRINK_K={best['shrink_k']} on Render, then redeploy."],
+            style={'color': COLORS['text_dark'], 'marginTop': '12px',
+                   'backgroundColor': '#f0e6f5', 'padding': '10px', 'borderRadius': '6px'}))
+    else:
+        advice.append(html.P("Your live constants are already at (or within noise of) the "
+                             "best tested combination — no change recommended.",
+                             style={'color': COLORS['success'], 'fontWeight': '600',
+                                    'marginTop': '12px'}))
+    if sweep['gws'] < 4:
+        advice.append(html.P(f"Caution: only {sweep['gws']} gameweek(s) scored — treat this as "
+                             f"directional until ~6 GWs are in. Early-season parameter fitting "
+                             f"can chase noise.",
+                             style={'color': COLORS['warning'], 'fontSize': '13px'}))
+    return html.Div([
+        dash_table.DataTable(
+            data=rows,
+            columns=[
+                {'name': 'FDR Ratio', 'id': 'fdr_ratio', 'type': 'numeric'},
+                {'name': 'Shrink k', 'id': 'shrink_k', 'type': 'numeric'},
+                {'name': 'MAE', 'id': 'mae', 'type': 'numeric'},
+                {'name': '', 'id': 'tag'},
+            ],
+            style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
+            style_data=TABLE_STYLE_DATA,
+            style_data_conditional=[
+                {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
+                {'if': {'filter_query': '{tag} contains "BEST"'},
+                 'backgroundColor': '#e8f5e9', 'fontWeight': '600'},
+            ]),
+        *advice
+    ])
 
 
 # --- DEADLINE DASHBOARD ---
