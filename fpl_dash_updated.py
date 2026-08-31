@@ -6746,7 +6746,7 @@ def render_lab_calibration(page):
         return html.Div()
     cal = compute_calibration()
     if not cal:
-        return html.P("Nothing scoreable yet — calibration appears once a logged gameweek "
+        return html.P("Nothing scoreable yet. Calibration appears once a logged gameweek "
                       "has finished. The logging is already running in the background.",
                       style={'color': COLORS['text_light']})
     rows = [{'gw': f"GW{r['gw']}", 'n': r['n'], 'mae_model': r['mae_model'],
