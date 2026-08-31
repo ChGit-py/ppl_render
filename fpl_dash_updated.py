@@ -4836,7 +4836,7 @@ app.layout = html.Div([
                         html.P(["Every refresh logs the projections AND the exact inputs behind them; every "
                                 "finished gameweek logs what actually happened. This page scores the model "
                                 "against reality, and the parameter sweep ", html.Strong("replays history under "
-                                "different constants"), " to find the settings that would have predicted best — "
+                                "different constants"), " to find the settings that would have predicted best, "
                                 "converting judgement calls into measured ones."],
                                style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                     ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
