@@ -600,6 +600,173 @@ def project_player_gw(neutral_base, position, team_id, gw_lookup_for_gw):
     return round(neutral_base * mult * info['count'], 2)
 
 
+FORMATIONS = ((3, 4, 3), (3, 5, 2), (4, 3, 3), (4, 4, 2),
+              (4, 5, 1), (5, 3, 2), (5, 4, 1))
+SQUAD_QUOTA = {'GKP': 2, 'DEF': 5, 'MID': 5, 'FWD': 3}
+
+
+def project_pool_for_gw(pool, gw_lookup_for_gw):
+    """
+    Vectorised version of project_player_gw across a whole player frame —
+    the Free Hit optimiser has to price every player in the game for every
+    gameweek in the horizon, which is far too many scalar calls.
+
+    `pool` needs columns: position, team, neutral_base. Returns a Series.
+    """
+    counts = pool['team'].map(lambda t: (gw_lookup_for_gw.get(t) or {}).get('count', 0))
+    def_fdr = pool['team'].map(
+        lambda t: (gw_lookup_for_gw.get(t) or {}).get('def_fdr', 3.0)).astype(float)
+    att_env = pool['team'].map(
+        lambda t: (gw_lookup_for_gw.get(t) or {}).get('att_env', 1.0) or 1.0).astype(float)
+
+    is_def_unit = pool['position'].isin(['GKP', 'DEF'])
+    mult = np.where(is_def_unit,
+                    FDR_STEP_RATIO ** (3.0 - def_fdr),
+                    att_env.clip(*ATT_ENV_CLIP))
+    return (pool['neutral_base'].fillna(0) * mult * counts).clip(lower=0)
+
+
+def optimise_free_hit_xi(pool, budget, max_per_club=3, pool_depth=40):
+    """
+    Best formation-legal XI buildable from the WHOLE player pool for one
+    gameweek, inside `budget` and the 3-per-club limit.
+
+    This is what makes Free Hit comparable to the other chips. The old
+    planner scored Free Hit by counting how many of your players had a
+    fixture, which is a different unit from Bench Boost and Triple Captain
+    (points) and — worse — silently discarded double gameweeks, where your
+    squad is intact but the pool is far better than what you own.
+
+    Budget handling: FPL requires a full 15, so the four bench slots are
+    reserved at the cheapest prices that satisfy the squad quota for the
+    formation being tried, and the XI is optimised against what's left.
+
+    Method: start from the cheapest legal XI (always feasible), then repeat
+    the single best affordable upgrade until none improves the total. A
+    greedy hill climb rather than an exact solver — it lands within a point
+    or so of optimal on this shape of problem and needs no MILP dependency
+    or the memory that comes with it.
+
+    Returns (best_total, best_xi_list) or (0.0, []) if nothing is feasible.
+    """
+    need = ['position', 'team', 'price', 'proj_gw']
+    if pool is None or pool.empty or any(c not in pool.columns for c in need):
+        return 0.0, []
+
+    p = pool[pool['proj_gw'].notna() & pool['price'].notna()].copy()
+    if p.empty:
+        return 0.0, []
+
+    # Candidate shortlist per position: the best projections plus the
+    # cheapest bodies (needed to make tight budgets feasible at all).
+    cands = {}
+    for pos in ('GKP', 'DEF', 'MID', 'FWD'):
+        sub = p[p['position'] == pos]
+        if sub.empty:
+            return 0.0, []
+        keep = pd.concat([sub.nlargest(pool_depth, 'proj_gw'),
+                          sub.nsmallest(8, 'price')]).drop_duplicates(subset='id')
+        cands[pos] = keep.to_dict('records')
+
+    def _cheapest(pos, k):
+        got = sorted(cands[pos], key=lambda r: r['price'])[:k]
+        return sum(r['price'] for r in got) if len(got) == k else None
+
+    best_total, best_xi = 0.0, []
+
+    for n_def, n_mid, n_fwd in FORMATIONS:
+        slots = {'GKP': 1, 'DEF': n_def, 'MID': n_mid, 'FWD': n_fwd}
+        # Reserve the four bench slots the squad quota forces on this shape
+        reserve = _cheapest('GKP', 1)
+        for pos in ('DEF', 'MID', 'FWD'):
+            spare = SQUAD_QUOTA[pos] - slots[pos]
+            if spare:
+                c = _cheapest(pos, spare)
+                if c is None:
+                    reserve = None
+                    break
+                reserve += c
+        if reserve is None:
+            continue
+        xi_budget = budget - reserve
+
+        # Seed: cheapest legal XI, respecting 3-per-club
+        xi, spend, club = [], 0.0, Counter()
+        feasible = True
+        for pos, k in slots.items():
+            picked = 0
+            for r in sorted(cands[pos], key=lambda r: r['price']):
+                if picked >= k:
+                    break
+                if club[r['team']] >= max_per_club:
+                    continue
+                xi.append(r); spend += r['price']; club[r['team']] += 1; picked += 1
+            if picked < k:
+                feasible = False
+                break
+        if not feasible or spend > xi_budget:
+            continue
+
+        chosen = {r['id'] for r in xi}
+        for _ in range(60):  # upgrade passes; converges well inside this
+            best_swap, best_gain = None, 1e-9
+            for i, out_p in enumerate(xi):
+                for in_p in cands[out_p['position']]:
+                    if in_p['id'] in chosen:
+                        continue
+                    cost = spend - out_p['price'] + in_p['price']
+                    if cost > xi_budget:
+                        continue
+                    if in_p['team'] != out_p['team'] and club[in_p['team']] >= max_per_club:
+                        continue
+                    gain = in_p['proj_gw'] - out_p['proj_gw']
+                    if gain > best_gain:
+                        best_gain, best_swap = gain, (i, in_p, cost)
+            if best_swap is None:
+                break
+            i, in_p, cost = best_swap
+            out_p = xi[i]
+            club[out_p['team']] -= 1; club[in_p['team']] += 1
+            chosen.discard(out_p['id']); chosen.add(in_p['id'])
+            xi[i] = in_p; spend = cost
+
+        total = sum(r['proj_gw'] for r in xi)
+        if total > best_total:
+            best_total, best_xi = total, list(xi)
+
+    return round(best_total, 1), best_xi
+
+
+def estimate_autosub_points(xi, bench):
+    """
+    Points the bench would have contributed ANYWAY, through autosubs, if you
+    did NOT play Bench Boost.
+
+    Bench Boost's real value is bench total MINUS this. The planner used to
+    count the full bench total, which overstates the chip by a few points
+    every week and nudges you into playing it earlier than you should.
+
+    Approximation: each XI player's chance of not appearing comes from
+    expected minutes (p_blank = 1 - min(1, exp_mins/60)); the expected
+    number of autosubs is their sum, capped at three outfield subs, and each
+    one is credited with the mean projection of the bench players actually
+    capable of coming on (i.e. those with a fixture).
+    """
+    eligible = [b for b in bench if b.get('proj', 0) > 0 and b.get('position') != 'GKP']
+    if not eligible:
+        return 0.0
+    exp_subs = 0.0
+    for p in xi:
+        mins = p.get('exp_mins')
+        if mins is None or (isinstance(mins, float) and np.isnan(mins)):
+            continue
+        exp_subs += 1.0 - min(1.0, max(float(mins), 0.0) / 60.0)
+    exp_subs = min(exp_subs, 3.0, float(len(eligible)))
+    mean_bench = float(np.mean([b['proj'] for b in eligible]))
+    total_bench = sum(b.get('proj', 0) for b in bench)
+    return round(min(exp_subs * mean_bench, total_bench), 2)
+
+
 def pick_best_xi(players):
     """
     Formation-legal best XI from a 15-man squad list of dicts with keys
@@ -8026,7 +8193,19 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
 
     gw_lookup = build_gw_fixture_lookup(fixtures_data, teams_df, future_gws)
 
+    # --- Free Hit needs a priced pool and a budget -----------------------
+    # Budget is squad selling value + bank, NOT £100m — the Free Hit team is
+    # built with the money you actually have.
+    _eh = (picks_data or {}).get('entry_history') or {}
+    fh_budget = (float(_eh.get('value', 1000)) + float(_eh.get('bank', 0))) / 10.0
+    fh_pool = dfa[dfa['position'].notna() & dfa['price'].notna()].copy()
+    if 'proj_neutral_gw' in fh_pool.columns and fh_pool['proj_neutral_gw'].notna().any():
+        fh_pool['neutral_base'] = fh_pool['proj_neutral_gw'].fillna(0)
+    else:
+        fh_pool = fh_pool.iloc[0:0]
+
     has_lam = 'xgi_lam_neutral' in squad.columns
+    has_mins = 'exp_mins_next' in squad.columns
     rows = []
     for g in future_gws:
         players = []
@@ -8049,10 +8228,28 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
             tc_score = proj * (0.6 + 0.8 * p_haul)
             players.append({'name': r.web_name, 'position': r.position, 'proj': proj,
                             'team_id': r.team, 'haul': round(p_haul * 100, 1),
-                            'tc_score': round(tc_score, 2)})
+                            'tc_score': round(tc_score, 2),
+                            'exp_mins': (float(getattr(r, 'exp_mins_next', np.nan))
+                                         if has_mins else np.nan)})
         xi, bench = pick_best_xi(players)
         xi_total = sum(p['proj'] for p in xi)
         bench_total = sum(p['proj'] for p in bench)
+
+        # Bench Boost's TRUE value: bench points you wouldn't have banked
+        # via autosubs anyway.
+        autosub_pts = estimate_autosub_points(xi, bench)
+        bb_value = round(max(bench_total - autosub_pts, 0.0), 1)
+
+        # Free Hit's TRUE value: best XI money can buy this GW, minus the XI
+        # you'd have fielded. Positive on blanks (your side is broken) AND on
+        # doubles (the pool is better than what you own) — the old blank
+        # count could only ever see the first case.
+        fh_best, fh_xi = 0.0, []
+        if not fh_pool.empty:
+            fh_pool['proj_gw'] = project_pool_for_gw(fh_pool, gw_lookup.get(g, {}))
+            fh_best, fh_xi = optimise_free_hit_xi(fh_pool, fh_budget)
+        fh_delta = round(max(fh_best - xi_total, 0.0), 1)
+
         with_fixture = len(players) - blanks
         by_tc = sorted(players, key=lambda p: -p['tc_score'])
         best = by_tc[0]
@@ -8061,6 +8258,9 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
         rows.append({
             'gw': g, 'xi': round(xi_total, 1), 'bench': round(bench_total, 1),
             'squad_total': round(xi_total + bench_total, 1),
+            'bb_value': bb_value, 'autosub_pts': autosub_pts,
+            'fh_best': fh_best, 'fh_delta': fh_delta,
+            'fh_names': ', '.join(p['web_name'] for p in fh_xi[:3]) if fh_xi else '',
             'tc_name': best['name'], 'tc_pts': round(best['proj'], 1),
             'tc_haul': best['haul'], 'tc_score': best['tc_score'],
             'tc_alt': (f"{runner['name']} ({runner['haul']:.0f}%)" if runner else ''),
@@ -8069,21 +8269,25 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
             'blanks': blanks, 'with_fixture': with_fixture,
         })
 
-    best_bb = max(rows, key=lambda r: r['bench'])
+    best_bb = max(rows, key=lambda r: r['bb_value'])
     best_tc = max(rows, key=lambda r: r['tc_score'])
-    fh_rows = [r for r in rows if r['with_fixture'] < 11]
+    best_fh = max(rows, key=lambda r: r['fh_delta'])
 
     # Chip EV in points, not rankings: value of the best window vs the
     # median window over the horizon — i.e. what perfect timing is WORTH.
     import statistics as _stats
-    med_bench = _stats.median(r['bench'] for r in rows)
+    med_bb = _stats.median(r['bb_value'] for r in rows)
     med_tc = _stats.median(r['tc_pts'] for r in rows)
-    bb_ev_delta = round(best_bb['bench'] - med_bench, 1)
+    med_fh = _stats.median(r['fh_delta'] for r in rows)
+    bb_ev_delta = round(best_bb['bb_value'] - med_bb, 1)
     tc_ev_delta = round(best_tc['tc_pts'] - med_tc, 1)
+    fh_ev_delta = round(best_fh['fh_delta'] - med_fh, 1)
 
     rec_lines = [
         html.P([html.Strong("Bench Boost: "),
-                f"GW{best_bb['gw']} \u2014 bench projects {best_bb['bench']:.1f} pts there. "
+                f"GW{best_bb['gw']} \u2014 worth {best_bb['bb_value']:.1f} pts there "
+                f"(bench projects {best_bb['bench']:.1f}, but ~{best_bb['autosub_pts']:.1f} "
+                f"of that would arrive via autosubs anyway). "
                 f"Timing it right is worth +{bb_ev_delta} pts vs an average window."],
                style={'color': COLORS['text_dark'], 'marginBottom': '8px'}),
         html.P([html.Strong("Triple Captain: "),
@@ -8097,16 +8301,44 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
                 + (f" Alternative: {best_tc['tc_alt']}." if best_tc.get('tc_alt') else "")],
                style={'color': COLORS['text_dark'], 'marginBottom': '8px'}),
     ]
-    if fh_rows:
-        worst = min(fh_rows, key=lambda r: r['with_fixture'])
-        rec_lines.append(html.P([html.Strong("Free Hit: "),
-                                 f"GW{worst['gw']} \u2014 only {worst['with_fixture']} of your squad "
-                                 f"have a fixture. Prime Free Hit (or early transfer planning) territory."],
-                                style={'color': COLORS['text_dark'], 'marginBottom': '8px'}))
+
+    # Free Hit, priced the same way as the other two: what the best XI money
+    # can buy that week beats the XI you'd otherwise field.
+    if best_fh['fh_delta'] >= 4.0:
+        _why = ("your squad is short of fixtures" if best_fh['with_fixture'] < 11
+                else "the pool is much stronger than your squad that week")
+        rec_lines.append(html.P([
+            html.Strong("Free Hit: "),
+            f"GW{best_fh['gw']} \u2014 worth {best_fh['fh_delta']:.1f} pts "
+            f"(best available XI {best_fh['fh_best']:.1f} vs your {best_fh['xi']:.1f}) "
+            f"on a \u00a3{fh_budget:.1f}m budget, because {_why}. "
+            f"{best_fh['with_fixture']}/15 of your squad have a fixture. "
+            f"+{fh_ev_delta} vs an average window."],
+            style={'color': COLORS['text_dark'], 'marginBottom': '8px'}))
     else:
-        rec_lines.append(html.P([html.Strong("Free Hit: "),
-                                 f"no blank-hit weeks in the next {len(rows)} gameweeks \u2014 hold it."],
-                                style={'color': COLORS['text_dark'], 'marginBottom': '8px'}))
+        rec_lines.append(html.P([
+            html.Strong("Free Hit: "),
+            f"nothing worth it in the next {len(rows)} gameweeks \u2014 best window is "
+            f"GW{best_fh['gw']} at only {best_fh['fh_delta']:.1f} pts. Hold. "
+            f"Blanks and doubles form from cup progression and typically don't "
+            f"appear until late February, so an empty result here is expected "
+            f"this early."],
+            style={'color': COLORS['text_dark'], 'marginBottom': '8px'}))
+
+    # One chip per gameweek — flag collisions rather than recommending both.
+    _clash = {}
+    for _label, _r in (('Bench Boost', best_bb), ('Triple Captain', best_tc),
+                       ('Free Hit', best_fh)):
+        _clash.setdefault(_r['gw'], []).append(_label)
+    for _g, _names in _clash.items():
+        if len(_names) > 1:
+            rec_lines.append(html.P(
+                f"Note: {' and '.join(_names)} both point at GW{_g}, and FPL allows "
+                f"only one chip per gameweek. Play the higher-value one there and "
+                f"take the next-best window for the other.",
+                style={'color': COLORS['warning'], 'fontSize': '13px',
+                       'fontWeight': '600', 'marginBottom': '8px'}))
+
     if missing:
         rec_lines.append(html.P(f"Note: {missing} squad player(s) had no projection data "
                                 f"(usually zero minutes so far) and count as 0.",
@@ -8144,20 +8376,36 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
             rec_lines.append(html.P(f"League chip check failed: {_e}",
                                     style={'color': COLORS['text_light'], 'fontSize': '13px'}))
 
+    # All three chips on ONE points axis, so the comparison is direct.
+    _x = [f"GW{r['gw']}" for r in rows]
     bench_fig = go.Figure()
     bench_fig.add_trace(go.Bar(
-        x=[f"GW{r['gw']}" for r in rows],
-        y=[r['bench'] for r in rows],
-        marker_color=[COLORS['success'] if r['gw'] == best_bb['gw'] else COLORS['info'] for r in rows],
-        text=[f"{r['bench']:.1f}" for r in rows], textposition='outside',
+        name='Bench Boost', x=_x, y=[r['bb_value'] for r in rows],
+        marker_color=[COLORS['success'] if r['gw'] == best_bb['gw'] else COLORS['info']
+                      for r in rows],
+        text=[f"{r['bb_value']:.1f}" for r in rows], textposition='outside',
+        hovertemplate=('%{x}<br>Bench Boost gain: %{y:.1f} pts<br>'
+                       'Raw bench %{customdata[0]:.1f} less ~%{customdata[1]:.1f} '
+                       'autosubs<extra></extra>'),
+        customdata=[[r['bench'], r['autosub_pts']] for r in rows],
     ))
-    bench_fig.update_layout(template='plotly_white', height=320,
-                            yaxis_title='Bench projection (Bench Boost value)',
-                            showlegend=False, margin=dict(t=30, b=30, l=50, r=20),
+    bench_fig.add_trace(go.Scatter(
+        name='Free Hit', x=_x, y=[r['fh_delta'] for r in rows],
+        mode='lines+markers', line=dict(color=COLORS['accent'], width=2),
+        hovertemplate=('%{x}<br>Free Hit gain: %{y:.1f} pts<br>'
+                       'Best available XI %{customdata:.1f}<extra></extra>'),
+        customdata=[r['fh_best'] for r in rows],
+    ))
+    bench_fig.update_layout(template='plotly_white', height=340,
+                            yaxis_title='Chip gain (points)',
+                            legend=dict(orientation='h', yanchor='bottom', y=1.02,
+                                        xanchor='center', x=0.5),
+                            margin=dict(t=50, b=30, l=50, r=20),
                             font=dict(family='Arial, sans-serif'))
 
     table_rows = [{
-        'gw': f"GW{r['gw']}", 'xi': r['xi'], 'bench': r['bench'],
+        'gw': f"GW{r['gw']}", 'xi': r['xi'], 'bench': r['bb_value'],
+        'fh_delta': r['fh_delta'],
         'squad_total': r['squad_total'],
         'tc': f"{r['tc_name']} ({r['tc_pts']:.1f} pts, {r.get('tc_haul', 0):.0f}% haul"
               + (f" vs {r['tc_opp']}" if r.get('tc_opp') else "") + ")",
@@ -8171,8 +8419,10 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
         ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
         html.Div([
-            html.H3("Bench Projection by Gameweek", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-            html.P("The green bar is your best Bench Boost window on current fixtures. Re-run after wildcards or DGW announcements.",
+            html.H3("Chip Gain by Gameweek", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+            html.P("Both chips priced in points so they compare directly. Bars are Bench Boost's gain "
+                   "net of autosubs; the line is Free Hit's gain over the XI you'd otherwise field. "
+                   "Re-run after wildcards or DGW announcements.",
                    style={'color': COLORS['text_light']}),
             dcc.Graph(figure=bench_fig, config={'displayModeBar': False})
         ], style=CARD_STYLE),
@@ -8184,7 +8434,8 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
                 columns=[
                     {'name': 'GW', 'id': 'gw'},
                     {'name': 'Best XI Proj', 'id': 'xi', 'type': 'numeric'},
-                    {'name': 'Bench Proj (BB gain)', 'id': 'bench', 'type': 'numeric'},
+                    {'name': 'BB gain', 'id': 'bench', 'type': 'numeric'},
+                    {'name': 'FH gain', 'id': 'fh_delta', 'type': 'numeric'},
                     {'name': 'Full Squad Proj', 'id': 'squad_total', 'type': 'numeric'},
                     {'name': 'Best TC Pick', 'id': 'tc'},
                     {'name': 'Players Blanking', 'id': 'blanks', 'type': 'numeric'},
