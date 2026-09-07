@@ -5395,7 +5395,7 @@ app.layout = html.Div([
                                 ),
                                 dcc.RadioItems(
                                     id='cp-horizon',
-                                    options=[{'label': ' Next 8 GWs', 'value': 8},
+                                    options=[{'label': ' Next 10 GWs', 'value': 10},
                                              {'label': ' Full season roadmap', 'value': 38}],
                                     value=8, inline=True,
                                     inputStyle={'marginRight': '4px', 'marginLeft': '10px'},
