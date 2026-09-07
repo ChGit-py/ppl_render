@@ -788,6 +788,14 @@ FDR_STEP_RATIO = float(os.environ.get('FPL_FDR_RATIO', '1.18'))
 SHRINK_K = float(os.environ.get('FPL_SHRINK_K', '450'))
 FDR_SENSITIVITY = FDR_STEP_RATIO - 1.0  # legacy alias
 
+# Team-level form shrinkage (matches, not minutes): the weight given to a
+# team's observed recent rate is n / (n + k), so k is the number of matches
+# at which form and the static strength rating carry equal weight. k=6 gives
+# 2 games ~25%, 6 games 50%, 20 games ~77% (capped by form_weight). Replaces
+# a ramp that hit full weight after three games and let tiny samples swing
+# expected goals conceded by ~40%.
+TEAM_FORM_SHRINK_K = float(os.environ.get('FPL_TEAM_FORM_K', '6'))
+
 
 def _fdr_mult(fdr_series, index, invert=False):
     """Geometric fixture multiplier centred on FDR 3 (ratio per step).
@@ -920,7 +928,7 @@ def compute_expected_points(df, gw_elapsed=38, priors=None):
     appearance_pts = 2 * p60 + 1 * (p_any - p60)
 
     # --- Per-GW component model ------------------------------------------
-    def per_gw(att_fdr_col, def_fdr_col, att_env_col=None):
+    def per_gw(att_fdr_col, def_fdr_col, att_env_col=None, cs_prob_col=None):
         # Attacking side: prefer the goal-environment ratio (expected goals
         # for this fixture / league average) — it spreads real fixtures
         # (promoted side at home ~1.5x, top defence away ~0.7x) where the
@@ -938,9 +946,30 @@ def compute_expected_points(df, gw_elapsed=38, priors=None):
         goal_pts = xg90s * exp90 * att_mult * pos.map(GOAL_POINTS).fillna(4)
         assist_pts = xa90s * exp90 * att_mult * ASSIST_POINTS
 
-        cs_fixture = (0.50 - 0.08 * (n(def_fdr_col).fillna(3.0) - 1)
-                      ).clip(0.05, 0.55) * def_mult_cs.clip(0.8, 1.2)
-        cs_prob = (0.5 * cs90s + 0.5 * cs_fixture).clip(0, 0.75)
+        # Clean sheets: prefer the team-level Poisson probability
+        # (P(CS) = exp(-lambda), lambda from opponent attack x own defence,
+        # blended with market odds when a key is set) computed by
+        # calculate_expected_clean_sheets and mapped onto the frame.
+        #
+        # The fallback below is the ORIGINAL linear FDR ramp, kept only for
+        # frames that lack the column — notably Model Lab replay frames built
+        # from FEATURE_COLS logged before this change. Previously the ramp was
+        # the only path, which meant the xCS page and the Proj column were
+        # quoting two different models and disagreeing with each other.
+        cs_prob = None
+        if cs_prob_col and cs_prob_col in df.columns:
+            _team_cs = pd.to_numeric(df[cs_prob_col], errors='coerce')
+            if _team_cs.notna().any():
+                cs_prob = _team_cs.clip(0, 0.90)
+        if cs_prob is None:
+            cs_fixture = (0.50 - 0.08 * (n(def_fdr_col).fillna(3.0) - 1)
+                          ).clip(0.05, 0.55) * def_mult_cs.clip(0.8, 1.2)
+            cs_prob = (0.5 * cs90s + 0.5 * cs_fixture).clip(0, 0.75)
+        else:
+            # Fill any team the CS model couldn't price with the old blend
+            cs_fixture = (0.50 - 0.08 * (n(def_fdr_col).fillna(3.0) - 1)
+                          ).clip(0.05, 0.55) * def_mult_cs.clip(0.8, 1.2)
+            cs_prob = cs_prob.fillna((0.5 * cs90s + 0.5 * cs_fixture).clip(0, 0.75))
         cs_pts = cs_prob * p60 * pos.map(CS_POINTS).fillna(0)
 
         is_def_unit = pos.isin(['GKP', 'DEF'])
@@ -974,9 +1003,11 @@ def compute_expected_points(df, gw_elapsed=38, priors=None):
         return (appearance_pts + goal_pts + assist_pts + cs_pts +
                 gc_pts + defcon_pts + save_pts + bonus_pts)
 
-    proj_next = per_gw('next_att_fdr', 'next_def_fdr', att_env_col='att_env_next').round(2)
+    proj_next = per_gw('next_att_fdr', 'next_def_fdr', att_env_col='att_env_next',
+                       cs_prob_col='cs_prob_next').round(2)
 
-    horizon_per_gw = per_gw('att_fdr_5', 'def_fdr_5', att_env_col='att_env_5')
+    horizon_per_gw = per_gw('att_fdr_5', 'def_fdr_5', att_env_col='att_env_5',
+                            cs_prob_col='cs_prob_5')
     fixture_count = n('fixture_count').fillna(5).clip(0, 10)
     proj_5 = (horizon_per_gw * fixture_count).round(1)
     fixture_count_8 = n('fixture_count_8').fillna(8).clip(0, 16)
@@ -1140,13 +1171,100 @@ def calculate_custom_fdr(fixtures, teams_df, anchor_gw, num_gameweeks=5):
 # EXPECTED CLEAN SHEETS MODEL
 # =============================================================================
 
-def calculate_team_recent_form(fixtures_data, window=6):
+def build_team_xg_ledger(df_active, gks_per_team=2):
+    """
+    Per-team, per-match EXPECTED goals for and against, for the whole season
+    so far — the input that makes defensive ratings usable weeks earlier than
+    actual goals do.
+
+    The trick: a goalkeeper's `expected_goals_conceded` in a match IS his
+    team's xGC for that match. So one (rotation-safe: two) keeper per team
+    gives a complete xGC ledger for ~40 element-summary calls, and a team's
+    xGF in any match is simply the OPPONENT's xGC in the same match. No new
+    data source, no scraping.
+
+    Matches are only accepted when the fetched keepers cover 80+ minutes, so
+    a split match isn't recorded as half a game's worth of chances.
+
+    Returns {team_id: {fixture_id: {'xgc': float, 'xgf': float|None,
+                                    'opponent': int, 'was_home': bool}}}.
+    """
+    if df_active is None or df_active.empty:
+        return {}
+
+    gks = df_active[(df_active['position'] == 'GKP') & (df_active['minutes'] > 0)]
+    if gks.empty:
+        return {}
+
+    keeper_team = {}
+    for tid, grp in gks.groupby('team'):
+        for pid in grp.nlargest(gks_per_team, 'minutes')['id'].tolist():
+            keeper_team[int(pid)] = int(tid)
+
+    if not keeper_team:
+        return {}
+
+    print(f"  Building team xG ledger from {len(keeper_team)} keepers...")
+    histories = fetch_player_history_batch(list(keeper_team.keys()))
+
+    # Accumulate xGC and minutes per (team, fixture)
+    raw = {}
+    for pid, matches in histories.items():
+        tid = keeper_team.get(int(pid))
+        if tid is None:
+            continue
+        for m in matches:
+            fid = m.get('fixture')
+            mins = m.get('minutes') or 0
+            if fid is None or mins <= 0:
+                continue
+            try:
+                xgc = float(m.get('expected_goals_conceded') or 0.0)
+            except (TypeError, ValueError):
+                continue
+            slot = raw.setdefault((tid, fid), {'xgc': 0.0, 'mins': 0,
+                                               'was_home': bool(m.get('was_home')),
+                                               'opponent': m.get('opponent_team')})
+            slot['xgc'] += xgc
+            slot['mins'] += mins
+
+    # Keep only matches with near-full keeper coverage
+    ledger = {}
+    for (tid, fid), slot in raw.items():
+        if slot['mins'] < 80:
+            continue
+        ledger.setdefault(tid, {})[fid] = {
+            'xgc': slot['xgc'], 'xgf': None,
+            'opponent': slot['opponent'], 'was_home': slot['was_home'],
+        }
+
+    # A team's xGF in a match is the opponent's xGC in that same match
+    for tid, fixtures in ledger.items():
+        for fid, rec in fixtures.items():
+            opp = rec.get('opponent')
+            opp_rec = ledger.get(opp, {}).get(fid) if opp else None
+            if opp_rec:
+                rec['xgf'] = opp_rec['xgc']
+
+    covered = sum(len(v) for v in ledger.values())
+    print(f"  xG ledger: {covered} team-matches across {len(ledger)} teams")
+    return ledger
+
+
+def calculate_team_recent_form(fixtures_data, window=6, xg_ledger=None):
     """
     Per-team attacking/defensive form from FINISHED fixtures this season:
     goals scored and conceded per match plus clean sheets kept over the last
     `window` games. This is the component that makes clean-sheet expectations
     react to form — it re-derives from results at every data refresh.
-    Returns {team_id: {scored_pm, conceded_pm, cs, played}}.
+
+    When `xg_ledger` (see build_team_xg_ledger) is supplied, scored_pm and
+    conceded_pm are taken from EXPECTED goals rather than actual ones. Goals
+    are a tiny, high-variance sample over a 6-game window: a promoted side
+    with two clean sheets reads as elite on goals and as ordinary on xGC.
+    Actual goals and clean sheets are still returned for display.
+
+    Returns {team_id: {scored_pm, conceded_pm, cs, played, basis}}.
     """
     finished = sorted(
         [f for f in fixtures_data
@@ -1161,24 +1279,47 @@ def calculate_team_recent_form(fixtures_data, window=6):
         per_team.setdefault(h, []).append((hs, as_))
         per_team.setdefault(a, []).append((as_, hs))
 
+    # Fixture ids in chronological order, for aligning the xG ledger
+    order = {}
+    for f in finished:
+        for tid in (f['team_h'], f['team_a']):
+            order.setdefault(tid, []).append(f['id'])
+
     form = {}
     for tid, matches in per_team.items():
         recent = matches[-window:]
         n = len(recent)
         scored = sum(m[0] for m in recent)
         conceded = sum(m[1] for m in recent)
+        scored_pm, conceded_pm, basis = scored / n, conceded / n, 'goals'
+
+        # Prefer expected goals when the ledger covers enough of this window
+        if xg_ledger:
+            team_led = xg_ledger.get(tid, {})
+            recent_fids = order.get(tid, [])[-window:]
+            xgf_vals = [team_led[fid]['xgf'] for fid in recent_fids
+                        if fid in team_led and team_led[fid].get('xgf') is not None]
+            xgc_vals = [team_led[fid]['xgc'] for fid in recent_fids
+                        if fid in team_led and team_led[fid].get('xgc') is not None]
+            if len(xgc_vals) >= max(1, len(recent_fids) // 2):
+                conceded_pm = float(np.mean(xgc_vals))
+                basis = 'xg'
+            if len(xgf_vals) >= max(1, len(recent_fids) // 2):
+                scored_pm = float(np.mean(xgf_vals))
+
         form[tid] = {
-            'scored_pm': scored / n,
-            'conceded_pm': conceded / n,
+            'scored_pm': scored_pm,
+            'conceded_pm': conceded_pm,
             'cs': sum(1 for m in recent if m[1] == 0),
             'played': n,
+            'basis': basis,
         }
     return form
 
 
 def calculate_expected_clean_sheets(fixtures_data, teams_df, anchor_gw,
                                     num_gws=5, form_weight=0.6, form_window=6,
-                                    odds_lambdas=None):
+                                    odds_lambdas=None, xg_ledger=None):
     """
     Expected clean sheets per team over the next `num_gws` gameweeks.
 
@@ -1243,16 +1384,29 @@ def calculate_expected_clean_sheets(fixtures_data, teams_df, anchor_gw,
     short = dict(zip(teams_df['id'], teams_df.get('short_name', teams_df['name'])))
     all_ids = list(teams_df['id'])
 
-    recent = calculate_team_recent_form(fixtures_data, window=form_window)
+    recent = calculate_team_recent_form(fixtures_data, window=form_window,
+                                        xg_ledger=xg_ledger)
     played_vals = [v['scored_pm'] for v in recent.values() if v['played'] > 0]
     league_avg_goals = float(np.mean(played_vals)) if played_vals else 1.40
     if not np.isfinite(league_avg_goals) or league_avg_goals <= 0:
         league_avg_goals = 1.40
 
     def _w(tid):
-        """Effective form weight for a team: full after 3 played games."""
+        """
+        Effective form weight: n / (n + k), capped at `form_weight_max`.
+
+        The old rule ramped to full weight after THREE games, which let a
+        two-match sample move a team's expected goals conceded by ~40%. That
+        is the promoted-side trap: Hull keeping two clean sheets read as an
+        elite defence when their underlying process said otherwise. Shrinkage
+        means 2 games carry ~25% weight, 6 carry ~50%, 20 carry the cap — and
+        it needs no promoted-team flag, because FPL's static strength ratings
+        already price those sides low and now stay in control early on.
+        """
         played = recent.get(tid, {}).get('played', 0)
-        return form_weight * min(1.0, played / 3.0)
+        if played <= 0:
+            return 0.0
+        return min(form_weight, played / (played + TEAM_FORM_SHRINK_K))
 
     def _att_factor(opp_id, opp_venue):
         static = (strengths[opp_id][f'strength_attack_{opp_venue}'] / mean_att
@@ -1566,7 +1720,8 @@ _FDR_ENV_FALLBACK = {1: 1.40, 2: 1.18, 3: 1.00, 4: 0.85, 5: 0.72}
 
 
 def calculate_goal_environment(fixtures_data, teams_df, anchor_gw, num_gws=5,
-                               form_weight=0.6, form_window=6, odds_lambdas=None):
+                               form_weight=0.6, form_window=6, odds_lambdas=None,
+                               xg_ledger=None):
     """
     Per-team attacking environment over the next `num_gws` gameweeks.
     Returns {team_id: {'att_env_next', 'att_env_avg', 'opp_next',
@@ -1594,14 +1749,19 @@ def calculate_goal_environment(fixtures_data, teams_df, anchor_gw, num_gws=5,
         strengths, mean_att, mean_def = {}, 1.0, 1.0
 
     short = dict(zip(teams_df['id'], teams_df.get('short_name', teams_df['name'])))
-    recent = calculate_team_recent_form(fixtures_data, window=form_window)
+    recent = calculate_team_recent_form(fixtures_data, window=form_window,
+                                        xg_ledger=xg_ledger)
     played_vals = [v['scored_pm'] for v in recent.values() if v['played'] > 0]
     league_avg = float(np.mean(played_vals)) if played_vals else 1.40
     if not np.isfinite(league_avg) or league_avg <= 0:
         league_avg = 1.40
 
     def _w(tid):
-        return form_weight * min(1.0, recent.get(tid, {}).get('played', 0) / 3.0)
+        # Same n/(n+k) shrinkage as the clean-sheet model — see _w there.
+        played = recent.get(tid, {}).get('played', 0)
+        if played <= 0:
+            return 0.0
+        return min(form_weight, played / (played + TEAM_FORM_SHRINK_K))
 
     def _att_factor(tid, venue):
         static = (strengths[tid][f'strength_attack_{venue}'] / mean_att) if strengths_ok else 1.0
@@ -1781,6 +1941,7 @@ def compute_calibration(min_actual_minutes_players=50):
 FEATURE_COLS = ['id', 'position', 'minutes', 'avail_pct', 'recent_minutes_pct',
                 'start_rate', 'xg_per_90', 'xa_per_90', 'cs_per_90', 'gc_per_90',
                 'bonus_threshold', 'defcon_per_90', 'hit_rate', 'qualifying_games',
+                'cs_prob_next', 'cs_prob_5',
                 'saves', 'bonus_per_90', 'next_att_fdr', 'next_def_fdr',
                 'att_env_next', 'pen_rank', 'expected_goals', 'expected_assists',
                 'clean_sheets', 'goals_conceded', 'bonus']
@@ -2210,12 +2371,13 @@ _CACHE_KEYS = [
     'player_histories', 'sorted_teams', 'next_gw_num', 'last_refresh',
     'heavy_loaded', 'fixture_anchor_gw', 'season_started', 'season_label',
     'last_season_priors', 'calibration',
+    'xg_ledger', 'odds_lambdas', 'xcs_next',
 ]
 
 # Bump whenever the shape of cached data changes, or at a season rollover.
 # A mismatch (or an over-age cache) forces a clean fetch instead of serving
 # last season's teams and players from disk.
-CACHE_VERSION = 9
+CACHE_VERSION = 10
 MAX_CACHE_AGE = REFRESH_INTERVAL
 
 
@@ -2347,13 +2509,41 @@ def refresh_core_data():
         with DATA_LOCK:
             DATA['odds_lambdas'] = odds_lambdas
 
+        # Expected-goals ledger: team xGF/xGC per match, from keeper xGC.
+        # Feeds every team-level form estimate below. Failure here is
+        # non-fatal — the models fall back to actual goals.
+        try:
+            xg_ledger = build_team_xg_ledger(df_active)
+        except Exception as e:
+            print(f"  xG ledger unavailable ({e}) — falling back to actual goals")
+            xg_ledger = {}
+        with DATA_LOCK:
+            DATA['xg_ledger'] = xg_ledger
+
+        # Team clean-sheet probabilities — ONE model, shared by the xCS page
+        # and the projection engine. Previously the engine used its own linear
+        # FDR ramp and the two disagreed.
+        xcs_next = calculate_expected_clean_sheets(
+            fixtures_data, teams_df, fixture_anchor_gw, num_gws=1,
+            odds_lambdas=odds_lambdas, xg_ledger=xg_ledger)
+        xcs_5 = calculate_expected_clean_sheets(
+            fixtures_data, teams_df, fixture_anchor_gw, num_gws=5,
+            odds_lambdas=odds_lambdas, xg_ledger=xg_ledger)
+        df_active['cs_prob_next'] = df_active['team'].map(
+            lambda t: (xcs_next.get(t, {}).get('avg_cs_prob') or 0) / 100.0 or np.nan)
+        df_active['cs_prob_5'] = df_active['team'].map(
+            lambda t: (xcs_5.get(t, {}).get('avg_cs_prob') or 0) / 100.0 or np.nan)
+        with DATA_LOCK:
+            DATA['xcs_next'] = xcs_next
+        print(f"  Clean-sheet probabilities computed for {len(xcs_next)} teams")
+
         # Fixture-specific goal environments (form + strengths + market)
         goal_env_next = calculate_goal_environment(
             fixtures_data, teams_df, fixture_anchor_gw, num_gws=1,
-            odds_lambdas=odds_lambdas)
+            odds_lambdas=odds_lambdas, xg_ledger=xg_ledger)
         goal_env_5 = calculate_goal_environment(
             fixtures_data, teams_df, fixture_anchor_gw, num_gws=5,
-            odds_lambdas=odds_lambdas)
+            odds_lambdas=odds_lambdas, xg_ledger=xg_ledger)
         df_active['att_env_next'] = df_active['team'].map(
             lambda t: goal_env_next.get(t, {}).get('att_env_next'))
         df_active['att_env_5'] = df_active['team'].map(
@@ -8290,7 +8480,8 @@ def update_expected_clean_sheets(horizon, n):
         return _empty("Data loading \u2014 please wait...")
 
     xcs = calculate_expected_clean_sheets(fixtures_data, teams_df, anchor, num_gws=horizon,
-                                          odds_lambdas=data.get('odds_lambdas'))
+                                          odds_lambdas=data.get('odds_lambdas'),
+                                          xg_ledger=data.get('xg_ledger'))
     if not xcs:
         return _empty("Team strength data unavailable.")
 
