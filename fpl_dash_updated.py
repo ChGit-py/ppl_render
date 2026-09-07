@@ -4200,8 +4200,8 @@ app.layout = html.Div([
                                 html.Label("Gameweeks to show", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Slider(
                                     id='ticker-gws',
-                                    min=5, max=38, step=None, value=5,
-                                    marks={5: '5', 10: '10', 15: '15', 20: '20',
+                                    min=1, max=38, step=None, value=1,
+                                    marks={1: '1', 5: '5', 10: '10', 15: '15', 20: '20',
                                            25: '25', 30: '30', 35: '35', 38: 'All'},
                                     included=True
                                 )
