@@ -8204,6 +8204,10 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
     else:
         fh_pool = fh_pool.iloc[0:0]
 
+    _team_short = (dict(zip(teams_df['id'], teams_df['short_name']))
+                   if not teams_df.empty and 'short_name' in teams_df.columns else {})
+    squad_id_set = set(int(i) for i in squad_ids)
+
     has_lam = 'xgi_lam_neutral' in squad.columns
     has_mins = 'exp_mins_next' in squad.columns
     rows = []
@@ -8249,6 +8253,19 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
             fh_pool['proj_gw'] = project_pool_for_gw(fh_pool, gw_lookup.get(g, {}))
             fh_best, fh_xi = optimise_free_hit_xi(fh_pool, fh_budget)
         fh_delta = round(max(fh_best - xi_total, 0.0), 1)
+        # Keep the actual XI, not just the total — the whole point of a Free
+        # Hit recommendation is knowing WHO you'd be fielding, and which of
+        # them you already own (if most of them, transfers may do the job
+        # without spending the chip).
+        _pos_rank = {'GKP': 0, 'DEF': 1, 'MID': 2, 'FWD': 3}
+        fh_detail = [{
+            'name': pk['web_name'], 'position': pk['position'],
+            'team': _team_short.get(pk['team'], ''),
+            'price': round(float(pk['price']), 1),
+            'proj': round(float(pk['proj_gw']), 1),
+            'owned': 'yes' if int(pk['id']) in squad_id_set else '',
+        } for pk in sorted(fh_xi, key=lambda q: (_pos_rank.get(q['position'], 9),
+                                                 -q['proj_gw']))]
 
         with_fixture = len(players) - blanks
         by_tc = sorted(players, key=lambda p: -p['tc_score'])
@@ -8259,8 +8276,9 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
             'gw': g, 'xi': round(xi_total, 1), 'bench': round(bench_total, 1),
             'squad_total': round(xi_total + bench_total, 1),
             'bb_value': bb_value, 'autosub_pts': autosub_pts,
-            'fh_best': fh_best, 'fh_delta': fh_delta,
-            'fh_names': ', '.join(p['web_name'] for p in fh_xi[:3]) if fh_xi else '',
+            'fh_best': fh_best, 'fh_delta': fh_delta, 'fh_detail': fh_detail,
+            'fh_spend': round(sum(d['price'] for d in fh_detail), 1),
+            'fh_owned': sum(1 for d in fh_detail if d['owned']),
             'tc_name': best['name'], 'tc_pts': round(best['proj'], 1),
             'tc_haul': best['haul'], 'tc_score': best['tc_score'],
             'tc_alt': (f"{runner['name']} ({runner['haul']:.0f}%)" if runner else ''),
@@ -8271,17 +8289,27 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
 
     best_bb = max(rows, key=lambda r: r['bb_value'])
     best_tc = max(rows, key=lambda r: r['tc_score'])
-    best_fh = max(rows, key=lambda r: r['fh_delta'])
+
+    # Free Hit ranked on EXCESS over the horizon median, not raw delta.
+    # The best XI in the game beats yours by 15-25 pts in ANY week purely
+    # because it is the best XI in the game — that constant squad-quality
+    # gap is present every gameweek and swamps the structural signal, so
+    # ranking on raw delta picks a week out of noise. The median IS that
+    # baseline gap; the excess over it is what the chip actually buys.
+    import statistics as _stats
+    _fh_baseline = _stats.median(r['fh_delta'] for r in rows)
+    for _r in rows:
+        _r['fh_excess'] = round(_r['fh_delta'] - _fh_baseline, 1)
+    best_fh = max(rows, key=lambda r: r['fh_excess'])
 
     # Chip EV in points, not rankings: value of the best window vs the
     # median window over the horizon — i.e. what perfect timing is WORTH.
-    import statistics as _stats
     med_bb = _stats.median(r['bb_value'] for r in rows)
     med_tc = _stats.median(r['tc_pts'] for r in rows)
     med_fh = _stats.median(r['fh_delta'] for r in rows)
     bb_ev_delta = round(best_bb['bb_value'] - med_bb, 1)
     tc_ev_delta = round(best_tc['tc_pts'] - med_tc, 1)
-    fh_ev_delta = round(best_fh['fh_delta'] - med_fh, 1)
+    fh_ev_delta = best_fh['fh_excess']
 
     rec_lines = [
         html.P([html.Strong("Bench Boost: "),
@@ -8304,26 +8332,32 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
 
     # Free Hit, priced the same way as the other two: what the best XI money
     # can buy that week beats the XI you'd otherwise field.
-    if best_fh['fh_delta'] >= 4.0:
+    if best_fh['fh_excess'] >= 4.0:
         _why = ("your squad is short of fixtures" if best_fh['with_fixture'] < 11
-                else "the pool is much stronger than your squad that week")
+                else "that week's fixtures suit the pool far better than your squad")
         rec_lines.append(html.P([
             html.Strong("Free Hit: "),
-            f"GW{best_fh['gw']} \u2014 worth {best_fh['fh_delta']:.1f} pts "
-            f"(best available XI {best_fh['fh_best']:.1f} vs your {best_fh['xi']:.1f}) "
-            f"on a \u00a3{fh_budget:.1f}m budget, because {_why}. "
-            f"{best_fh['with_fixture']}/15 of your squad have a fixture. "
-            f"+{fh_ev_delta} vs an average window."],
+            f"GW{best_fh['gw']} \u2014 {best_fh['fh_excess']:+.1f} pts better than a "
+            f"typical week, because {_why}. Best available XI projects "
+            f"{best_fh['fh_best']:.1f} vs your {best_fh['xi']:.1f} on a "
+            f"\u00a3{fh_budget:.1f}m budget; {best_fh['with_fixture']}/15 of your squad "
+            f"have a fixture. You already own {best_fh['fh_owned']}/11 of that XI."],
             style={'color': COLORS['text_dark'], 'marginBottom': '8px'}))
     else:
         rec_lines.append(html.P([
             html.Strong("Free Hit: "),
-            f"nothing worth it in the next {len(rows)} gameweeks \u2014 best window is "
-            f"GW{best_fh['gw']} at only {best_fh['fh_delta']:.1f} pts. Hold. "
-            f"Blanks and doubles form from cup progression and typically don't "
-            f"appear until late February, so an empty result here is expected "
-            f"this early."],
+            f"hold \u2014 no week in the next {len(rows)} stands out. The best "
+            f"(GW{best_fh['gw']}) is only {best_fh['fh_excess']:+.1f} pts better than "
+            f"average, which is noise, not opportunity. Blanks and doubles form "
+            f"from cup progression and rarely appear before late February."],
             style={'color': COLORS['text_dark'], 'marginBottom': '8px'}))
+    rec_lines.append(html.P(
+        f"Reading the Free Hit numbers: the best XI in the game beats yours by "
+        f"~{_fh_baseline:.0f} pts in ANY week simply because it is the best XI in "
+        f"the game. That baseline is not a reason to play the chip \u2014 only the "
+        f"excess above it is.",
+        style={'color': COLORS['text_light'], 'fontSize': '13px',
+               'marginBottom': '8px'}))
 
     # One chip per gameweek — flag collisions rather than recommending both.
     _clash = {}
@@ -8405,7 +8439,7 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
 
     table_rows = [{
         'gw': f"GW{r['gw']}", 'xi': r['xi'], 'bench': r['bb_value'],
-        'fh_delta': r['fh_delta'],
+        'fh_delta': r['fh_delta'], 'fh_excess': r['fh_excess'],
         'squad_total': r['squad_total'],
         'tc': f"{r['tc_name']} ({r['tc_pts']:.1f} pts, {r.get('tc_haul', 0):.0f}% haul"
               + (f" vs {r['tc_opp']}" if r.get('tc_opp') else "") + ")",
@@ -8417,6 +8451,33 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
             html.H3("Chip Windows \u2014 Recommendations", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
             *rec_lines
         ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+
+        html.Div([
+            html.H3(f"Free Hit XI \u2014 GW{best_fh['gw']}", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+            html.P([f"The squad the optimiser actually builds for its best window, within your "
+                    f"\u00a3{fh_budget:.1f}m budget (squad value + bank) and the 3-per-club limit. "
+                    f"XI costs \u00a3{best_fh['fh_spend']:.1f}m, leaving the rest for four bench "
+                    f"fillers. ", html.Strong(f"You already own {best_fh['fh_owned']} of these 11"),
+                    " \u2014 if that number is high, transfers may get you most of the way "
+                    "without spending the chip."],
+                   style={'color': COLORS['text_light'], 'marginBottom': '12px'}),
+            dash_table.DataTable(
+                data=best_fh['fh_detail'],
+                columns=[
+                    {'name': 'Player', 'id': 'name'},
+                    {'name': 'Pos', 'id': 'position'},
+                    {'name': 'Team', 'id': 'team'},
+                    {'name': 'Price', 'id': 'price', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                    {'name': 'Proj', 'id': 'proj', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                    {'name': 'Owned', 'id': 'owned'},
+                ],
+                style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
+                style_data=TABLE_STYLE_DATA,
+                style_data_conditional=[
+                    {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
+                    {'if': {'filter_query': '{owned} = yes'}, 'backgroundColor': '#e8f5e9'},
+                ]),
+        ], style=CARD_STYLE) if best_fh.get('fh_detail') else html.Div(),
 
         html.Div([
             html.H3("Chip Gain by Gameweek", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
@@ -8436,6 +8497,8 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
                     {'name': 'Best XI Proj', 'id': 'xi', 'type': 'numeric'},
                     {'name': 'BB gain', 'id': 'bench', 'type': 'numeric'},
                     {'name': 'FH gain', 'id': 'fh_delta', 'type': 'numeric'},
+                    {'name': 'FH vs typical', 'id': 'fh_excess', 'type': 'numeric',
+                     'format': {'specifier': '+.1f'}},
                     {'name': 'Full Squad Proj', 'id': 'squad_total', 'type': 'numeric'},
                     {'name': 'Best TC Pick', 'id': 'tc'},
                     {'name': 'Players Blanking', 'id': 'blanks', 'type': 'numeric'},
