@@ -626,89 +626,121 @@ def project_pool_for_gw(pool, gw_lookup_for_gw):
     return (pool['neutral_base'].fillna(0) * mult * counts).clip(lower=0)
 
 
-def optimise_free_hit_xi(pool, budget, max_per_club=3, pool_depth=40):
+def optimise_free_hit_xi(pool, budget, max_per_club=3, pool_depth=60):
     """
     Best formation-legal XI buildable from the WHOLE player pool for one
     gameweek, inside `budget` and the 3-per-club limit.
 
-    This is what makes Free Hit comparable to the other chips. The old
-    planner scored Free Hit by counting how many of your players had a
-    fixture, which is a different unit from Bench Boost and Triple Captain
-    (points) and — worse — silently discarded double gameweeks, where your
-    squad is intact but the pool is far better than what you own.
+    BENCH POLICY: on a Free Hit the bench is filler that should never play,
+    so the four bench slots are reserved at the ABSOLUTE cheapest prices in
+    the game that satisfy the squad quota for the formation being tried, and
+    every remaining penny goes into the XI. (Autosubs do still fire on a
+    Free Hit, so a 4.0m bench is a deliberate trade: maximum XI strength in
+    exchange for no cover if a starter is a surprise omission.)
 
-    Budget handling: FPL requires a full 15, so the four bench slots are
-    reserved at the cheapest prices that satisfy the squad quota for the
-    formation being tried, and the XI is optimised against what's left.
+    METHOD — price-penalty (Lagrangian) search, then a polish pass.
+    The previous version seeded the cheapest legal XI and took the single
+    best affordable swap until none improved. That can never buy a premium:
+    affording one usually needs TWO simultaneous downgrades, and a
+    one-at-a-time search cannot see that move, so it converged on a flat
+    mid-priced team every time. Scoring players on (proj - lambda x price)
+    and binary-searching lambda until spend meets budget weighs the whole
+    team's trade-offs at once, so premiums enter whenever they genuinely
+    earn their cost. A short single-swap polish then spends any change left.
 
-    Method: start from the cheapest legal XI (always feasible), then repeat
-    the single best affordable upgrade until none improves the total. A
-    greedy hill climb rather than an exact solver — it lands within a point
-    or so of optimal on this shape of problem and needs no MILP dependency
-    or the memory that comes with it.
-
-    Returns (best_total, best_xi_list) or (0.0, []) if nothing is feasible.
+    Returns (best_total, best_xi_list, meta) where meta carries xi_spend,
+    bench_reserve and formation.
     """
     need = ['position', 'team', 'price', 'proj_gw']
     if pool is None or pool.empty or any(c not in pool.columns for c in need):
-        return 0.0, []
+        return 0.0, [], {}
 
     p = pool[pool['proj_gw'].notna() & pool['price'].notna()].copy()
     if p.empty:
-        return 0.0, []
+        return 0.0, [], {}
 
-    # Candidate shortlist per position: the best projections plus the
-    # cheapest bodies (needed to make tight budgets feasible at all).
+    # Bench reserve comes from the FULL pool (cheapest bodies in the game),
+    # not from a projection-ranked shortlist.
+    cheap_by_pos = {pos: sorted(p[p['position'] == pos]['price'].tolist())
+                    for pos in ('GKP', 'DEF', 'MID', 'FWD')}
+
+    def _reserve_for(slots):
+        if not cheap_by_pos['GKP']:
+            return None
+        total = cheap_by_pos['GKP'][0]           # the second keeper
+        for pos in ('DEF', 'MID', 'FWD'):
+            spare = SQUAD_QUOTA[pos] - slots[pos]
+            if spare:
+                prices = cheap_by_pos[pos]
+                if len(prices) < spare:
+                    return None
+                total += sum(prices[:spare])
+        return round(total, 1)
+
     cands = {}
     for pos in ('GKP', 'DEF', 'MID', 'FWD'):
         sub = p[p['position'] == pos]
         if sub.empty:
-            return 0.0, []
+            return 0.0, [], {}
         keep = pd.concat([sub.nlargest(pool_depth, 'proj_gw'),
-                          sub.nsmallest(8, 'price')]).drop_duplicates(subset='id')
+                          sub.nsmallest(10, 'price')]).drop_duplicates(subset='id')
         cands[pos] = keep.to_dict('records')
 
-    def _cheapest(pos, k):
-        got = sorted(cands[pos], key=lambda r: r['price'])[:k]
-        return sum(r['price'] for r in got) if len(got) == k else None
+    def _greedy(lam, slots, xi_budget):
+        """Best XI at a given price penalty: one global pass, respecting
+        positional slots and the club cap."""
+        allc = [r for pos in slots for r in cands[pos]]
+        allc.sort(key=lambda r: -(r['proj_gw'] - lam * r['price']))
+        filled = {pos: 0 for pos in slots}
+        club, xi, spend = Counter(), [], 0.0
+        for r in allc:
+            pos = r['position']
+            if filled.get(pos, 0) >= slots.get(pos, 0):
+                continue
+            if club[r['team']] >= max_per_club:
+                continue
+            xi.append(r); spend += r['price']; club[r['team']] += 1; filled[pos] += 1
+            if len(xi) == 11:
+                break
+        if len(xi) < 11:
+            return None
+        return xi, round(spend, 1), club
 
-    best_total, best_xi = 0.0, []
+    best_total, best_xi, best_meta = 0.0, [], {}
 
     for n_def, n_mid, n_fwd in FORMATIONS:
         slots = {'GKP': 1, 'DEF': n_def, 'MID': n_mid, 'FWD': n_fwd}
-        # Reserve the four bench slots the squad quota forces on this shape
-        reserve = _cheapest('GKP', 1)
-        for pos in ('DEF', 'MID', 'FWD'):
-            spare = SQUAD_QUOTA[pos] - slots[pos]
-            if spare:
-                c = _cheapest(pos, spare)
-                if c is None:
-                    reserve = None
-                    break
-                reserve += c
+        reserve = _reserve_for(slots)
         if reserve is None:
             continue
         xi_budget = budget - reserve
-
-        # Seed: cheapest legal XI, respecting 3-per-club
-        xi, spend, club = [], 0.0, Counter()
-        feasible = True
-        for pos, k in slots.items():
-            picked = 0
-            for r in sorted(cands[pos], key=lambda r: r['price']):
-                if picked >= k:
-                    break
-                if club[r['team']] >= max_per_club:
-                    continue
-                xi.append(r); spend += r['price']; club[r['team']] += 1; picked += 1
-            if picked < k:
-                feasible = False
-                break
-        if not feasible or spend > xi_budget:
+        if xi_budget <= 0:
             continue
 
+        # Binary search the price penalty. lam=0 buys the best XI regardless
+        # of cost (usually over budget); a high lam buys the cheapest.
+        lo, hi, found = 0.0, 8.0, None
+        r0 = _greedy(0.0, slots, xi_budget)
+        if r0 and r0[1] <= xi_budget:
+            found = r0                       # everything affordable outright
+        else:
+            for _ in range(40):
+                mid = (lo + hi) / 2.0
+                res = _greedy(mid, slots, xi_budget)
+                if res and res[1] <= xi_budget:
+                    found = res
+                    hi = mid                 # cheaper than needed: relax
+                else:
+                    lo = mid                 # still too dear: penalise harder
+        if not found:
+            continue
+
+        xi, spend, club = found
+        xi = list(xi)
         chosen = {r['id'] for r in xi}
-        for _ in range(60):  # upgrade passes; converges well inside this
+
+        # Polish: spend leftover change on single upgrades.
+        for _ in range(25):
             best_swap, best_gain = None, 1e-9
             for i, out_p in enumerate(xi):
                 for in_p in cands[out_p['position']]:
@@ -721,7 +753,7 @@ def optimise_free_hit_xi(pool, budget, max_per_club=3, pool_depth=40):
                         continue
                     gain = in_p['proj_gw'] - out_p['proj_gw']
                     if gain > best_gain:
-                        best_gain, best_swap = gain, (i, in_p, cost)
+                        best_gain, best_swap = gain, (i, in_p, round(cost, 1))
             if best_swap is None:
                 break
             i, in_p, cost = best_swap
@@ -733,8 +765,10 @@ def optimise_free_hit_xi(pool, budget, max_per_club=3, pool_depth=40):
         total = sum(r['proj_gw'] for r in xi)
         if total > best_total:
             best_total, best_xi = total, list(xi)
+            best_meta = {'xi_spend': round(spend, 1), 'bench_reserve': reserve,
+                         'formation': f"{n_def}-{n_mid}-{n_fwd}"}
 
-    return round(best_total, 1), best_xi
+    return round(best_total, 1), best_xi, best_meta
 
 
 def estimate_autosub_points(xi, bench):
@@ -8248,10 +8282,10 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
         # you'd have fielded. Positive on blanks (your side is broken) AND on
         # doubles (the pool is better than what you own) — the old blank
         # count could only ever see the first case.
-        fh_best, fh_xi = 0.0, []
+        fh_best, fh_xi, fh_meta = 0.0, [], {}
         if not fh_pool.empty:
             fh_pool['proj_gw'] = project_pool_for_gw(fh_pool, gw_lookup.get(g, {}))
-            fh_best, fh_xi = optimise_free_hit_xi(fh_pool, fh_budget)
+            fh_best, fh_xi, fh_meta = optimise_free_hit_xi(fh_pool, fh_budget)
         fh_delta = round(max(fh_best - xi_total, 0.0), 1)
         # Keep the actual XI, not just the total — the whole point of a Free
         # Hit recommendation is knowing WHO you'd be fielding, and which of
@@ -8277,7 +8311,9 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
             'squad_total': round(xi_total + bench_total, 1),
             'bb_value': bb_value, 'autosub_pts': autosub_pts,
             'fh_best': fh_best, 'fh_delta': fh_delta, 'fh_detail': fh_detail,
-            'fh_spend': round(sum(d['price'] for d in fh_detail), 1),
+            'fh_spend': fh_meta.get('xi_spend', round(sum(d['price'] for d in fh_detail), 1)),
+            'fh_reserve': fh_meta.get('bench_reserve', 0.0),
+            'fh_formation': fh_meta.get('formation', ''),
             'fh_owned': sum(1 for d in fh_detail if d['owned']),
             'tc_name': best['name'], 'tc_pts': round(best['proj'], 1),
             'tc_haul': best['haul'], 'tc_score': best['tc_score'],
@@ -8454,10 +8490,12 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
 
         html.Div([
             html.H3(f"Free Hit XI \u2014 GW{best_fh['gw']}", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-            html.P([f"The squad the optimiser actually builds for its best window, within your "
-                    f"\u00a3{fh_budget:.1f}m budget (squad value + bank) and the 3-per-club limit. "
-                    f"XI costs \u00a3{best_fh['fh_spend']:.1f}m, leaving the rest for four bench "
-                    f"fillers. ", html.Strong(f"You already own {best_fh['fh_owned']} of these 11"),
+            html.P([f"Formation {best_fh['fh_formation']}. XI costs "
+                    f"\u00a3{best_fh['fh_spend']:.1f}m of your \u00a3{fh_budget:.1f}m "
+                    f"(squad value + bank), with only \u00a3{best_fh['fh_reserve']:.1f}m held "
+                    f"back for the four cheapest bench fillers in the game \u2014 on a Free "
+                    f"Hit the bench is filler, so every remaining penny goes into the XI. ",
+                    html.Strong(f"You already own {best_fh['fh_owned']} of these 11"),
                     " \u2014 if that number is high, transfers may get you most of the way "
                     "without spending the chip."],
                    style={'color': COLORS['text_light'], 'marginBottom': '12px'}),
