@@ -1057,7 +1057,7 @@ def _position_prior_per90(df, stat_total_col):
     return df['position'].map(rate).fillna(0)
 
 
-def compute_expected_points(df, gw_elapsed=38, priors=None):
+def compute_expected_points(df, gw_elapsed=38, priors=None, components_out=None):
     """
     Per-player projected FPL points for the next gameweek (`proj_pts_next`),
     the next five (`proj_pts_5`) and next eight (`proj_pts_8`), plus haul
@@ -1144,7 +1144,7 @@ def compute_expected_points(df, gw_elapsed=38, priors=None):
     appearance_pts = 2 * p60 + 1 * (p_any - p60)
 
     # --- Per-GW component model ------------------------------------------
-    def per_gw(att_fdr_col, def_fdr_col, att_env_col=None, cs_prob_col=None):
+    def per_gw(att_fdr_col, def_fdr_col, att_env_col=None, cs_prob_col=None, collect=False):
         # Attacking side: prefer the goal-environment ratio (expected goals
         # for this fixture / league average) — it spreads real fixtures
         # (promoted side at home ~1.5x, top defence away ~0.7x) where the
@@ -1216,11 +1216,31 @@ def compute_expected_points(df, gw_elapsed=38, priors=None):
         save_pts = (saves90s / 3 * exp90).where(pos == 'GKP', 0)
         bonus_pts = (bonus90s * exp90).clip(0, 3)
 
-        return (appearance_pts + goal_pts + assist_pts + cs_pts +
-                gc_pts + defcon_pts + save_pts + bonus_pts)
+        total = (appearance_pts + goal_pts + assist_pts + cs_pts +
+                 gc_pts + defcon_pts + save_pts + bonus_pts)
+        # The eight components are summed and thrown away, which makes a
+        # projection impossible to interrogate from outside: an 8.8 built
+        # from a modest rate x a 1.6 fixture multiplier is indistinguishable
+        # from an 8.5 rate barely scaled, and they need opposite fixes.
+        if collect and components_out is not None:
+            components_out.update({
+                'xp_appear': appearance_pts.round(2),
+                'xp_goals': goal_pts.round(2),
+                'xp_assists': assist_pts.round(2),
+                'xp_cs': cs_pts.round(2),
+                'xp_gc': gc_pts.round(2),
+                'xp_defcon': defcon_pts.round(2),
+                'xp_saves': save_pts.round(2),
+                'xp_bonus': bonus_pts.round(2),
+                'xp_att_mult': pd.Series(att_mult, index=idx).round(3)
+                               if att_mult is not None else pd.Series(1.0, index=idx),
+                'xp_cs_prob_used': cs_prob.round(3),
+                'xp_p60': p60.round(3),
+            })
+        return total
 
     proj_next = per_gw('next_att_fdr', 'next_def_fdr', att_env_col='att_env_next',
-                       cs_prob_col='cs_prob_next').round(2)
+                       cs_prob_col='cs_prob_next', collect=True).round(2)
 
     horizon_per_gw = per_gw('att_fdr_5', 'def_fdr_5', att_env_col='att_env_5',
                             cs_prob_col='cs_prob_5')
@@ -2814,12 +2834,20 @@ def refresh_core_data():
         gw_elapsed = current_gw['id'] if current_gw else 38
         with DATA_LOCK:
             _priors = DATA.get('last_season_priors', {})
+        _xp_parts = {}
         (df_active['exp_mins_next'],
          df_active['proj_pts_next'],
          df_active['proj_pts_5'],
          df_active['proj_pts_8'],
          df_active['haul_pct'],
-         df_active['xgi_lam_neutral']) = compute_expected_points(df_active, gw_elapsed, priors=_priors)
+         df_active['xgi_lam_neutral']) = compute_expected_points(
+            df_active, gw_elapsed, priors=_priors, components_out=_xp_parts)
+
+        # Attach the projection decomposition for the Model Lab breakdown.
+        # Only the next-GW pass is collected; the 5/8-GW horizons reuse the
+        # same component model with averaged fixtures.
+        for _k, _v in (_xp_parts or {}).items():
+            df_active[_k] = _v
 
         # Neutral per-GW base (flat FDR-3, single fixture) — reused by the
         # chip planner and the squad builder's chip-target emphasis
@@ -3075,12 +3103,20 @@ def refresh_heavy_data():
             cur_for_proj = DATA.get('current_gw')
             _priors = DATA.get('last_season_priors', {})
         gw_elapsed = cur_for_proj['id'] if cur_for_proj else 38
+        _xp_parts = {}
         (df_active['exp_mins_next'],
          df_active['proj_pts_next'],
          df_active['proj_pts_5'],
          df_active['proj_pts_8'],
          df_active['haul_pct'],
-         df_active['xgi_lam_neutral']) = compute_expected_points(df_active, gw_elapsed, priors=_priors)
+         df_active['xgi_lam_neutral']) = compute_expected_points(
+            df_active, gw_elapsed, priors=_priors, components_out=_xp_parts)
+
+        # Attach the projection decomposition for the Model Lab breakdown.
+        # Only the next-GW pass is collected; the 5/8-GW horizons reuse the
+        # same component model with averaged fixtures.
+        for _k, _v in (_xp_parts or {}).items():
+            df_active[_k] = _v
         _neutral = df_active.copy()
         _neutral['next_att_fdr'] = 3.0
         _neutral['next_def_fdr'] = 3.0
@@ -5248,6 +5284,48 @@ app.layout = html.Div([
                     ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
                     html.Div([
+                        html.H4("Projection Breakdown", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+                        html.P(["A projection is eight components summed. Collapsed into one number they are "
+                                "impossible to interrogate: an 8.8 built from a modest rate \u00d7 a 1.6 fixture "
+                                "multiplier looks identical to an 8.5 rate barely scaled, and those need "
+                                "opposite fixes. ", html.Strong("Neutral"), " is the projection at a "
+                                "league-average fixture; ", html.Strong("Fix \u00d7"), " is the attacking "
+                                "environment multiplier actually applied. If Proj is far above Neutral the "
+                                "fixture model is driving it; if Neutral is already high, the player's own "
+                                "rates are."],
+                               style={'color': COLORS['text_light'], 'marginBottom': '12px'}),
+                        html.Div([
+                            html.Div([
+                                html.Label("Position", style={'fontWeight': '600', 'marginBottom': '6px',
+                                                              'display': 'block'}),
+                                dcc.Dropdown(id='lab-bd-position',
+                                             options=[{'label': 'All', 'value': 'All'}] +
+                                                     [{'label': x, 'value': x} for x in ['GKP', 'DEF', 'MID', 'FWD']],
+                                             value='All', clearable=False)
+                            ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Team", style={'fontWeight': '600', 'marginBottom': '6px',
+                                                          'display': 'block'}),
+                                dcc.Dropdown(id='lab-bd-team',
+                                             options=[{'label': 'All', 'value': 'All'}] +
+                                                     [{'label': t, 'value': t} for t in sorted_teams],
+                                             value='All', clearable=False)
+                            ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Search player", style={'fontWeight': '600', 'marginBottom': '6px',
+                                                                   'display': 'block'}),
+                                dcc.Input(id='lab-bd-search', type='text', value='', debounce=True,
+                                          placeholder='e.g. Gross',
+                                          style={'width': '100%', 'padding': '8px', 'borderRadius': '4px',
+                                                 'border': '1px solid #ccc'})
+                            ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
+                        ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-end',
+                                  'marginBottom': '16px'}),
+                        dcc.Graph(id='lab-bd-chart', config={'displayModeBar': False}),
+                        html.Div(id='lab-bd-table')
+                    ], style=CARD_STYLE),
+
+                    html.Div([
                         html.H4("Calibration by Gameweek", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
                         html.Div(id='lab-calibration')
                     ], style=CARD_STYLE),
@@ -7140,6 +7218,110 @@ def update_transfers(position, team, max_price, min_minutes):
     table_data = prepare_table_data(sorted_by_activity.nlargest(50, 'abs_net'), cols)
 
     return risers_fig, fallers_fig, scatter_fig, table_data
+
+
+# --- MODEL LAB: PROJECTION BREAKDOWN ---
+XP_PARTS = [('xp_appear', 'Appear'), ('xp_goals', 'Goals'), ('xp_assists', 'Assists'),
+            ('xp_cs', 'CS'), ('xp_defcon', 'DEFCON'), ('xp_saves', 'Saves'),
+            ('xp_bonus', 'Bonus'), ('xp_gc', 'GC pen')]
+XP_PART_COLOURS = {'Appear': '#9e9e9e', 'Goals': COLORS['accent'], 'Assists': '#ff8a65',
+                   'CS': COLORS['primary'], 'DEFCON': COLORS['info'], 'Saves': '#7e57c2',
+                   'Bonus': COLORS['secondary'], 'GC pen': COLORS['danger']}
+
+
+@callback(
+    [Output('lab-bd-chart', 'figure'), Output('lab-bd-table', 'children')],
+    [Input('active-page', 'data'), Input('lab-bd-position', 'value'),
+     Input('lab-bd-team', 'value'), Input('lab-bd-search', 'value')]
+)
+def render_projection_breakdown(page, position, team, search):
+    """Split each next-GW projection into its eight scoring components."""
+    blank = go.Figure()
+    blank.update_layout(template='plotly_white', height=320)
+    if page != 'model-lab':
+        return blank, html.Div()
+
+    dfa = get_data().get('df_active')
+    if dfa is None or dfa.empty or 'xp_goals' not in dfa.columns:
+        blank.add_annotation(text="Breakdown appears after the next data refresh",
+                             xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
+                             font=dict(size=15, color=COLORS['text_light']))
+        return blank, html.P("The component columns are written during a refresh. If this "
+                             "persists, the projection pass did not run.",
+                             style={'color': COLORS['text_light']})
+
+    d = dfa.copy()
+    if position != 'All':
+        d = d[d['position'] == position]
+    if team != 'All':
+        d = d[d['team_name'] == team]
+    if search:
+        d = d[d['web_name'].str.contains(str(search).strip(), case=False, na=False)]
+    d = d[pd.to_numeric(d['proj_pts_next'], errors='coerce').notna()]
+    if d.empty:
+        blank.add_annotation(text="No players match these filters", xref="paper", yref="paper",
+                             x=0.5, y=0.5, showarrow=False,
+                             font=dict(size=15, color=COLORS['text_light']))
+        return blank, html.Div()
+
+    top = d.nlargest(20, 'proj_pts_next').iloc[::-1]
+    fig = go.Figure()
+    for col, label in XP_PARTS:
+        if col not in top.columns:
+            continue
+        fig.add_trace(go.Bar(
+            y=top['web_name'], x=pd.to_numeric(top[col], errors='coerce').fillna(0),
+            name=label, orientation='h',
+            marker_color=XP_PART_COLOURS.get(label, COLORS['text_light']),
+            hovertemplate='%{y}<br>' + label + ': %{x:.2f} pts<extra></extra>'))
+    fig.update_layout(barmode='relative', template='plotly_white',
+                      height=max(360, 22 * len(top) + 120),
+                      xaxis_title='Projected points (next GW), by component',
+                      legend=dict(orientation='h', yanchor='bottom', y=1.02,
+                                  xanchor='center', x=0.5),
+                      margin=dict(t=60, b=40, l=110, r=20),
+                      font=dict(family='Arial, sans-serif'))
+
+    d = d.copy()
+    d['fix_effect'] = (pd.to_numeric(d['proj_pts_next'], errors='coerce')
+                       - pd.to_numeric(d.get('proj_neutral_gw'), errors='coerce'))
+    cols = ['web_name', 'team_name', 'position', 'price', 'proj_pts_next',
+            'proj_neutral_gw', 'fix_effect', 'xp_att_mult', 'exp_mins_next',
+            'xp_appear', 'xp_goals', 'xp_assists', 'xp_cs', 'xp_defcon',
+            'xp_saves', 'xp_bonus', 'xp_gc']
+    cols = [c for c in cols if c in d.columns]
+    table = dash_table.DataTable(
+        data=prepare_table_data(d.nlargest(60, 'proj_pts_next'), cols),
+        columns=[
+            {'name': 'Player', 'id': 'web_name'},
+            {'name': 'Team', 'id': 'team_name'},
+            {'name': 'Pos', 'id': 'position'},
+            {'name': 'Price', 'id': 'price', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+            {'name': 'Proj', 'id': 'proj_pts_next', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+            {'name': 'Neutral', 'id': 'proj_neutral_gw', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+            {'name': 'Fixture +/-', 'id': 'fix_effect', 'type': 'numeric', 'format': {'specifier': '+.2f'}},
+            {'name': 'Fix x', 'id': 'xp_att_mult', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+            {'name': 'Mins', 'id': 'exp_mins_next', 'type': 'numeric', 'format': {'specifier': '.0f'}},
+            {'name': 'Appear', 'id': 'xp_appear', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+            {'name': 'Goals', 'id': 'xp_goals', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+            {'name': 'Assists', 'id': 'xp_assists', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+            {'name': 'CS', 'id': 'xp_cs', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+            {'name': 'DEFCON', 'id': 'xp_defcon', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+            {'name': 'Saves', 'id': 'xp_saves', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+            {'name': 'Bonus', 'id': 'xp_bonus', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+            {'name': 'GC pen', 'id': 'xp_gc', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+        ],
+        sort_action='native', page_size=20,
+        style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
+        style_data=TABLE_STYLE_DATA,
+        style_data_conditional=[
+            {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
+            {'if': {'filter_query': '{fix_effect} > 1', 'column_id': 'fix_effect'},
+             'backgroundColor': '#e8f5e9'},
+            {'if': {'filter_query': '{fix_effect} < -1', 'column_id': 'fix_effect'},
+             'backgroundColor': '#ffebee'},
+        ])
+    return fig, table
 
 
 # --- MODEL LAB ---
