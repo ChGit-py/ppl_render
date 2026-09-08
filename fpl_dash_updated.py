@@ -338,11 +338,27 @@ def extract_last_season_prior(summary):
         return None
 
 
-def calculate_bonus_consistency(player_ids, player_thresholds, min_minutes=60):
+def calculate_bonus_consistency(player_ids, player_thresholds, min_minutes=1):
     """
-    Calculate defcon bonus hit rate for multiple players.
-    player_thresholds: dict of player_id -> bonus threshold (10 for DEF, 12 for MID/FWD)
-    Returns dict of player_id -> stats
+    Defensive-contribution hit rate: how often a player actually banks the
+    2 DEFCON points (10+ for DEF, 12+ for MID/FWD in a single match).
+
+    MINUTES FILTER — was 60, now 1 (any appearance).
+    The 60-minute cutoff was borrowed from clean sheets, where FPL really
+    does require 60 minutes. Defensive contribution has NO such rule: hit
+    the threshold in 40 minutes off the bench and the points are yours. So
+    the old filter applied a scoring rule that does not exist for this stat,
+    and silently deleted whole appearances from the denominator — a player
+    with three games and one short outing was displayed as 2 games.
+
+    Worse, it biased upward. A short appearance is far more likely to be a
+    miss (fewer minutes, fewer defensive actions), so filtering at 60 removed
+    misses preferentially and left the hits. Every hit rate in the table was
+    too high, and those rates feed p_hit in the projection engine.
+
+    `appearances` and `starts_60` are returned alongside so the split between
+    "played" and "played a full game" stays visible rather than hidden inside
+    the denominator.
     """
     results = {}
     priors = {}
@@ -354,8 +370,9 @@ def calculate_bonus_consistency(player_ids, player_thresholds, min_minutes=60):
         if not history:
             return player_id, None, prior
 
-        # Filter to games with 60+ minutes
-        qualifying_games = [g for g in history if g.get('minutes', 0) >= min_minutes]
+        # Every appearance is an opportunity — DEFCON points carry no
+        # minutes requirement, unlike clean sheets.
+        qualifying_games = [g for g in history if (g.get('minutes') or 0) >= min_minutes]
 
         if not qualifying_games:
             return player_id, None, prior
@@ -366,9 +383,24 @@ def calculate_bonus_consistency(player_ids, player_thresholds, min_minutes=60):
 
         # Calculate stats
         defcon_values = [g.get('defensive_contribution', 0) for g in qualifying_games]
+        total_mins = sum((g.get('minutes') or 0) for g in qualifying_games)
+
+        # Full-90 games are the clean sample for "would he hit it if he
+        # started", which is what the projection needs — the engine applies
+        # minutes risk separately via p60.
+        full_games = [g for g in qualifying_games if (g.get('minutes') or 0) >= 60]
+        full_hits = [g for g in full_games if g.get('defensive_contribution', 0) >= threshold]
+        _mean = (sum(defcon_values) / len(defcon_values)) if defcon_values else 0.0
+        _var = (sum((v - _mean) ** 2 for v in defcon_values) / (len(defcon_values) - 1)
+                ) if len(defcon_values) > 1 else 0.0
 
         stats = {
             'qualifying_games': len(qualifying_games),
+            'appearances': len(qualifying_games),
+            'starts_60': len(full_games),
+            'bonus_games_60': len(full_hits),
+            'defcon_per_90_games': (sum(defcon_values) / total_mins * 90) if total_mins > 0 else 0,
+            'defcon_var': _var,
             'bonus_games': len(bonus_games),
             'hit_rate': (len(bonus_games) / len(qualifying_games)) * 100 if qualifying_games else 0,
             'avg_defcon': sum(defcon_values) / len(defcon_values) if defcon_values else 0,
@@ -1191,26 +1223,68 @@ def compute_expected_points(df, gw_elapsed=38, priors=None, components_out=None)
         is_def_unit = pos.isin(['GKP', 'DEF'])
         gc_pts = (-0.5 * gc90s * exp90 * def_mult_gc).where(is_def_unit, 0)
 
+        # --- DEFCON: modelled as a COUNT, not a coin flip --------------
+        # Defensive contribution is a tally of tackles, blocks, clearances,
+        # interceptions and recoveries. The old code counted binary hits and
+        # shrank that toward a positional average, which threw away the one
+        # thing that matters — how close a player's actual volume is to his
+        # threshold. A midfielder averaging 5.0 with a best of 6 against a
+        # threshold of 12 was still credited ~57% of the positional rate,
+        # despite never having come close in any game.
+        #
+        # Instead: take his shrunk DEFCON rate per 90 as lambda and read the
+        # probability straight off a count distribution. Negative binomial
+        # rather than Poisson because these counts are overdispersed — game
+        # state clusters defensive actions — with the dispersion estimated
+        # from the pooled variance-to-mean ratio of the squad itself.
+        #
+        # p_hit is deliberately conditional on PLAYING A FULL GAME. Minutes
+        # risk is applied once, by the p60 multiplier below; folding it into
+        # p_hit as well would penalise rotation players twice.
         threshold = n('bonus_threshold').fillna(10)
-        p_hit_est = (0.5 * n('defcon_per_90').fillna(0) / threshold).clip(0, 0.85)
-        # Shrink the MEASURED hit rate toward the position average, weighted
-        # by qualifying games (k=4). After 1-2 games a raw 100% hit rate was
-        # handing accumulator mids ~2 near-certain points a week that
-        # explosive forwards structurally can't earn — the single biggest
-        # early-season distorter of TC/captain rankings.
-        q_games = n('qualifying_games').fillna(0).clip(lower=0)
-        raw_hit = (n('hit_rate') / 100).clip(0, 1)
-        _hit_pool = pd.DataFrame({'pos': pos, 'hit': raw_hit, 'q': q_games})
-        _hit_pool = _hit_pool[_hit_pool['hit'].notna() & (_hit_pool['q'] > 0)]
-        if len(_hit_pool) > 0:
-            _wavg = (_hit_pool.assign(w=_hit_pool['hit'] * _hit_pool['q'])
-                     .groupby('pos').apply(lambda g: g['w'].sum() / max(g['q'].sum(), 1)))
-            pos_hit_prior = pos.map(_wavg)
-        else:
-            pos_hit_prior = pd.Series(np.nan, index=idx)
-        p_hit_prior = pos_hit_prior.fillna(p_hit_est)
-        p_hit_meas = raw_hit.fillna(p_hit_est)
-        p_hit = ((p_hit_meas * q_games + p_hit_prior * 4) / (q_games + 4)).clip(0, 1)
+
+        dc90_obs = n('defcon_per_90_games')
+        dc90 = dc90_obs.fillna(n('defcon_per_90')).fillna(0).clip(lower=0)
+        dc90 = _shrink_per90(dc90, mins_raw, _position_prior_per90(df, 'defensive_contribution'))
+
+        # Pooled overdispersion: var/mean across players with a real sample.
+        _vm = pd.DataFrame({'v': n('defcon_var'), 'm': dc90,
+                            'q': n('qualifying_games').fillna(0)})
+        _vm = _vm[(_vm['q'] >= 3) & (_vm['m'] > 0) & _vm['v'].notna() & (_vm['v'] > 0)]
+        vmr = float(np.clip((_vm['v'] / _vm['m']).median(), 1.0, 6.0)) if len(_vm) >= 10 else 2.0
+
+        def _p_at_least(lam, thr, ratio):
+            """P(X >= thr) for X negative-binomial with mean lam and
+            variance ratio x lam. Falls back to Poisson at ratio ~ 1."""
+            lam = np.asarray(lam, dtype=float).clip(1e-6, 60)
+            thr = np.asarray(thr, dtype=float).clip(1, 60)
+            if ratio <= 1.02:
+                r = np.full_like(lam, 1e6)
+            else:
+                r = lam / (ratio - 1.0)
+            pr = r / (r + lam)                      # P(success) per NB trial
+            k = np.floor(thr).astype(int)
+            # P(X < k) by summing the pmf up to k-1, vectorised over players
+            cdf = np.zeros_like(lam)
+            term = pr ** r                          # pmf at 0
+            kmax = int(k.max())
+            for i in range(kmax):
+                cdf = np.where(i < k, cdf + term, cdf)
+                term = term * (r + i) / (i + 1.0) * (1.0 - pr)
+            return np.clip(1.0 - cdf, 0.0, 1.0)
+
+        p_model = pd.Series(_p_at_least(dc90.values, threshold.values, vmr), index=idx)
+
+        # Empirical check, from FULL games only — that is the sample which
+        # actually answers "does he hit it when he starts".
+        g60 = n('starts_60').fillna(0).clip(lower=0)
+        h60 = n('bonus_games_60').fillna(0).clip(lower=0)
+        # Empirical Bayes with the player's OWN rate-based estimate as the
+        # prior (k=4 games), rather than a positional average that ignores
+        # whether he is anywhere near the threshold.
+        p_hit = ((h60 + p_model * 4.0) / (g60 + 4.0)).clip(0, 1)
+        p_hit = p_hit.where(dc90 > 0, 0.0).fillna(0.0)
+
         defcon_pts = DEFCON_POINTS * p_hit * p60
 
         save_pts = (saves90s / 3 * exp90).where(pos == 'GKP', 0)
@@ -2709,7 +2783,8 @@ def refresh_core_data():
         print(f"  Season started: {started} | active players: {len(df_active)}")
 
         # Initialise consistency columns as NaN (Phase 2 will populate these)
-        for col in ['qualifying_games', 'bonus_games', 'hit_rate',
+        for col in ['qualifying_games', 'bonus_games', 'hit_rate', 'starts_60',
+                    'bonus_games_60', 'defcon_per_90_games', 'defcon_var',
                     'avg_defcon_qualifying', 'max_defcon_game', 'min_defcon_game']:
             df_active[col] = np.nan
 
@@ -3004,6 +3079,9 @@ def refresh_heavy_data():
             lambda x: consistency_data.get(x, {}).get('qualifying_games'))
         df_active['bonus_games'] = df_active['id'].map(lambda x: consistency_data.get(x, {}).get('bonus_games'))
         df_active['hit_rate'] = df_active['id'].map(lambda x: consistency_data.get(x, {}).get('hit_rate'))
+        for _c in ('starts_60', 'bonus_games_60', 'defcon_per_90_games', 'defcon_var'):
+            df_active[_c] = df_active['id'].map(
+                lambda x, _c=_c: consistency_data.get(x, {}).get(_c))
         df_active['avg_defcon_qualifying'] = df_active['id'].map(
             lambda x: consistency_data.get(x, {}).get('avg_defcon'))
         df_active['max_defcon_game'] = df_active['id'].map(lambda x: consistency_data.get(x, {}).get('max_defcon'))
@@ -4001,7 +4079,7 @@ app.layout = html.Div([
                     html.Div([
                         html.H3("Bonus Hit Rate by Player", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
                         html.P(
-                            f"Percentage of qualifying games (60+ mins) where player hit their bonus threshold "
+                            f"Percentage of APPEARANCES where the player hit their bonus threshold "
                             f"(DEF: {DEF_THR}+, MID/FWD: {MID_THR}+).",
                             style={'color': COLORS['text_light']}),
                         dcc.Graph(id='consistency-bar')
@@ -4012,7 +4090,10 @@ app.layout = html.Div([
                         html.H3("Consistency vs Average Output",
                                 style={'color': COLORS['primary'], 'marginBottom': '8px'}),
                         html.P(
-                            "Compare hit rate (consistency) against average defcon in qualifying games. Top right = high output AND consistent.",
+                            "Compare hit rate (consistency) against average defcon per appearance. Top right = "
+                            "high output AND consistent. Defensive contribution points carry no 60-minute "
+                            "requirement, so every appearance counts \u2014 the '60+ mins' column shows how "
+                            "many were full games.",
                             style={'color': COLORS['text_light']}),
                         dcc.Graph(id='consistency-scatter')
                     ], style=CARD_STYLE),
@@ -4030,7 +4111,8 @@ app.layout = html.Div([
                                 {'name': 'Pos', 'id': 'position'},
                                 {'name': 'Price', 'id': 'price', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                                 {'name': 'Mins', 'id': 'minutes', 'type': 'numeric', 'format': {'specifier': ','}},
-                                {'name': 'Games', 'id': 'qualifying_games', 'type': 'numeric'},
+                                {'name': 'Apps', 'id': 'qualifying_games', 'type': 'numeric'},
+                                {'name': '60+ mins', 'id': 'starts_60', 'type': 'numeric'},
                                 {'name': 'Bonus Games', 'id': 'bonus_games', 'type': 'numeric'},
                                 {'name': 'Hit Rate %', 'id': 'hit_rate', 'type': 'numeric',
                                  'format': {'specifier': '.1f'}},
@@ -6490,7 +6572,7 @@ def update_consistency(position, team, max_price, min_games, min_minutes, _n):
 
     # Table data
     cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'qualifying_games', 'bonus_games', 'hit_rate',
-            'avg_defcon_qualifying', 'max_defcon_game', 'min_defcon_game', 'ownership']
+            'starts_60', 'avg_defcon_qualifying', 'max_defcon_game', 'min_defcon_game', 'ownership']
     table_data = prepare_table_data(filtered.nlargest(50, 'hit_rate'), cols)
 
     return bar_fig, scatter_fig, table_data
