@@ -707,6 +707,7 @@ def optimise_free_hit_xi(pool, budget, max_per_club=3, pool_depth=60):
         return xi, round(spend, 1), club
 
     best_total, best_xi, best_meta = 0.0, [], {}
+    formation_table = []   # every shape's score, not just the winner's
 
     for n_def, n_mid, n_fwd in FORMATIONS:
         slots = {'GKP': 1, 'DEF': n_def, 'MID': n_mid, 'FWD': n_fwd}
@@ -763,10 +764,24 @@ def optimise_free_hit_xi(pool, budget, max_per_club=3, pool_depth=60):
             xi[i] = in_p; spend = cost
 
         total = sum(r['proj_gw'] for r in xi)
+        formation_table.append({'formation': f"{n_def}-{n_mid}-{n_fwd}",
+                                'total': round(total, 1),
+                                'xi_spend': round(spend, 1),
+                                'bench_reserve': reserve})
         if total > best_total:
             best_total, best_xi = total, list(xi)
             best_meta = {'xi_spend': round(spend, 1), 'bench_reserve': reserve,
                          'formation': f"{n_def}-{n_mid}-{n_fwd}"}
+
+    # The margin over the runner-up is the point of returning all of these.
+    # A 0.3-pt win means the shape is arbitrary and you should pick whichever
+    # you prefer for reasons the optimiser can't see (ceiling, rotation risk,
+    # a rival's squad). A 6-pt win is a real read on that week's fixtures.
+    formation_table.sort(key=lambda r: -r['total'])
+    if best_meta:
+        best_meta['formation_table'] = formation_table
+        best_meta['margin'] = (round(formation_table[0]['total'] - formation_table[1]['total'], 1)
+                               if len(formation_table) > 1 else 0.0)
 
     return round(best_total, 1), best_xi, best_meta
 
@@ -8314,6 +8329,8 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
             'fh_spend': fh_meta.get('xi_spend', round(sum(d['price'] for d in fh_detail), 1)),
             'fh_reserve': fh_meta.get('bench_reserve', 0.0),
             'fh_formation': fh_meta.get('formation', ''),
+            'fh_formation_table': fh_meta.get('formation_table', []),
+            'fh_margin': fh_meta.get('margin', 0.0),
             'fh_owned': sum(1 for d in fh_detail if d['owned']),
             'tc_name': best['name'], 'tc_pts': round(best['proj'], 1),
             'tc_haul': best['haul'], 'tc_score': best['tc_score'],
@@ -8516,6 +8533,38 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
                     {'if': {'filter_query': '{owned} = yes'}, 'backgroundColor': '#e8f5e9'},
                 ]),
         ], style=CARD_STYLE) if best_fh.get('fh_detail') else html.Div(),
+
+        html.Div([
+            html.H4("Formation Comparison", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+            html.P([
+                (f"{best_fh['fh_formation']} wins by {best_fh['fh_margin']:.1f} pts over the "
+                 f"next-best shape. " if best_fh.get('fh_margin') is not None else ""),
+                html.Strong(
+                    "That margin is noise \u2014 take whichever shape you prefer."
+                    if best_fh.get('fh_margin', 0) < 1.5 else
+                    "That is a real read on this week's fixtures, not a coin flip."),
+                " The optimiser scores every legal shape and reports the highest total, but it "
+                "maximises EXPECTED points and knows nothing about your league position. Five at "
+                "the back is a tight, reliable distribution; three at the back with three forwards "
+                "has a fatter tail both ways. If you are chasing, the bigger ceiling is usually "
+                "worth a point or two of mean."],
+                style={'color': COLORS['text_light'], 'marginBottom': '12px'}),
+            dash_table.DataTable(
+                data=best_fh.get('fh_formation_table', []),
+                columns=[
+                    {'name': 'Formation', 'id': 'formation'},
+                    {'name': 'Proj', 'id': 'total', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                    {'name': 'XI cost', 'id': 'xi_spend', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                    {'name': 'Bench held back', 'id': 'bench_reserve', 'type': 'numeric',
+                     'format': {'specifier': '.1f'}},
+                ],
+                style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
+                style_data=TABLE_STYLE_DATA,
+                style_data_conditional=[
+                    {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
+                    {'if': {'row_index': 0}, 'backgroundColor': '#e8f5e9', 'fontWeight': '600'},
+                ]),
+        ], style=CARD_STYLE) if best_fh.get('fh_formation_table') else html.Div(),
 
         html.Div([
             html.H3("Chip Gain by Gameweek", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
