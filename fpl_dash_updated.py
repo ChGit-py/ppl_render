@@ -959,6 +959,127 @@ def _minmax_norm(series, index):
     return ((s - lo) / (hi - lo)).fillna(0.0)
 
 
+def compute_captain_distribution(df, n_sims=4000, seed=17):
+    """
+    Full points DISTRIBUTION for the next gameweek, per player, by simulation.
+
+    Why this replaces the old haul metric: `haul_pct` was P(2+ goal
+    involvements) from a single pooled Poisson. That counts goals and assists
+    and nothing else, so a defender who returns clean sheet + DEFCON +
+    appearance + 3 bonus — 11 points, a genuine captain haul — read as ~0%.
+    Chase mode was structurally blind to defenders, keepers and bonus-heavy
+    players. The threshold was wrong too: one goal plus bonus already puts a
+    midfielder near 10, so "2 involvements" was never the right bar.
+
+    This simulates every scoring route instead, drawing each component from
+    its own distribution and summing:
+
+      appearance   deterministic given minutes drawn
+      goals        Poisson, assists Poisson
+      clean sheet  Bernoulli
+      DEFCON       Bernoulli (negative-binomial hit prob, computed upstream)
+      conceded     Poisson, -1 per 2 for GKP/DEF
+      saves        Poisson / 3 for GKP
+      bonus        Binomial(3, m/3) — mean-matched, correct 0-3 support
+
+    The rates are INVERTED FROM THE PROJECTION'S OWN COMPONENTS (xp_goals,
+    xp_cs, ...), so the simulated mean reconciles with proj_pts_next by
+    construction. There is no second model to drift out of step.
+
+    Returns a DataFrame with p_10, p_15 (percentages) and sim_mean.
+    """
+    idx = df.index
+    need = ['xp_goals', 'xp_assists', 'xp_cs', 'xp_defcon', 'xp_saves', 'xp_bonus', 'xp_gc']
+    if any(c not in df.columns for c in need):
+        return pd.DataFrame({'p_10': pd.Series(np.nan, index=idx),
+                             'p_15': pd.Series(np.nan, index=idx),
+                             'sim_mean': pd.Series(np.nan, index=idx)})
+
+    rng = np.random.default_rng(seed)
+    pos = df['position']
+    num = lambda c, d=0.0: pd.to_numeric(df[c], errors='coerce').fillna(d).values
+
+    gpts = pos.map(GOAL_POINTS).fillna(4).values.astype(float)
+    cpts = pos.map(CS_POINTS).fillna(0).values.astype(float)
+
+    # Invert expected component points back into rates
+    lam_g = np.clip(num('xp_goals') / np.maximum(gpts, 1e-9), 0, 5)
+    lam_a = np.clip(num('xp_assists') / ASSIST_POINTS, 0, 5)
+    p_cs = np.clip(np.where(cpts > 0, num('xp_cs') / np.maximum(cpts, 1e-9), 0.0), 0, 1)
+    p_dc = np.clip(num('xp_defcon') / DEFCON_POINTS, 0, 1)
+    lam_sv = np.clip(num('xp_saves') * 3.0, 0, 15)
+    m_bon = np.clip(num('xp_bonus'), 0, 3)
+    lam_gc = np.clip(-num('xp_gc') * 2.0, 0, 8)
+
+    mins = np.clip(num('exp_mins_next', 60.0), 0, 90)
+    p_start = np.clip(mins / 90.0, 0, 1)          # P(plays 60+)
+    p_cameo = np.clip((1 - p_start) * 0.35, 0, 1)  # some of the rest appear briefly
+    is_def_unit = pos.isin(['GKP', 'DEF']).values
+    is_gk = (pos == 'GKP').values
+
+    p_played = np.clip(p_start + p_cameo, 1e-6, 1.0)
+    p_st = np.clip(p_start, 1e-6, 1.0)
+
+    # The xp_* components are UNCONDITIONAL expectations — expected minutes
+    # are already baked into each one. The draws below are gated on actually
+    # playing, so the rates must first be made CONDITIONAL by dividing out
+    # the gate probability. Without this, minutes get counted twice and a
+    # player on 45 expected minutes keeps only half his component value.
+    lam_g_c = lam_g / p_played
+    lam_a_c = lam_a / p_played
+    m_bon_c = np.clip(m_bon / p_played, 0, 3)
+    p_cs_c = np.clip(p_cs / p_st, 0, 1)
+    p_dc_c = np.clip(p_dc / p_st, 0, 1)
+    lam_sv_c = lam_sv / p_st
+    lam_gc_c = lam_gc / p_st
+
+    N, P = n_sims, len(idx)
+    started = rng.random((N, P)) < p_start
+    cameo = (~started) & (rng.random((N, P)) < p_cameo)
+    played = started | cameo
+
+    pts = np.where(started, 2.0, np.where(cameo, 1.0, 0.0))
+    pts += rng.poisson(np.broadcast_to(lam_g_c, (N, P))) * gpts * played
+    pts += rng.poisson(np.broadcast_to(lam_a_c, (N, P))) * ASSIST_POINTS * played
+    pts += (rng.random((N, P)) < p_cs_c) * cpts * started
+    pts += (rng.random((N, P)) < p_dc_c) * DEFCON_POINTS * started
+    pts += np.where(is_gk, rng.poisson(np.broadcast_to(np.maximum(lam_sv_c, 1e-9),
+                                                      (N, P))) // 3, 0) * started
+    conceded = rng.poisson(np.broadcast_to(np.maximum(lam_gc_c, 1e-9), (N, P)))
+    pts -= np.where(is_def_unit, conceded // 2, 0) * started
+    pts += rng.binomial(3, np.clip(m_bon_c / 3.0, 0, 1), size=(N, P)) * played
+
+    return pd.DataFrame({
+        'p_10': pd.Series((pts >= 10).mean(axis=0) * 100, index=idx).round(1),
+        'p_15': pd.Series((pts >= 15).mean(axis=0) * 100, index=idx).round(1),
+        'sim_mean': pd.Series(pts.mean(axis=0), index=idx).round(2),
+    })
+
+
+def compute_captain_gain(df):
+    """
+    Expected points gained on the AVERAGE MANAGER by captaining a player.
+
+    Captaincy is the one decision where raw expected points is the wrong
+    ranking. Doubling is a constant multiplier, so ranking by 2 x xP gives
+    exactly the same order as xP — the armband changes nothing about who is
+    "best". What it changes is what you gain RELATIVE to everyone else, and
+    that depends on effective ownership.
+
+    If EO% of the field effectively owns a player (captaincy counted twice),
+    your net from captaining him is (2 - EO/100) x his points. Captain a
+    90% EO player and you bank 1.1x his score against the field; captain a
+    15% differential and you bank 1.85x. That is the mini-league lever, and
+    top_eo was sitting in the table unused by any ranking.
+    """
+    proj = pd.to_numeric(df.get('proj_pts_next'), errors='coerce')
+    eo = pd.to_numeric(df.get('top_eo'), errors='coerce')
+    if eo is None or eo.isna().all():
+        eo = pd.to_numeric(df.get('ownership'), errors='coerce')
+    eo = eo.fillna(0).clip(0, 200)
+    return ((2.0 - eo / 100.0).clip(lower=0.1) * proj).round(2)
+
+
 def compute_captain_scores(df):
     """
     Vectorized, normalized captain score on a 0-100 scale.
@@ -2783,7 +2904,8 @@ def refresh_core_data():
         print(f"  Season started: {started} | active players: {len(df_active)}")
 
         # Initialise consistency columns as NaN (Phase 2 will populate these)
-        for col in ['qualifying_games', 'bonus_games', 'hit_rate', 'starts_60',
+        for col in ['p_10', 'p_15', 'sim_mean', 'captain_gain',
+                    'qualifying_games', 'bonus_games', 'hit_rate', 'starts_60',
                     'bonus_games_60', 'defcon_per_90_games', 'defcon_var',
                     'avg_defcon_qualifying', 'max_defcon_game', 'min_defcon_game']:
             df_active[col] = np.nan
@@ -2923,6 +3045,15 @@ def refresh_core_data():
         # same component model with averaged fixtures.
         for _k, _v in (_xp_parts or {}).items():
             df_active[_k] = _v
+
+        # Captain distribution + EO-adjusted gain, both built off those parts
+        try:
+            _cd = compute_captain_distribution(df_active)
+            for _c in _cd.columns:
+                df_active[_c] = _cd[_c]
+            df_active['captain_gain'] = compute_captain_gain(df_active)
+        except Exception as _e:
+            print(f"  captain distribution unavailable ({_e})")
 
         # Neutral per-GW base (flat FDR-3, single fixture) — reused by the
         # chip planner and the squad builder's chip-target emphasis
@@ -3195,6 +3326,15 @@ def refresh_heavy_data():
         # same component model with averaged fixtures.
         for _k, _v in (_xp_parts or {}).items():
             df_active[_k] = _v
+
+        # Captain distribution + EO-adjusted gain, both built off those parts
+        try:
+            _cd = compute_captain_distribution(df_active)
+            for _c in _cd.columns:
+                df_active[_c] = _cd[_c]
+            df_active['captain_gain'] = compute_captain_gain(df_active)
+        except Exception as _e:
+            print(f"  captain distribution unavailable ({_e})")
         _neutral = df_active.copy()
         _neutral['next_att_fdr'] = 3.0
         _neutral['next_def_fdr'] = 3.0
@@ -5106,7 +5246,8 @@ app.layout = html.Div([
                                     id='cap-mode',
                                     options=[
                                         {'label': ' Protect (expected pts)', 'value': 'ev'},
-                                        {'label': ' Chase (haul ceiling)', 'value': 'ceiling'},
+                                        {'label': ' Chase (P of 15+)', 'value': 'ceiling'},
+                                        {'label': ' Differential (gain vs field)', 'value': 'gain'},
                                     ],
                                     value='ev', inline=True,
                                     inputStyle={'marginRight': '4px', 'marginLeft': '10px'}
@@ -5141,11 +5282,17 @@ app.layout = html.Div([
                                 {'name': 'Team', 'id': 'team_name'},
                                 {'name': 'Pos', 'id': 'position'},
                                 {'name': 'Price', 'id': 'price', 'type': 'numeric', 'format': {'specifier': '.1f'}},
-                                {'name': 'Captain Score', 'id': 'captain_score', 'type': 'numeric',
-                                 'format': {'specifier': '.1f'}},
                                 {'name': 'Proj Pts', 'id': 'proj_pts_next', 'type': 'numeric',
                                  'format': {'specifier': '.2f'}},
-                                {'name': 'Haul %', 'id': 'haul_pct', 'type': 'numeric',
+                                {'name': 'P(10+)', 'id': 'p_10', 'type': 'numeric',
+                                 'format': {'specifier': '.0f'}},
+                                {'name': 'P(15+)', 'id': 'p_15', 'type': 'numeric',
+                                 'format': {'specifier': '.0f'}},
+                                {'name': 'Gain vs field', 'id': 'captain_gain', 'type': 'numeric',
+                                 'format': {'specifier': '.2f'}},
+                                {'name': 'Composite', 'id': 'captain_score', 'type': 'numeric',
+                                 'format': {'specifier': '.1f'}},
+                                {'name': 'Involv. haul %', 'id': 'haul_pct', 'type': 'numeric',
                                  'format': {'specifier': '.1f'}},
                                 {'name': 'Env \u00d7', 'id': 'att_env_next', 'type': 'numeric',
                                  'format': {'specifier': '.2f'}},
@@ -7153,8 +7300,15 @@ def update_captain(position, team, max_price, min_minutes, mode, _n):
         filtered = filtered.dropna(subset=['captain_score'])
         filtered = filtered[filtered['captain_score'] > 0]
 
-        if mode == 'ceiling' and 'haul_pct' in filtered.columns and filtered['haul_pct'].notna().any():
+        # Chase ranks on P(15+ TOTAL points) — every scoring route, not just
+        # goal involvements. Differential ranks on points gained against the
+        # field after effective ownership. Protect stays on expected points.
+        if mode == 'ceiling' and 'p_15' in filtered.columns and filtered['p_15'].notna().any():
+            rank_col, rank_label = 'p_15', 'P(15+ points) %'
+        elif mode == 'ceiling' and 'haul_pct' in filtered.columns and filtered['haul_pct'].notna().any():
             rank_col, rank_label = 'haul_pct', 'Haul probability (%)'
+        elif mode == 'gain' and 'captain_gain' in filtered.columns and filtered['captain_gain'].notna().any():
+            rank_col, rank_label = 'captain_gain', 'Expected gain vs field (pts)'
         elif 'proj_pts_next' in filtered.columns and filtered['proj_pts_next'].notna().any():
             rank_col, rank_label = 'proj_pts_next', 'Projected points (next GW)'
         else:
@@ -7215,7 +7369,8 @@ def update_captain(position, team, max_price, min_minutes, mode, _n):
         ha_scatter.update_layout(template='plotly_white', height=400,
                                  xaxis_title='Away PPG', yaxis_title='Home PPG')
 
-        cols = ['web_name', 'team_name', 'position', 'price', 'captain_score', 'proj_pts_next',
+        cols = ['web_name', 'team_name', 'position', 'price', 'proj_pts_next',
+                'p_10', 'p_15', 'captain_gain', 'captain_score',
                 'haul_pct', 'att_env_next', 'ep_next', 'form', 'ppg',
                 'xgi_per_90', 'next_att_fdr', 'venue_ppg', 'start_rate', 'avail_pct',
                 'set_pieces', 'top_eo',
