@@ -6,7 +6,8 @@ Track Defensive Contributions, Expected Metrics, and Value Picks
 import requests
 import pandas as pd
 import numpy as np
-from dash import Dash, html, dcc, dash_table, callback, Output, Input, State, ctx, clientside_callback
+import dash
+from dash import Dash, html, dcc, dash_table, callback, Output, Input, State, ctx, clientside_callback, ALL
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
@@ -1805,9 +1806,14 @@ def calculate_team_recent_form(fixtures_data, window=6, xg_ledger=None):
 
     Returns {team_id: {scored_pm, conceded_pm, cs, played, basis}}.
     """
+    # `finished` only flips once bonus points are applied, which can lag the
+    # final whistle by most of a day — long enough for a completed gameweek
+    # to be missing from the form window. Scores are final much earlier, so
+    # `finished_provisional` is safe for goals and clean sheets.
     finished = sorted(
         [f for f in fixtures_data
-         if f.get('finished') and f.get('team_h_score') is not None
+         if (f.get('finished') or f.get('finished_provisional'))
+         and f.get('team_h_score') is not None
          and f.get('team_a_score') is not None],
         key=lambda f: (f.get('event') or 0, f.get('kickoff_time') or '')
     )
@@ -1848,7 +1854,9 @@ def calculate_team_recent_form(fixtures_data, window=6, xg_ledger=None):
 
         form[tid] = {
             'scored_pm': scored_pm,
-            'conceded_pm': conceded_pm,
+            'conceded_pm': conceded_pm,          # what the model uses
+            'goals_conceded_pm': conceded / n,   # actual goals, for display
+            'xgc_pm': conceded_pm if basis == 'xg' else None,
             'cs': sum(1 for m in recent if m[1] == 0),
             'played': n,
             'basis': basis,
@@ -2012,6 +2020,10 @@ def calculate_expected_clean_sheets(fixtures_data, teams_df, anchor_gw,
         rec = recent.get(tid, {})
         has_form = bool(rec) and rec.get('played', 0) > 0
         v['recent_conceded_pm'] = round(rec['conceded_pm'], 2) if has_form else None
+        v['recent_goals_conceded_pm'] = round(rec.get('goals_conceded_pm', 0), 2) if has_form else None
+        v['recent_xgc_pm'] = (round(rec['xgc_pm'], 2)
+                              if has_form and rec.get('xgc_pm') is not None else None)
+        v['form_basis'] = rec.get('basis') if has_form else None
         v['recent_cs'] = rec.get('cs') if has_form else None
         v['recent_played'] = rec.get('played', 0) if rec else 0
 
@@ -3827,7 +3839,8 @@ def prepare_table_data(dataframe, columns):
         return []
 
 
-def build_stat_card(title, value, subtitle=None, color=COLORS['primary'], image_code=None):
+def build_stat_card(title, value, subtitle=None, color=COLORS['primary'], image_code=None,
+                    link_page=None, link_label='See all'):
     return html.Div([
         player_photo_img(image_code,
                          style={'width': '50px', 'height': '60px',
@@ -3851,11 +3864,26 @@ def build_stat_card(title, value, subtitle=None, color=COLORS['primary'], image_
             'color': COLORS['text_light'],
             'fontSize': '14px',
             'margin': '0'
-        }) if subtitle else None
+        }) if subtitle else None,
+        html.Button(
+            f"{link_label} \u2192",
+            id={'type': 'home-jump', 'page': link_page},
+            n_clicks=0,
+            style={'marginTop': '10px', 'padding': '0', 'border': 'none',
+                   'background': 'none', 'color': COLORS['accent'],
+                   'fontWeight': '600', 'fontSize': '13px', 'cursor': 'pointer',
+                   'fontFamily': 'inherit'}
+        ) if link_page else None
     ], style=STAT_CARD_STYLE)
 
 
-def build_player_spotlight(player, title, metric_label, metric_value):
+def build_player_spotlight(player, title, metric_label, metric_value,
+                           link_page=None, link_label='See all'):
+    """
+    Spotlight card. `link_page` turns the footer into a jump to the page that
+    shows the full ranking behind the single name — the card answers "who",
+    the link answers "who else".
+    """
     if player is None:
         return html.Div()
 
@@ -3890,7 +3918,16 @@ def build_player_spotlight(player, title, metric_label, metric_value):
                 'fontSize': '18px',
                 'marginLeft': '8px'
             })
-        ])
+        ]),
+        html.Button(
+            f"{link_label} \u2192",
+            id={'type': 'home-jump', 'page': link_page},
+            n_clicks=0,
+            style={'marginTop': '12px', 'padding': '0', 'border': 'none',
+                   'background': 'none', 'color': COLORS['accent'],
+                   'fontWeight': '600', 'fontSize': '13px', 'cursor': 'pointer',
+                   'fontFamily': 'inherit'}
+        ) if link_page else None
     ], style={'flex': '1'})
 
     image_section = player_photo_img(player, style={
@@ -5729,7 +5766,10 @@ app.layout = html.Div([
                                 {'name': 'xCS', 'id': 'xcs', 'type': 'numeric'},
                                 {'name': 'Avg CS% / match', 'id': 'avg_cs_prob', 'type': 'numeric'},
                                 {'name': 'Fixtures', 'id': 'count', 'type': 'numeric'},
-                                {'name': 'Conceded/game (last 6)', 'id': 'recent_conceded', 'type': 'numeric'},
+                                {'name': 'xGC/game (last 6)', 'id': 'recent_conceded', 'type': 'numeric',
+                                 'format': {'specifier': '.2f'}},
+                                {'name': 'Goals conc/game', 'id': 'recent_goals_conceded', 'type': 'numeric',
+                                 'format': {'specifier': '.2f'}},
                                 {'name': 'CS (last 6)', 'id': 'recent_cs'},
                                 {'name': 'Fixture-by-fixture CS%', 'id': 'fixture_string'},
                             ],
@@ -6258,6 +6298,23 @@ def set_active_page(*args):
     return 'home'
 
 
+# --- Home spotlight / stat cards → jump to the full page ---
+# Separate from the sidebar router because those Inputs are keyed on
+# `nav-<page>` and reusing those ids would duplicate them. Pattern-matching
+# ids plus allow_duplicate lets both write to the same store.
+@callback(
+    Output('active-page', 'data', allow_duplicate=True),
+    Input({'type': 'home-jump', 'page': ALL}, 'n_clicks'),
+    prevent_initial_call=True
+)
+def home_card_jump(clicks):
+    if not clicks or not any(clicks):
+        return dash.no_update
+    tid = ctx.triggered_id
+    page = tid.get('page') if isinstance(tid, dict) else None
+    return page if page in ALL_PAGES else dash.no_update
+
+
 # --- Read saved page from localStorage on load ---
 clientside_callback(
     """
@@ -6529,7 +6586,8 @@ def update_home_tab(n):
                                       next_gw_now['name'].replace('Gameweek ', 'GW') if next_gw_now else "N/A",
                                       datetime.fromisoformat(
                                           next_gw_now['deadline_time'].replace('Z', '+00:00')).strftime(
-                                          '%a %d %b, %H:%M') if next_gw_now else "")],
+                                          '%a %d %b, %H:%M') if next_gw_now else "",
+                                      link_page='deadline', link_label='Deadline dashboard')],
                      style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
         ], style={'display': 'flex', 'flexWrap': 'wrap', 'margin': '0 -10px 40px -10px'}),
 
@@ -6539,21 +6597,24 @@ def update_home_tab(n):
                 most_cap['web_name'] if most_cap is not None else "N/A",
                 f"{most_cap['team_name']} - £{most_cap['price']:.1f}m" if most_cap is not None else "Data available after deadline",
                 color=COLORS['primary'],
-                image_code=most_cap if most_cap is not None else None
+                image_code=most_cap if most_cap is not None else None,
+                link_page='captain', link_label='Captain optimiser'
             )], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
             html.Div([build_stat_card(
                 "Most Vice-Captained",
                 most_vice['web_name'] if most_vice is not None else "N/A",
                 f"{most_vice['team_name']} - £{most_vice['price']:.1f}m" if most_vice is not None else "Data available after deadline",
                 color=COLORS['accent'],
-                image_code=most_vice if most_vice is not None else None
+                image_code=most_vice if most_vice is not None else None,
+                link_page='captain', link_label='Captain optimiser'
             )], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
             html.Div([build_stat_card(
                 "Chips Used This GW",
                 f"{total_chips:,}" if total_chips > 0 else "N/A",
                 chip_sum,
                 color=COLORS['info']
-            )], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
+            ,
+                link_page='chip-planner', link_label='Chip planner')], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
         ], style={'display': 'flex', 'flexWrap': 'wrap', 'margin': '0 -10px 40px -10px'}),
 
         html.Div([
@@ -6588,13 +6649,17 @@ def update_home_tab(n):
 
         html.Div([
             build_player_spotlight(top_scorer_now, "Top Scorer", "Total Points",
-                                   f"{int(top_scorer_now['total_points'])}" if top_scorer_now is not None else "N/A"),
+                                   f"{int(top_scorer_now['total_points'])}" if top_scorer_now is not None else "N/A",
+                                   link_page='value', link_label='Points table'),
             build_player_spotlight(most_selected_now, "Most Selected", "Ownership",
-                                   f"{most_selected_now['ownership']:.1f}%" if most_selected_now is not None else "N/A"),
+                                   f"{most_selected_now['ownership']:.1f}%" if most_selected_now is not None else "N/A",
+                                   link_page='differentials', link_label='Ownership table'),
             build_player_spotlight(best_value_now, "Best Value", "Points/£m",
-                                   f"{best_value_now['points_per_million']:.2f}" if best_value_now is not None else "N/A"),
+                                   f"{best_value_now['points_per_million']:.2f}" if best_value_now is not None else "N/A",
+                                   link_page='value', link_label='Value analysis'),
             build_player_spotlight(top_form_now, "In Form", "Form Rating",
-                                   f"{top_form_now['form']:.1f}" if top_form_now is not None else "N/A"),
+                                   f"{top_form_now['form']:.1f}" if top_form_now is not None else "N/A",
+                                   link_page='form', link_label='Form tracker'),
         ], style={'display': 'flex', 'flexWrap': 'wrap', 'gap': '20px', 'marginBottom': '40px'}),
 
         html.Div([
@@ -8079,7 +8144,7 @@ def build_squad(n_clicks, budget, objective, must_include, must_exclude, chip_gw
                      style={'flex': '1', 'minWidth': '180px', 'padding': '0 10px'}),
             html.Div([build_stat_card("Clubs Used", str(teams_used), "Max 3 players per club")],
                      style={'flex': '1', 'minWidth': '180px', 'padding': '0 10px'}),
-            html.Div([build_stat_card("Squad Size", "15", "2 GKP | 5 DEF | 5 MID | 3 FWD")],
+            html.Div([build_stat_card("Squad Size", "15", "2 GKP · 5 DEF · 5 MID · 3 FWD")],
                      style={'flex': '1', 'minWidth': '180px', 'padding': '0 10px'}),
         ], style={'display': 'flex', 'flexWrap': 'wrap', 'margin': '0 -10px 24px -10px'})
 
@@ -9605,6 +9670,7 @@ def update_expected_clean_sheets(horizon, n):
             'team': name_map.get(tid, str(tid)),
             'xcs': v['xcs'], 'avg_cs_prob': v['avg_cs_prob'], 'count': v['count'],
             'recent_conceded': v['recent_conceded_pm'],
+            'recent_goals_conceded': v['recent_goals_conceded_pm'],
             'recent_cs': (f"{v['recent_cs']}/{v['recent_played']}"
                           if v['recent_cs'] is not None else '\u2014'),
             'fixture_string': v['fixture_string'],
