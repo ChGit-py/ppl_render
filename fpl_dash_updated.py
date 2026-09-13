@@ -524,6 +524,114 @@ def fetch_entry_chips(entry_id):
         return []
 
 
+def summarise_chip_usage(bootstrap_data):
+    """
+    SEASON-TO-DATE chip usage across the whole game, from bootstrap-static.
+
+    Each event carries `chip_plays` — plays in THAT gameweek only. The Home
+    tab was reading the current gameweek's figures and calling it chip usage,
+    which is a weekly snapshot, not a season total. Summing across every
+    event gives the cumulative number, and `total_players` is the denominator.
+
+    Note on percentages: with two chip sets per season a manager can play the
+    same chip twice, so a share can legitimately exceed the share of managers.
+    Read it as plays per team, not as a proportion of teams.
+
+    Returns {'total_players': int, 'rows': [{chip, played, pct}], 'gws': int}.
+    """
+    if not bootstrap_data:
+        return {'total_players': 0, 'rows': [], 'gws': 0}
+
+    totals, gws = Counter(), 0
+    for ev in bootstrap_data.get('events', []) or []:
+        plays = ev.get('chip_plays') or []
+        if plays:
+            gws += 1
+        for c in plays:
+            name = c.get('chip_name')
+            if name:
+                totals[name] += int(c.get('num_played') or 0)
+
+    total_players = int(bootstrap_data.get('total_players') or 0)
+    rows = []
+    for name, played in totals.most_common():
+        rows.append({
+            'chip': chip_name_map.get(name, name),
+            'raw_name': name,
+            'played': played,
+            'pct': round(played / total_players * 100, 1) if total_players else 0.0,
+        })
+    return {'total_players': total_players, 'rows': rows, 'gws': gws}
+
+
+def chip_windows(bootstrap_data, current_gw_num):
+    """
+    Start/stop gameweek for each chip in the CURRENT half of the season.
+
+    Read from bootstrap-static's `chips` array (start_event / stop_event) so
+    the two-set structure and any mid-season change are picked up without a
+    code edit. Falls back to a 1-19 / 20-38 split if the array is absent.
+    """
+    windows = {}
+    for c in (bootstrap_data or {}).get('chips', []) or []:
+        nm = c.get('name') or c.get('chip_name')
+        se, ee = c.get('start_event'), c.get('stop_event')
+        if nm and se and ee:
+            # keep the window that contains, or next follows, the current GW
+            prev = windows.get(nm)
+            if prev is None or (ee >= current_gw_num and ee < prev[1]):
+                windows[nm] = (int(se), int(ee))
+    if not windows:
+        half = (1, 19) if current_gw_num <= 19 else (20, 38)
+        for nm in ('wildcard', 'freehit', 'bboost', '3xc'):
+            windows[nm] = half
+    return windows
+
+
+def summarise_league_chips(snapshots, entries, bootstrap_data, current_gw_num, my_id=None):
+    """
+    Who in YOUR league still holds each chip — the version that affects rank.
+
+    Global usage tells you nothing about your position: a mini-league is
+    scored in gaps, so what matters is whether the people above you can
+    answer your Free Hit in a blank, not whether 4.7% of the game has used
+    one. A rival who has already burned Free Hit is defenceless that week and
+    your chip becomes a swing rather than a like-for-like.
+
+    Returns (summary_rows, matrix_rows) — per-chip availability counts, and a
+    per-manager grid of held vs spent-in-GW.
+    """
+    chips = ['wildcard', 'freehit', 'bboost', '3xc']
+    windows = chip_windows(bootstrap_data, current_gw_num)
+
+    matrix, held_counts = [], {c: 0 for c in chips}
+    for e in entries:
+        snap = snapshots.get(e['entry'])
+        row = {'manager': e['player_name'] + (' (you)' if my_id and e['entry'] == my_id else ''),
+               'rank': e['rank']}
+        used = (snap or {}).get('chips_used') or []
+        for c in chips:
+            lo, hi = windows.get(c, (1, 38))
+            played_in_window = [u for u in used
+                                if u.get('name') == c and lo <= (u.get('event') or 0) <= hi]
+            if played_in_window:
+                row[c] = f"GW{played_in_window[-1]['event']}"
+            else:
+                row[c] = 'held'
+                held_counts[c] += 1
+        matrix.append(row)
+
+    n = max(len(entries), 1)
+    summary = [{
+        'chip': chip_name_map.get(c, c),
+        'held': held_counts[c],
+        'spent': n - held_counts[c],
+        'held_pct': round(held_counts[c] / n * 100, 1),
+        'window': f"GW{windows.get(c, (1, 38))[0]}-{windows.get(c, (1, 38))[1]}",
+    } for c in chips]
+    return summary, matrix
+
+
 def fetch_rival_snapshots(entries, gw, max_workers=8):
     """
     For each league entry, fetch current-GW picks and chip history in
@@ -6316,12 +6424,17 @@ def update_home_tab(n):
         if len(match) > 0:
             most_vice = match.iloc[0]
 
-    # Chip usage
+    # Chip usage — THIS gameweek (for the weekly card and bar chart)
     chips = current_gw_now.get('chip_plays', []) if current_gw_now else []
     chip_sum = ', '.join(
         [f"{chip_name_map.get(c['chip_name'], c['chip_name'])}: {c['num_played']:,}" for c in chips]
     ) if chips else "No data yet"
     total_chips = sum(c['num_played'] for c in chips) if chips else 0
+
+    # Chip usage — SEASON TO DATE, summed across every gameweek. The card
+    # above is a weekly snapshot; this is how much of the game has spent each
+    # chip so far, which is the number people actually mean.
+    season_chips = summarise_chip_usage(data.get('bootstrap_data'))
 
     # Chip bar chart
     chip_colors = {
@@ -6449,6 +6562,24 @@ def update_home_tab(n):
         ], style={'marginBottom': '24px'}),
 
         html.Div([dcc.Graph(figure=chip_fig, config={'displayModeBar': False})], style=CARD_STYLE),
+
+        html.Div([
+            html.H2("How Much of the Game Has Used Each Chip",
+                    style={'color': COLORS['primary'], 'margin': '0 0 4px 0'}),
+            html.P(f"Season to date across all {season_chips['total_players']:,} teams, "
+                   f"summed over {season_chips['gws']} gameweeks. Two chip sets per season "
+                   f"means a share can exceed the share of managers \u2014 read it as plays "
+                   f"per team.", style={'color': COLORS['text_light']})
+        ], style={'marginBottom': '24px'}) if season_chips['rows'] else html.Div(),
+
+        html.Div([
+            html.Div([
+                build_stat_card(r['chip'], f"{r['pct']:.1f}%", f"{r['played']:,} played",
+                                color=COLORS['accent'])
+            ], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'})
+            for r in season_chips['rows']
+        ], style={'display': 'flex', 'flexWrap': 'wrap', 'margin': '0 -10px 40px -10px'}
+        ) if season_chips['rows'] else html.Div(),
 
         html.Div([
             html.H2("Player Spotlights", style={'color': COLORS['primary'], 'margin': '0 0 4px 0'}),
@@ -8783,12 +8914,94 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
     tc_ev_delta = round(best_tc['tc_pts'] - med_tc, 1)
     fh_ev_delta = best_fh['fh_excess']
 
+    # --- League chip availability, fetched BEFORE the recommendations so it
+    # can weight each one rather than being tacked on as a footnote.
+    #
+    # A chip's value to your SCORE is its point delta. Its value to your
+    # RANK depends on whether the people around you can mirror it. If a
+    # rival still holds his Free Hit he can answer yours in the same blank
+    # and you net roughly nothing; if he has already spent it, you bank the
+    # whole delta against him. So the league-relative figure is the delta
+    # scaled by the share of rivals who cannot answer — a lower bound, since
+    # a rival who CAN answer may still choose not to.
+    league_chips, league_name_note, n_rivals_chips = None, '', 0
+    chip_matrix_rows, my_league_rank, managers_above = [], None, []
+    if league_id and team_id:
+        try:
+            _lname, _entries = fetch_league_standings(int(league_id))
+            _me = next((e for e in _entries if e['entry'] == int(team_id)), None)
+            my_league_rank = _me['rank'] if _me else None
+            _rivals = [e for e in _entries if e['entry'] != int(team_id)]
+            if _rivals:
+                _snaps = {}
+                with ThreadPoolExecutor(max_workers=8) as _ex:
+                    _futs = {_ex.submit(fetch_entry_chips, e['entry']): e['entry']
+                             for e in _entries}
+                    for _f in as_completed(_futs):
+                        _snaps[_futs[_f]] = {'chips_used': _f.result()}
+                _summ, _matrix = summarise_league_chips(
+                    _snaps, _rivals, get_data().get('bootstrap_data'),
+                    gw_num, my_id=None)
+                league_chips = {r['chip']: r for r in _summ}
+                n_rivals_chips = len(_rivals)
+                league_name_note = _lname
+
+                # Full matrix INCLUDING you, so the table reads as a league
+                _, chip_matrix_rows = summarise_league_chips(
+                    _snaps, _entries, get_data().get('bootstrap_data'),
+                    gw_num, my_id=int(team_id))
+                chip_matrix_rows.sort(key=lambda r: r['rank'])
+                # The managers you are CHASING — the only ones whose chips can
+                # cost you a place. Rivals below you are a protect problem, not
+                # a chase one, and averaging them together hides both.
+                if my_league_rank:
+                    managers_above = [r for r in chip_matrix_rows
+                                      if r['rank'] < my_league_rank]
+        except Exception as _e:
+            print(f"  league chip check failed: {_e}")
+
+    _CHIP_KEY = {'Wildcard': 'wildcard', 'Free Hit': 'freehit',
+                 'Bench Boost': 'bboost', 'Triple Captain': '3xc'}
+
+    def _league_note(chip_label, delta):
+        """Name the managers above you who can and cannot answer this chip."""
+        if not league_chips or chip_label not in league_chips or n_rivals_chips == 0:
+            return ""
+        spent = league_chips[chip_label]['spent']
+        key = _CHIP_KEY.get(chip_label)
+
+        detail = ""
+        if managers_above and key:
+            blocked = [r['manager'] for r in managers_above if r.get(key) != 'held']
+            holding = [r['manager'] for r in managers_above if r.get(key) == 'held']
+            if blocked:
+                _names = ', '.join(blocked[:3]) + ('...' if len(blocked) > 3 else '')
+                detail = (f" Above you, {_names} cannot answer it "
+                          f"({len(blocked)}/{len(managers_above)} of the managers you are "
+                          f"chasing)")
+                if holding:
+                    detail += f"; {', '.join(holding[:3])} still can."
+                else:
+                    detail += " — nobody above you can mirror this."
+            elif holding:
+                detail = (f" But every manager above you ({', '.join(holding[:3])}) still "
+                          f"holds theirs and can mirror you.")
+
+        if spent == 0:
+            return (f" All {n_rivals_chips} rivals still hold this chip, so it is table "
+                    f"stakes rather than an edge." + detail)
+        frac = spent / n_rivals_chips
+        return (f" {spent} of {n_rivals_chips} rivals have already spent theirs, worth "
+                f"roughly {delta * frac:.1f} pts against the league on top of the raw "
+                f"gain." + detail)
+
     rec_lines = [
         html.P([html.Strong("Bench Boost: "),
                 f"GW{best_bb['gw']} \u2014 worth {best_bb['bb_value']:.1f} pts there "
                 f"(bench projects {best_bb['bench']:.1f}, but ~{best_bb['autosub_pts']:.1f} "
                 f"of that would arrive via autosubs anyway). "
-                f"Timing it right is worth +{bb_ev_delta} pts vs an average window."],
+                f"Timing it right is worth +{bb_ev_delta} pts vs an average window."
+                + _league_note('Bench Boost', best_bb['bb_value'])],
                style={'color': COLORS['text_dark'], 'marginBottom': '8px'}),
         html.P([html.Strong("Triple Captain: "),
                 f"{best_tc['tc_name']} in GW{best_tc['gw']}"
@@ -8798,7 +9011,8 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
                 + f"(+{tc_ev_delta} vs an average week). Picks are ranked on "
                 + f"EV \u00d7 ceiling, not average alone \u2014 TC multiplies a haul, "
                 + f"not a mean."
-                + (f" Alternative: {best_tc['tc_alt']}." if best_tc.get('tc_alt') else "")],
+                + (f" Alternative: {best_tc['tc_alt']}." if best_tc.get('tc_alt') else "")
+                + _league_note('Triple Captain', best_tc['tc_pts'])],
                style={'color': COLORS['text_dark'], 'marginBottom': '8px'}),
     ]
 
@@ -8813,7 +9027,8 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
             f"typical week, because {_why}. Best available XI projects "
             f"{best_fh['fh_best']:.1f} vs your {best_fh['xi']:.1f} on a "
             f"\u00a3{fh_budget:.1f}m budget; {best_fh['with_fixture']}/15 of your squad "
-            f"have a fixture. You already own {best_fh['fh_owned']}/11 of that XI."],
+            f"have a fixture. You already own {best_fh['fh_owned']}/11 of that XI."
+            + _league_note('Free Hit', best_fh['fh_excess'])],
             style={'color': COLORS['text_dark'], 'marginBottom': '8px'}))
     else:
         rec_lines.append(html.P([
@@ -8821,7 +9036,8 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
             f"hold \u2014 no week in the next {len(rows)} stands out. The best "
             f"(GW{best_fh['gw']}) is only {best_fh['fh_excess']:+.1f} pts better than "
             f"average, which is noise, not opportunity. Blanks and doubles form "
-            f"from cup progression and rarely appear before late February."],
+            f"from cup progression and rarely appear before late February."
+            + _league_note('Free Hit', best_fh['fh_excess'])],
             style={'color': COLORS['text_dark'], 'marginBottom': '8px'}))
     rec_lines.append(html.P(
         f"Reading the Free Hit numbers: the best XI in the game beats yours by "
@@ -8853,34 +9069,27 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
     # Rival chip-window collision: can anyone in your league answer your
     # planned window? A BB into a week the leader has already spent his on
     # is worth double its raw points in league terms.
-    if league_id:
-        try:
-            _lname, _entries = fetch_league_standings(int(league_id))
-            if _entries:
-                _used = {'bboost': 0, '3xc': 0, 'freehit': 0, 'wildcard': 0}
-                _n_rivals = 0
-                with ThreadPoolExecutor(max_workers=8) as _ex:
-                    _futs = [_ex.submit(fetch_entry_chips, e['entry'])
-                             for e in _entries if e['entry'] != int(team_id)]
-                    for _f in as_completed(_futs):
-                        _chips = _f.result()
-                        _n_rivals += 1
-                        for _c in _chips:
-                            if _c.get('name') in _used:
-                                _used[_c['name']] += 1
-                rec_lines.append(html.P([
-                    html.Strong(f"League collision check ({_lname}): "),
-                    f"{_used['bboost']}/{_n_rivals} rivals have burned Bench Boost, "
-                    f"{_used['3xc']}/{_n_rivals} Triple Captain, "
-                    f"{_used['freehit']}/{_n_rivals} Free Hit, "
-                    f"{_used['wildcard']}/{_n_rivals} a Wildcard. "
-                    f"Every rival who has already spent a chip CANNOT answer your window with it."],
-                    style={'color': COLORS['text_dark'], 'marginBottom': '8px',
-                           'backgroundColor': '#f0e6f5', 'padding': '10px',
-                           'borderRadius': '6px'}))
-        except Exception as _e:
-            rec_lines.append(html.P(f"League chip check failed: {_e}",
-                                    style={'color': COLORS['text_light'], 'fontSize': '13px'}))
+    # League chip standings, as a summary line beneath the recommendations.
+    # The old version counted every chip a rival had EVER played, which is
+    # wrong under two chip sets: a Free Hit spent in GW5 does not stop anyone
+    # playing another one after the split. summarise_league_chips scopes the
+    # count to the window that actually applies.
+    if league_chips and n_rivals_chips:
+        _parts = ', '.join(
+            f"{r['spent']}/{n_rivals_chips} spent {label}"
+            for label, r in league_chips.items())
+        _rank_note = (f" You are {my_league_rank}"
+                      + {1: 'st', 2: 'nd', 3: 'rd'}.get(my_league_rank % 100 if my_league_rank else 0, 'th')
+                      + f", chasing {len(managers_above)}."
+                      if my_league_rank else "")
+        rec_lines.append(html.P([
+            html.Strong(f"League chip standings"
+                        + (f" ({league_name_note})" if league_name_note else "") + ": "),
+            _parts + "." + _rank_note
+            + " Windows come from the game's own chip calendar, so a chip played in the "
+              "first half does not count against the second."],
+            style={'color': COLORS['text_dark'], 'marginBottom': '8px',
+                   'backgroundColor': '#f0e6f5', 'padding': '10px', 'borderRadius': '6px'}))
 
     # All three chips on ONE points axis, so the comparison is direct.
     _x = [f"GW{r['gw']}" for r in rows]
@@ -8923,6 +9132,41 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
             html.H3("Chip Windows \u2014 Recommendations", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
             *rec_lines
         ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+
+        html.Div([
+            html.H3("Who Can Answer You", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+            html.P(["Named, in league order. ", html.Strong("Green = still held"),
+                    " means that manager can mirror your chip in the same week; a gameweek "
+                    "number means they have already spent it and cannot. Rows above yours are "
+                    "the ones that decide whether you close the gap \u2014 a chip that only "
+                    "beats the people below you protects a position, it does not win one."],
+                   style={'color': COLORS['text_light'], 'marginBottom': '12px'}),
+            dash_table.DataTable(
+                data=chip_matrix_rows,
+                columns=[
+                    {'name': 'Rank', 'id': 'rank'},
+                    {'name': 'Manager', 'id': 'manager'},
+                    {'name': 'Wildcard', 'id': 'wildcard'},
+                    {'name': 'Free Hit', 'id': 'freehit'},
+                    {'name': 'Bench Boost', 'id': 'bboost'},
+                    {'name': 'Triple Captain', 'id': '3xc'},
+                ],
+                sort_action='native', page_size=25,
+                style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
+                style_data=TABLE_STYLE_DATA,
+                style_data_conditional=[
+                    {'if': {'filter_query': '{manager} contains "(you)"'},
+                     'backgroundColor': '#fff8e1', 'fontWeight': '700'},
+                ] + [
+                    {'if': {'filter_query': '{%s} = held' % c, 'column_id': c},
+                     'backgroundColor': '#e8f5e9', 'fontWeight': '600'}
+                    for c in ('wildcard', 'freehit', 'bboost', '3xc')
+                ] + [
+                    {'if': {'filter_query': '{%s} != held' % c, 'column_id': c},
+                     'color': COLORS['text_light']}
+                    for c in ('wildcard', 'freehit', 'bboost', '3xc')
+                ]),
+        ], style=CARD_STYLE) if chip_matrix_rows else html.Div(),
 
         html.Div([
             html.H3(f"Free Hit XI \u2014 GW{best_fh['gw']}", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
@@ -9236,6 +9480,10 @@ def load_rivals(n_clicks, league_id, my_id):
         ],
     )
 
+    # Chip availability across the league — the version that moves your rank
+    chip_summary, chip_matrix = summarise_league_chips(
+        snapshots, entries, get_data().get('bootstrap_data'), gw_num, my_id)
+
     loaded_note = (f"Loaded {len(snapshots)}/{len(entries)} squads for GW{gw_num}. "
                    f"League EO counts captains double and triple captains treble \u2014 "
                    f"100%+ means effectively more than one copy per rival squad.")
@@ -9248,6 +9496,51 @@ def load_rivals(n_clicks, league_id, my_id):
         ], style=CARD_STYLE),
 
         versus_section,
+
+        html.Div([
+            html.H4("Chip Availability in This League",
+                    style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+            html.P(["Global chip usage tells you nothing about your rank \u2014 a mini-league is "
+                    "scored in gaps. What matters is whether the people around you can ",
+                    html.Strong("answer"), " your chip. A rival who has already spent his Free Hit "
+                    "is defenceless in a blank, so yours becomes a swing rather than a "
+                    "like-for-like trade. Windows come from the game's own chip calendar, so the "
+                    "two-set structure is handled."],
+                   style={'color': COLORS['text_light'], 'marginBottom': '12px'}),
+            html.Div([
+                html.Div([
+                    build_stat_card(
+                        r['chip'], f"{r['held']}/{len(entries)}",
+                        f"still hold it \u00b7 {r['window']}",
+                        color=COLORS['success'] if r['held_pct'] < 50 else COLORS['primary'])
+                ], style={'flex': '1', 'minWidth': '180px', 'padding': '0 10px'})
+                for r in chip_summary
+            ], style={'display': 'flex', 'flexWrap': 'wrap', 'margin': '0 -10px 20px -10px'}),
+            dash_table.DataTable(
+                data=chip_matrix,
+                columns=[
+                    {'name': 'Rank', 'id': 'rank'},
+                    {'name': 'Manager', 'id': 'manager'},
+                    {'name': 'Wildcard', 'id': 'wildcard'},
+                    {'name': 'Free Hit', 'id': 'freehit'},
+                    {'name': 'Bench Boost', 'id': 'bboost'},
+                    {'name': 'Triple Captain', 'id': '3xc'},
+                ],
+                sort_action='native', page_size=20,
+                style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
+                style_data=TABLE_STYLE_DATA,
+                style_data_conditional=[
+                    {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
+                ] + [
+                    {'if': {'filter_query': '{%s} = held' % c, 'column_id': c},
+                     'backgroundColor': '#e8f5e9', 'fontWeight': '600'}
+                    for c in ('wildcard', 'freehit', 'bboost', '3xc')
+                ] + [
+                    {'if': {'filter_query': '{%s} != held' % c, 'column_id': c},
+                     'color': COLORS['text_light']}
+                    for c in ('wildcard', 'freehit', 'bboost', '3xc')
+                ]),
+        ], style=CARD_STYLE),
 
         html.Div([
             html.H4(f"GW{gw_num} Captain Picks", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
