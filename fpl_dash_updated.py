@@ -8079,7 +8079,7 @@ def build_squad(n_clicks, budget, objective, must_include, must_exclude, chip_gw
                      style={'flex': '1', 'minWidth': '180px', 'padding': '0 10px'}),
             html.Div([build_stat_card("Clubs Used", str(teams_used), "Max 3 players per club")],
                      style={'flex': '1', 'minWidth': '180px', 'padding': '0 10px'}),
-            html.Div([build_stat_card("Squad Size", "15", "2 GKP · 5 DEF · 5 MID · 3 FWD")],
+            html.Div([build_stat_card("Squad Size", "15", "2 GKP | 5 DEF | 5 MID | 3 FWD")],
                      style={'flex': '1', 'minWidth': '180px', 'padding': '0 10px'}),
         ], style={'display': 'flex', 'flexWrap': 'wrap', 'margin': '0 -10px 24px -10px'})
 
