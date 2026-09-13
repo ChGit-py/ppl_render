@@ -617,7 +617,7 @@ def summarise_league_chips(snapshots, entries, bootstrap_data, current_gw_num, m
             if played_in_window:
                 row[c] = f"GW{played_in_window[-1]['event']}"
             else:
-                row[c] = 'Held'
+                row[c] = 'held'
                 held_counts[c] += 1
         matrix.append(row)
 
