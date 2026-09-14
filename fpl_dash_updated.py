@@ -2482,6 +2482,225 @@ def compute_calibration(min_actual_minutes_players=50):
 
 
 # =============================================================================
+# WALK-FORWARD BACKTEST — projected vs actual, reconstructed from history
+# =============================================================================
+
+def _rate(total, minutes):
+    """Per-90 rate, safe at zero minutes."""
+    return (total / minutes * 90.0) if minutes and minutes > 0 else 0.0
+
+
+def reconstruct_player_frame(histories, meta, upto_round, recent_window=6):
+    """
+    Rebuild every player's state EXACTLY as it stood before `upto_round`.
+
+    This is what lets the model be scored without any stored logs. Each
+    element-summary history row carries that player's minutes, xG, xA,
+    bonus, saves, conceded, clean sheets and defensive contribution for one
+    match, tagged with its round. Filtering to rounds strictly BELOW the
+    target and re-deriving the per-90 rates reproduces the inputs the engine
+    would have had at that deadline.
+
+    The one rule that matters: `round < upto_round`, everywhere, with no
+    exceptions. A single leaked row turns the whole exercise into nonsense
+    that looks impressive.
+
+    Not reconstructable: `avail_pct`. FPL does not archive
+    chance_of_playing per round, so injury flags as they stood at the time
+    are gone. Everyone is treated as fully available, which means the
+    backtest is mildly pessimistic — it projects points for players who were
+    flagged and did not play. That inflates error for every model equally,
+    so comparisons between models stay fair even though the absolute MAE is
+    a little worse than live performance would be.
+    """
+    rows = []
+    for pid, hist in histories.items():
+        prior = [h for h in hist if (h.get('round') or 0) < upto_round]
+        if not prior:
+            continue
+        m = meta.get(pid)
+        if not m:
+            continue
+
+        mins = sum((h.get('minutes') or 0) for h in prior)
+        if mins <= 0:
+            continue
+
+        f = lambda k: sum(float(h.get(k) or 0) for h in prior)
+        recent = prior[-recent_window:]
+        rec_mins = sum((h.get('minutes') or 0) for h in recent)
+        starts = sum(1 for h in recent if (h.get('minutes') or 0) >= 60)
+
+        dc_vals = [float(h.get('defensive_contribution') or 0) for h in prior
+                   if (h.get('minutes') or 0) > 0]
+        dc_mean = (sum(dc_vals) / len(dc_vals)) if dc_vals else 0.0
+        dc_var = (sum((v - dc_mean) ** 2 for v in dc_vals) / (len(dc_vals) - 1)
+                  ) if len(dc_vals) > 1 else 0.0
+        thr = 10 if m['position'] in ('GKP', 'DEF') else 12
+        full = [h for h in prior if (h.get('minutes') or 0) >= 60]
+
+        rows.append({
+            'id': pid,
+            'position': m['position'],
+            'team': m['team'],
+            'web_name': m['web_name'],
+            'pen_rank': m.get('pen_rank'),
+            'minutes': mins,
+            'xg_per_90': _rate(f('expected_goals'), mins),
+            'xa_per_90': _rate(f('expected_assists'), mins),
+            'bonus_per_90': _rate(f('bonus'), mins),
+            'cs_per_90': _rate(f('clean_sheets'), mins),
+            'gc_per_90': _rate(f('goals_conceded'), mins),
+            'saves': f('saves'),
+            'defcon_per_90': _rate(f('defensive_contribution'), mins),
+            'defcon_per_90_games': _rate(f('defensive_contribution'), mins),
+            'defcon_var': dc_var,
+            'qualifying_games': len(dc_vals),
+            'starts_60': len(full),
+            'bonus_games_60': sum(1 for h in full
+                                  if (h.get('defensive_contribution') or 0) >= thr),
+            'bonus_threshold': thr,
+            # Availability is unknowable after the fact — see docstring.
+            'avail_pct': 100.0,
+            'recent_minutes_pct': (rec_mins / (90.0 * max(len(recent), 1))) * 100,
+            'start_rate': (starts / max(len(recent), 1)) * 100,
+        })
+    return pd.DataFrame(rows)
+
+
+def _fixtures_as_of(fixtures_data, upto_round):
+    """
+    Fixture list as it looked before `upto_round`: results from earlier
+    rounds stay finished, everything from the target round onward is marked
+    unplayed so team-form functions cannot see the future.
+    """
+    out = []
+    for f in fixtures_data:
+        g = dict(f)
+        if (g.get('event') or 0) >= upto_round:
+            g['finished'] = False
+            g['finished_provisional'] = False
+            g['team_h_score'] = None
+            g['team_a_score'] = None
+        out.append(g)
+    return out
+
+
+def run_projection_backtest(histories, meta, fixtures_data, teams_df,
+                            gws, priors=None, recent_window=6):
+    """
+    Walk forward one gameweek at a time: rebuild the inputs, project, then
+    score against what actually happened.
+
+    Reported alongside the model, and this is the part that matters, are two
+    naive baselines — predict each player's points-per-game to date, and
+    predict the positional average. MAE on FPL scores is a weak test because
+    most players score 1-3 points, so a flat guess near 2.2 already scores
+    about 2.0. If the model cannot beat "just use his PPG", the modelling
+    layer is not earning its place.
+
+    Rank metrics are included for the same reason. Every decision the app
+    makes is a ranking decision, not an absolute-value one, so Spearman
+    correlation and top-20 precision say more than MAE does.
+    """
+    results, player_rows = [], []
+    for g in gws:
+        frame = reconstruct_player_frame(histories, meta, g, recent_window)
+        if frame.empty or len(frame) < 30:
+            continue
+
+        hist_fx = _fixtures_as_of(fixtures_data, g)
+        try:
+            xcs = calculate_expected_clean_sheets(hist_fx, teams_df, g - 1, num_gws=1)
+            genv = calculate_goal_environment(hist_fx, teams_df, g - 1, num_gws=1)
+        except Exception:
+            xcs, genv = {}, {}
+
+        tgt = [f for f in fixtures_data if (f.get('event') or 0) == g]
+        fdr_h = {f['team_h']: f.get('team_a_difficulty', 3) for f in tgt}
+        fdr_a = {f['team_a']: f.get('team_h_difficulty', 3) for f in tgt}
+        att_fdr = {**fdr_h, **fdr_a}
+        counts = Counter()
+        for f in tgt:
+            counts[f['team_h']] += 1
+            counts[f['team_a']] += 1
+
+        frame['next_att_fdr'] = frame['team'].map(att_fdr).fillna(3.0)
+        frame['next_def_fdr'] = frame['next_att_fdr']
+        frame['att_env_next'] = frame['team'].map(
+            lambda t: (genv.get(t, {}) or {}).get('avg_att_env', 1.0)).fillna(1.0)
+        frame['cs_prob_next'] = frame['team'].map(
+            lambda t: ((xcs.get(t, {}) or {}).get('avg_cs_prob') or 0) / 100.0).replace(0, np.nan)
+        frame['fixture_count'] = frame['team'].map(counts).fillna(0)
+        for c in ('att_fdr_5', 'def_fdr_5'):
+            frame[c] = 3.0
+        frame['att_env_5'] = 1.0
+        frame['cs_prob_5'] = 0.25
+        frame['fixture_count_8'] = 8
+
+        try:
+            _, proj, _, _, _, _ = compute_expected_points(
+                frame, gw_elapsed=max(g - 1, 1), priors=priors or {})
+        except Exception as e:
+            print(f"  backtest GW{g} projection failed: {e}")
+            continue
+
+        actual = {pid: sum(h.get('total_points') or 0
+                           for h in hist if (h.get('round') or 0) == g)
+                  for pid, hist in histories.items()}
+        played = {pid: any((h.get('round') or 0) == g for h in hist)
+                  for pid, hist in histories.items()}
+
+        frame = frame.assign(proj=proj.values)
+        frame['actual'] = frame['id'].map(actual)
+        frame['gw_label'] = f"GW{g}"
+        frame['mins_played'] = frame['id'].map(
+            {pid: sum(h.get('minutes') or 0 for h in hist if (h.get('round') or 0) == g)
+             for pid, hist in histories.items()}).fillna(0)
+        frame['in_gw'] = frame['id'].map(played).fillna(False)
+        # Only players whose team actually had a fixture that week
+        frame = frame[(frame['fixture_count'] > 0) & frame['actual'].notna()]
+        if len(frame) < 30:
+            continue
+
+        # Naive baselines
+        frame['base_ppg'] = frame.apply(
+            lambda r: sum(h.get('total_points') or 0
+                          for h in histories[r['id']] if (h.get('round') or 0) < g)
+            / max(sum(1 for h in histories[r['id']] if (h.get('round') or 0) < g), 1), axis=1)
+        frame['base_pos'] = frame['position'].map(frame.groupby('position')['actual'].mean())
+
+        err = (frame['proj'] - frame['actual'])
+        top20_proj = set(frame.nlargest(20, 'proj')['id'])
+        top20_act = set(frame.nlargest(20, 'actual')['id'])
+        spear = frame[['proj', 'actual']].corr(method='spearman').iloc[0, 1]
+
+        # Per-player detail: what the model said, what he actually got.
+        for _r in frame.itertuples():
+            player_rows.append({
+                'gw': _r.gw_label,
+                'web_name': _r.web_name,
+                'position': _r.position,
+                'proj': round(float(_r.proj), 2),
+                'actual': int(_r.actual),
+                'diff': round(float(_r.actual) - float(_r.proj), 2),
+                'minutes_played': int(_r.mins_played),
+            })
+
+        results.append({
+            'gw': g,
+            'players': len(frame),
+            'mae': round(err.abs().mean(), 3),
+            'bias': round(err.mean(), 3),
+            'spearman': round(float(spear) if pd.notna(spear) else 0, 3),
+            'top20': len(top20_proj & top20_act),
+            'mae_ppg': round((frame['base_ppg'] - frame['actual']).abs().mean(), 3),
+            'mae_pos': round((frame['base_pos'] - frame['actual']).abs().mean(), 3),
+        })
+    return results, player_rows
+
+
+# =============================================================================
 # MODEL LAB — feature store, replay engine, parameter sweep
 # =============================================================================
 # The engine's constants (FDR ratio, shrinkage k) are judgement calls. This
@@ -5658,6 +5877,36 @@ app.layout = html.Div([
                     ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
                     html.Div([
+                        html.H4("Backtest \u2014 Projected vs Actual",
+                                style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+                        html.P(["Walks forward through completed gameweeks. For each one it "
+                                "rebuilds every player's rates from their match history using "
+                                "ONLY rounds before that gameweek, projects, then scores against "
+                                "what actually happened. No stored logs needed \u2014 which is why "
+                                "this works today and the calibration table above does not.",
+                                html.Br(), html.Br(),
+                                html.Strong("Read the baselines first. "),
+                                "Most players score 1-3 points, so guessing a flat 2.2 for "
+                                "everyone already scores about 2.0 MAE. If the model does not "
+                                "beat 'just use his points per game', the modelling layer is not "
+                                "earning its place. And since every decision this app makes is a "
+                                "ranking decision, Spearman and top-20 matter more than MAE.",
+                                html.Br(), html.Br(),
+                                html.Em("First run fetches match history for every player and can "
+                                        "take a minute. Availability flags are not archived by FPL, "
+                                        "so everyone is treated as fit \u2014 absolute error reads "
+                                        "slightly worse than live, equally for all models.")],
+                               style={'color': COLORS['text_light'], 'marginBottom': '12px'}),
+                        html.Button('Run Backtest', id='lab-bt-run', n_clicks=0,
+                                    style={'backgroundColor': COLORS['primary'], 'color': 'white',
+                                           'border': 'none', 'padding': '12px 24px',
+                                           'borderRadius': '8px', 'fontWeight': '600',
+                                           'cursor': 'pointer', 'marginBottom': '16px'}),
+                        dcc.Loading(html.Div(id='lab-bt-out'), type='circle',
+                                    color=COLORS['primary'])
+                    ], style=CARD_STYLE),
+
+                    html.Div([
                         html.H4("Projection Breakdown", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
                         html.P(["A projection is eight components summed. Collapsed into one number they are "
                                 "impossible to interrogate: an 8.8 built from a modest rate \u00d7 a 1.6 fixture "
@@ -7651,6 +7900,129 @@ def update_transfers(position, team, max_price, min_minutes):
     table_data = prepare_table_data(sorted_by_activity.nlargest(50, 'abs_net'), cols)
 
     return risers_fig, fallers_fig, scatter_fig, table_data
+
+
+# --- MODEL LAB: WALK-FORWARD BACKTEST ---
+@callback(
+    Output('lab-bt-out', 'children'),
+    Input('lab-bt-run', 'n_clicks'),
+    prevent_initial_call=True
+)
+def render_backtest(n_clicks):
+    data = get_data()
+    dfa, boot = data.get('df_active'), data.get('bootstrap_data')
+    fixtures, teams_df = data.get('fixtures_data'), data.get('teams_df')
+    if dfa is None or dfa.empty or not fixtures or teams_df is None:
+        return html.P("Data not loaded yet.", style={'color': COLORS['text_light']})
+
+    finished_gws = sorted({f['event'] for f in fixtures
+                           if f.get('event') and (f.get('finished') or
+                                                  f.get('finished_provisional'))})
+    # GW1 has no prior history to reconstruct from, so scoring starts at GW2
+    gws = [g for g in finished_gws if g >= 2]
+    if not gws:
+        return html.P("No completed gameweeks with a prior gameweek to learn from yet. "
+                      "The backtest becomes available from GW2.",
+                      style={'color': COLORS['text_light']})
+
+    cached = data.get('backtest_histories') or {}
+    wanted = dfa[dfa['minutes'] > 0]['id'].astype(int).tolist()
+    missing = [p for p in wanted if p not in cached]
+    if missing:
+        cached.update(fetch_player_history_batch(missing, max_workers=8))
+        with DATA_LOCK:
+            DATA['backtest_histories'] = cached
+
+    meta = {int(r.id): {'position': r.position, 'team': int(r.team),
+                        'web_name': r.web_name, 'pen_rank': getattr(r, 'pen_rank', None)}
+            for r in dfa.itertuples()}
+    priors = data.get('last_season_priors', {})
+
+    rows, player_rows = run_projection_backtest(cached, meta, fixtures, teams_df,
+                                                gws, priors=priors)
+    if not rows:
+        return html.P("Not enough reconstructable history yet.",
+                      style={'color': COLORS['text_light']})
+
+    n = sum(r['players'] for r in rows)
+    w = lambda k: sum(r[k] * r['players'] for r in rows) / n
+    mae, mae_ppg, mae_pos = w('mae'), w('mae_ppg'), w('mae_pos')
+    spear = sum(r['spearman'] * r['players'] for r in rows) / n
+    bias = w('bias')
+    top20 = sum(r['top20'] for r in rows) / len(rows)
+
+    beats_ppg = mae < mae_ppg
+    verdict = (f"Model MAE {mae:.3f} vs {mae_ppg:.3f} for 'use his points per game' and "
+               f"{mae_pos:.3f} for the positional average. ")
+    verdict += ("The model is beating both naive baselines."
+                if beats_ppg and mae < mae_pos else
+                "The model is NOT beating the naive baselines \u2014 the modelling layer "
+                "is not earning its place yet.")
+    verdict += (f" Rank correlation {spear:.3f}; {top20:.1f} of the top 20 projections "
+                f"landed in the actual top 20 per gameweek. Bias {bias:+.3f} "
+                f"({'over' if bias > 0 else 'under'}-projecting on average).")
+
+    return html.Div([
+        html.P(verdict, style={'color': COLORS['text_dark'], 'fontWeight': '600',
+                               'marginBottom': '12px'}),
+        dash_table.DataTable(
+            data=[{**r, 'gw': f"GW{r['gw']}"} for r in rows],
+            columns=[
+                {'name': 'GW', 'id': 'gw'},
+                {'name': 'Players', 'id': 'players', 'type': 'numeric'},
+                {'name': 'Model MAE', 'id': 'mae', 'type': 'numeric',
+                 'format': {'specifier': '.3f'}},
+                {'name': 'PPG baseline', 'id': 'mae_ppg', 'type': 'numeric',
+                 'format': {'specifier': '.3f'}},
+                {'name': 'Pos-avg baseline', 'id': 'mae_pos', 'type': 'numeric',
+                 'format': {'specifier': '.3f'}},
+                {'name': 'Spearman', 'id': 'spearman', 'type': 'numeric',
+                 'format': {'specifier': '.3f'}},
+                {'name': 'Top-20 hits', 'id': 'top20', 'type': 'numeric'},
+                {'name': 'Bias', 'id': 'bias', 'type': 'numeric',
+                 'format': {'specifier': '+.3f'}},
+            ],
+            sort_action='native',
+            style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
+            style_data=TABLE_STYLE_DATA,
+            style_data_conditional=[
+                {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
+            ]),
+
+        html.H4("Every Player, Every Gameweek",
+                style={'color': COLORS['primary'], 'margin': '24px 0 8px 0'}),
+        html.P("What the model projected and what he actually scored. Sort any column, "
+               "or type in a filter box \u2014 e.g. GW3 in the GW column, or a name. "
+               "Diff is actual minus projected, so positive means the model was too low.",
+               style={'color': COLORS['text_light'], 'marginBottom': '12px'}),
+        dash_table.DataTable(
+            data=player_rows,
+            columns=[
+                {'name': 'GW', 'id': 'gw'},
+                {'name': 'Player', 'id': 'web_name'},
+                {'name': 'Pos', 'id': 'position'},
+                {'name': 'Projected', 'id': 'proj', 'type': 'numeric',
+                 'format': {'specifier': '.2f'}},
+                {'name': 'Actual', 'id': 'actual', 'type': 'numeric'},
+                {'name': 'Diff', 'id': 'diff', 'type': 'numeric',
+                 'format': {'specifier': '+.2f'}},
+                {'name': 'Mins', 'id': 'minutes_played', 'type': 'numeric'},
+            ],
+            sort_action='native', filter_action='native', page_size=25,
+            sort_by=[{'column_id': 'gw', 'direction': 'asc'},
+                     {'column_id': 'actual', 'direction': 'desc'}],
+            style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
+            style_data=TABLE_STYLE_DATA,
+            style_data_conditional=[
+                {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
+                {'if': {'filter_query': '{diff} >= 4', 'column_id': 'diff'},
+                 'backgroundColor': '#e8f5e9', 'fontWeight': '600'},
+                {'if': {'filter_query': '{diff} <= -4', 'column_id': 'diff'},
+                 'backgroundColor': '#ffebee', 'fontWeight': '600'},
+                {'if': {'filter_query': '{minutes_played} = 0'},
+                 'color': COLORS['text_light'], 'fontStyle': 'italic'},
+            ])
+    ])
 
 
 # --- MODEL LAB: PROJECTION BREAKDOWN ---
