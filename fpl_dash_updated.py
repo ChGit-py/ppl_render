@@ -1274,6 +1274,14 @@ FDR_SENSITIVITY = FDR_STEP_RATIO - 1.0  # legacy alias
 # expected goals conceded by ~40%.
 TEAM_FORM_SHRINK_K = float(os.environ.get('FPL_TEAM_FORM_K', '6'))
 
+# Backtest fetch limits. Render terminates long HTTP requests, so the
+# history fetch has to fit inside one — hence a wall-clock budget, a
+# chunk size that lets partial results survive, and a minutes floor that
+# keeps the player set small. Press the button again to fetch more.
+BACKTEST_FETCH_BUDGET = float(os.environ.get('FPL_BACKTEST_BUDGET', '45'))
+BACKTEST_CHUNK = int(os.environ.get('FPL_BACKTEST_CHUNK', '120'))
+BACKTEST_MIN_MINUTES = int(os.environ.get('FPL_BACKTEST_MIN_MINS', '90'))
+
 
 def _fdr_mult(fdr_series, index, invert=False):
     """Geometric fixture multiplier centred on FDR 3 (ratio per step).
@@ -2668,7 +2676,16 @@ def run_projection_backtest(histories, meta, fixtures_data, teams_df,
             lambda r: sum(h.get('total_points') or 0
                           for h in histories[r['id']] if (h.get('round') or 0) < g)
             / max(sum(1 for h in histories[r['id']] if (h.get('round') or 0) < g), 1), axis=1)
-        frame['base_pos'] = frame['position'].map(frame.groupby('position')['actual'].mean())
+        # Positional baseline must come from PRIOR rounds. Averaging this
+        # gameweek's actuals would hand the baseline the answers and make
+        # the model look worse than it is by comparison.
+        _prior_pos = {}
+        for _pos in frame['position'].unique():
+            _ids = set(frame[frame['position'] == _pos]['id'])
+            _pts = [h.get('total_points') or 0 for pid in _ids
+                    for h in histories.get(pid, []) if (h.get('round') or 0) < g]
+            _prior_pos[_pos] = (sum(_pts) / len(_pts)) if _pts else 0.0
+        frame['base_pos'] = frame['position'].map(_prior_pos)
 
         err = (frame['proj'] - frame['actual'])
         top20_proj = set(frame.nlargest(20, 'proj')['id'])
@@ -7916,6 +7933,24 @@ def update_transfers(position, team, max_price, min_minutes):
     prevent_initial_call=True
 )
 def render_backtest(n_clicks):
+    try:
+        return _render_backtest_inner()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return html.Div([
+            html.P("Backtest failed.", style={'color': COLORS['danger'],
+                                              'fontWeight': '600', 'marginBottom': '6px'}),
+            html.Pre(f"{type(e).__name__}: {e}",
+                     style={'color': COLORS['text_light'], 'fontSize': '13px',
+                            'whiteSpace': 'pre-wrap', 'backgroundColor': '#f8f9fa',
+                            'padding': '10px', 'borderRadius': '6px'}),
+            html.P("Full traceback is in the server logs.",
+                   style={'color': COLORS['text_light'], 'fontSize': '13px'}),
+        ])
+
+
+def _render_backtest_inner():
     data = get_data()
     dfa, boot = data.get('df_active'), data.get('bootstrap_data')
     fixtures, teams_df = data.get('fixtures_data'), data.get('teams_df')
@@ -7932,21 +7967,52 @@ def render_backtest(n_clicks):
                       "The backtest becomes available from GW2.",
                       style={'color': COLORS['text_light']})
 
-    cached = data.get('backtest_histories') or {}
-    wanted = dfa[dfa['minutes'] > 0]['id'].astype(int).tolist()
+    # Fetch budget. Render kills long-running HTTP requests, and fetching
+    # ~600 element-summaries inside a callback blows straight through that —
+    # the spinner then hangs forever with nothing in the logs. So: seed from
+    # whatever the refresh already pulled, restrict to players with a real
+    # sample, and time-box the rest. A partial fetch still produces a valid
+    # backtest over fewer players; a killed request produces nothing.
+    t_start = time.time()
+    cached = dict(data.get('backtest_histories') or {})
+    seed = data.get('player_histories') or {}
+    for _k, _v in seed.items():
+        cached.setdefault(int(_k), _v)
+
+    wanted = dfa[dfa['minutes'] >= BACKTEST_MIN_MINUTES]['id'].astype(int).tolist()
     missing = [p for p in wanted if p not in cached]
+    print(f"[backtest] {len(wanted)} players in scope, {len(missing)} to fetch, "
+          f"budget {BACKTEST_FETCH_BUDGET}s")
+
     if missing:
-        cached.update(fetch_player_history_batch(missing, max_workers=8))
+        for i in range(0, len(missing), BACKTEST_CHUNK):
+            if time.time() - t_start > BACKTEST_FETCH_BUDGET:
+                print(f"[backtest] fetch budget spent, continuing with "
+                      f"{len(cached)} players")
+                break
+            chunk = missing[i:i + BACKTEST_CHUNK]
+            cached.update(fetch_player_history_batch(chunk, max_workers=10))
+            print(f"[backtest] fetched {min(i + BACKTEST_CHUNK, len(missing))}"
+                  f"/{len(missing)} ({time.time() - t_start:.0f}s)")
         with DATA_LOCK:
             DATA['backtest_histories'] = cached
+
+    usable = {k: v for k, v in cached.items() if k in set(wanted)}
+    if len(usable) < 30:
+        return html.P(f"Only {len(usable)} player histories available. Press Run "
+                      f"Backtest again — each press fetches another batch and keeps "
+                      f"what it already has.", style={'color': COLORS['text_light']})
+    print(f"[backtest] scoring {len(usable)} players over GWs {gws}")
 
     meta = {int(r.id): {'position': r.position, 'team': int(r.team),
                         'web_name': r.web_name, 'pen_rank': getattr(r, 'pen_rank', None)}
             for r in dfa.itertuples()}
     priors = data.get('last_season_priors', {})
 
-    rows, player_rows = run_projection_backtest(cached, meta, fixtures, teams_df,
+    rows, player_rows = run_projection_backtest(usable, meta, fixtures, teams_df,
                                                 gws, priors=priors)
+    print(f"[backtest] done in {time.time() - t_start:.0f}s, "
+          f"{len(rows)} gameweeks scored")
     if not rows:
         return html.P("Not enough reconstructable history yet.",
                       style={'color': COLORS['text_light']})
