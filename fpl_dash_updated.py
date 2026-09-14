@@ -5329,7 +5329,9 @@ app.layout = html.Div([
                                     min=1, max=38, step=1, value=1,
                                     marks={1: '1', 5: '5', 10: '10', 15: '15', 20: '20',
                                            25: '25', 30: '30', 35: '35', 38: 'All'},
-                                    included=True
+                                    included=True,
+                                    tooltip={'placement': 'bottom',
+                                             'always_visible': True}
                                 )
                             ], style={'flex': '0 1 420px', 'minWidth': '260px',
                                       'maxWidth': '420px', 'padding': '0 10px'}),
