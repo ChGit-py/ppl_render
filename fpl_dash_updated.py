@@ -6831,13 +6831,20 @@ def update_home_tab(n):
                      style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
             html.Div([build_stat_card("Highest GW Score", f"{highest_gw}", "This gameweek", color=COLORS['success'])],
                      style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
-            html.Div([build_stat_card("Next Deadline",
-                                      next_gw_now['name'].replace('Gameweek ', 'GW') if next_gw_now else "N/A",
-                                      datetime.fromisoformat(
-                                          next_gw_now['deadline_time'].replace('Z', '+00:00')).strftime(
-                                          '%a %d %b, %H:%M') if next_gw_now else "",
-                                      link_page='deadline', link_label='Deadline dashboard')],
-                     style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
+            html.Div([
+                build_stat_card(
+                    "Next Deadline",
+                    next_gw_now['name'].replace('Gameweek ', 'GW') if next_gw_now else "N/A",
+                    datetime.fromisoformat(
+                        next_gw_now['deadline_time'].replace('Z', '+00:00')
+                    ).astimezone(
+                        ZoneInfo('Europe/London')
+                    ).strftime('%a %d %b, %H:%M') if next_gw_now else "",
+                    link_page='deadline',
+                    link_label='Deadline dashboard'
+                )
+            ],
+                style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
         ], style={'display': 'flex', 'flexWrap': 'wrap', 'margin': '0 -10px 40px -10px'}),
 
         html.Div([
