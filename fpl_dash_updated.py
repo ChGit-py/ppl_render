@@ -3168,7 +3168,7 @@ _CACHE_KEYS = [
     'player_histories', 'sorted_teams', 'next_gw_num', 'last_refresh',
     'heavy_loaded', 'fixture_anchor_gw', 'season_started', 'season_label',
     'last_season_priors', 'calibration',
-    'xg_ledger', 'odds_lambdas', 'xcs_next',
+    'xg_ledger', 'odds_lambdas', 'xcs_next', 'delta_basis',
 ]
 
 # Bump whenever the shape of cached data changes, or at a season rollover.
@@ -3470,15 +3470,49 @@ def refresh_core_data():
                     df_active['price'] -
                     df_active['id'].map(lambda x: baseline.get(x, {}).get('price'))
                 ).round(1)
+                DATA_DELTA_BASIS = f"7 days (snapshot {baseline_date})"
                 print(f"  Trend deltas computed vs snapshot from {baseline_date}")
             else:
                 df_active['own_delta_7d'] = np.nan
                 df_active['price_delta_7d'] = np.nan
-                print("  No prior snapshot yet — trend deltas will appear from tomorrow")
+                DATA_DELTA_BASIS = None
+                print("  No prior snapshot yet — falling back to gameweek deltas")
         except Exception as e:
             print(f"  Snapshot store unavailable: {e}")
             df_active['own_delta_7d'] = np.nan
             df_active['price_delta_7d'] = np.nan
+            DATA_DELTA_BASIS = None
+
+        # --- Storage-free gameweek deltas -------------------------------
+        # The 7-day figures need a snapshot that survived to yesterday, which
+        # an ephemeral disk never provides. These two need no history at all
+        # because bootstrap-static already carries the movement:
+        #
+        #   price   cost_change_event is the realised change this gameweek.
+        #   owners  net transfers / total managers x 100 IS the ownership
+        #           change in percentage points — ownership is just a count
+        #           of squads over the same denominator, so this is exact,
+        #           not an approximation.
+        try:
+            _tm = max(int(total_managers or 0), 1)
+            df_active['own_delta_gw'] = (
+                df_active['net_transfers_gw'].fillna(0) / _tm * 100).round(3)
+            df_active['price_delta_gw'] = pd.to_numeric(
+                df_active.get('cost_change_event'), errors='coerce').round(1)
+        except Exception as e:
+            print(f"  GW deltas unavailable: {e}")
+            df_active['own_delta_gw'] = np.nan
+            df_active['price_delta_gw'] = np.nan
+
+        # Fall back so the displayed columns are never empty
+        if df_active['own_delta_7d'].isna().all():
+            df_active['own_delta_7d'] = df_active['own_delta_gw']
+        if df_active['price_delta_7d'].isna().all():
+            df_active['price_delta_7d'] = df_active['price_delta_gw']
+        if DATA_DELTA_BASIS is None:
+            DATA_DELTA_BASIS = "this gameweek (no prior snapshot)"
+        with DATA_LOCK:
+            DATA['delta_basis'] = DATA_DELTA_BASIS
 
         sorted_teams = sorted(df['team_name'].unique())
 
@@ -5909,7 +5943,10 @@ app.layout = html.Div([
 
                     html.Div([
                         html.H4("Transfer Activity This Gameweek",
-                                style={'color': COLORS['primary'], 'marginBottom': '16px'}),
+                                style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+                        html.P(id='xfer-delta-basis',
+                               style={'color': COLORS['text_light'], 'fontSize': '13px',
+                                      'marginBottom': '16px'}),
                         dash_table.DataTable(
                             id='xfer-table',
                             data=[],
@@ -5928,9 +5965,9 @@ app.layout = html.Div([
                                  'format': {'specifier': '.2f'}},
                                 {'name': 'Price Chg', 'id': 'price_change_likelihood', 'type': 'numeric',
                                  'format': {'specifier': '.1f'}},
-                                {'name': 'Own \u03947d', 'id': 'own_delta_7d', 'type': 'numeric',
-                                 'format': {'specifier': '+.1f'}},
-                                {'name': '\u00a3 \u03947d', 'id': 'price_delta_7d', 'type': 'numeric',
+                                {'name': 'Own \u0394', 'id': 'own_delta_7d', 'type': 'numeric',
+                                 'format': {'specifier': '+.2f'}},
+                                {'name': '\u00a3 \u0394', 'id': 'price_delta_7d', 'type': 'numeric',
                                  'format': {'specifier': '+.1f'}},
                                 {'name': 'Season +/-', 'id': 'cost_change_start', 'type': 'numeric',
                                  'format': {'specifier': '.1f'}},
@@ -7947,7 +7984,8 @@ def update_captain(position, team, max_price, min_minutes, mode, _n):
 # --- TRANSFER TRENDS ---
 @callback(
     [Output('xfer-risers-bar', 'figure'), Output('xfer-fallers-bar', 'figure'),
-     Output('xfer-scatter', 'figure'), Output('xfer-table', 'data')],
+     Output('xfer-scatter', 'figure'), Output('xfer-table', 'data'),
+     Output('xfer-delta-basis', 'children')],
     [Input('xfer-position', 'value'), Input('xfer-team', 'value'),
      Input('xfer-price', 'value'), Input('xfer-minutes', 'value')]
 )
@@ -8006,7 +8044,12 @@ def update_transfers(position, team, max_price, min_minutes):
             'price_delta_7d', 'cost_change_start', 'form', 'ownership']
     table_data = prepare_table_data(sorted_by_activity.nlargest(50, 'abs_net'), cols)
 
-    return risers_fig, fallers_fig, scatter_fig, table_data
+    basis = get_data().get('delta_basis') or 'this gameweek'
+    note = (f"Own \u0394 and \u00a3 \u0394 are measured over {basis}. "
+            f"Ownership change is derived from net transfers \u00f7 total managers, "
+            f"and price change from FPL's own gameweek movement \u2014 neither needs "
+            f"stored history, so both populate on the first run.")
+    return risers_fig, fallers_fig, scatter_fig, table_data, note
 
 
 # --- FIXTURE OUTLOOK: modelled grid, not FDR integers ---
