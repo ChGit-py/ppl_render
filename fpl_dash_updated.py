@@ -2364,18 +2364,26 @@ def calculate_goal_environment(fixtures_data, teams_df, anchor_gw, num_gws=5,
             lam = league_avg
         return float(np.clip(lam / league_avg, *ATT_ENV_CLIP))
 
+    # Per-fixture detail as well as the aggregate. The clean-sheet model
+    # already emits this; the attacking side needs it too so a grid can show
+    # gameweek-by-gameweek expected goals rather than one averaged multiplier.
+    per_fixture = {tid: [] for tid in envs}
+
     for f in upcoming:
         h, a = f['team_h'], f['team_a']
+        gw = f.get('event')
         if h in envs:
             env = _env_for(h, a, 'home', 'away', f.get('team_h_difficulty'))
             if not envs[h]:
                 meta[h] = {'opp_next': short.get(a, '???'), 'venue_next': 'H'}
             envs[h].append(env)
+            per_fixture[h].append((gw, short.get(a, '???'), 'H', env))
         if a in envs:
             env = _env_for(a, h, 'away', 'home', f.get('team_a_difficulty'))
             if not envs[a]:
                 meta[a] = {'opp_next': short.get(h, '???'), 'venue_next': 'A'}
             envs[a].append(env)
+            per_fixture[a].append((gw, short.get(h, '???'), 'A', env))
 
     out = {}
     for tid, vals in envs.items():
@@ -2383,6 +2391,8 @@ def calculate_goal_environment(fixtures_data, teams_df, anchor_gw, num_gws=5,
             'att_env_next': round(vals[0], 3) if vals else 1.0,
             'att_env_avg': round(float(np.mean(vals)), 3) if vals else 1.0,
             'n_fixtures': len(vals),
+            'fixtures': per_fixture.get(tid, []),
+            'league_avg_goals': round(float(league_avg), 3),
             **meta[tid],
         }
     return out
@@ -4344,6 +4354,8 @@ app.layout = html.Div([
                 html.P('Squad Planning', className='nav-group-label'),
                 html.Button('Fixture Ticker',
                             id='nav-fixture-ticker', className='nav-item', n_clicks=0),
+                html.Button('Fixture Outlook',
+                            id='nav-fixture-outlook', className='nav-item', n_clicks=0),
                 html.Button('Fixture Difficulty',
                             id='nav-fixtures', className='nav-item', n_clicks=0),
                 html.Button('Expected Clean Sheets',
@@ -5208,6 +5220,75 @@ app.layout = html.Div([
 
             # FIXTURE TICKER TAB
             # FIXTURE TICKER PAGE
+            html.Div(id='page-fixture-outlook', style={'display': 'none'}, children=[
+                html.Div([
+                    html.Div([
+                        html.H3("Fixture Outlook", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
+                        html.P([
+                            "FDR asks ", html.Strong("how hard is this opponent"), ". This asks ",
+                            html.Strong("what will this team actually produce in this fixture"),
+                            " \u2014 which for a weak side is a very different question. A "
+                            "promoted team at home to a poor defence is a green cell on FDR and "
+                            "still a low-scoring fixture here, because their own attack rating "
+                            "holds the number down.",
+                        ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '10px'}),
+                        html.P([
+                            html.Strong("Attack"), " shows expected goals scored per fixture. ",
+                            html.Strong("Defence"), " shows clean-sheet probability. They are "
+                            "separate because they diverge \u2014 a run against three low-scoring "
+                            "sides is good for your defenders and poor for your forwards, and one "
+                            "number cannot say that. Totals sum across the window, so a blank "
+                            "contributes nothing and a double contributes an extra fixture.",
+                        ], style={'color': COLORS['text_light'], 'fontSize': '14px', 'marginBottom': '0'}),
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+
+                    html.Div([
+                        html.Div([
+                            html.Div([
+                                html.Label("Gameweeks to show",
+                                           style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Input(id='fo-gws', type='number', value=6, min=1, max=38, step=1,
+                                          debounce=True,
+                                          style={'width': '100%', 'padding': '9px', 'borderRadius': '4px',
+                                                 'border': '1px solid #ccc'}),
+                                html.Div("Type any number from 1 to 38",
+                                         style={'color': COLORS['text_light'], 'fontSize': '12px',
+                                                'marginTop': '4px'}),
+                            ], style={'flex': '1', 'minWidth': '160px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("View",
+                                           style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Dropdown(id='fo-view', clearable=False, value='attack',
+                                             options=[{'label': ' Attack (expected goals)', 'value': 'attack'},
+                                                      {'label': ' Defence (clean sheet %)', 'value': 'defence'}]),
+                            ], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Sort teams by",
+                                           style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Dropdown(id='fo-sort', clearable=False, value='total',
+                                             options=[{'label': ' Best run first', 'value': 'total'},
+                                                      {'label': ' Worst run first', 'value': 'total_asc'},
+                                                      {'label': ' Team name', 'value': 'name'}]),
+                            ], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
+                        ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-start'})
+                    ], style=CARD_STYLE),
+
+                    html.Div([
+                        dcc.Loading(dcc.Graph(id='fo-heatmap', config={'displayModeBar': False}),
+                                    type='circle', color=COLORS['primary'])
+                    ], style=CARD_STYLE),
+
+                    html.Div([
+                        html.H4("Run Summary", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+                        html.P("Worst GW is the single weakest fixture in the window \u2014 a run of "
+                               "2,2,2,5,2 and one of 3,3,3,3,3 average the same and plan very "
+                               "differently.",
+                               style={'color': COLORS['text_light'], 'marginBottom': '12px'}),
+                        html.Div(id='fo-table')
+                    ], style=CARD_STYLE),
+                ], style={'padding': '20px 0'})
+            ]),
+
             html.Div(id='page-fixture-ticker', style={'display': 'none'}, children=[
                 html.Div([
                     html.Div([
@@ -6541,7 +6622,7 @@ def render_stale_stats_banner(_n):
 ALL_PAGES = [
     'home', 'model-lab', 'defcon-bonus', 'bonus-consistency', 'defcon',
     'xg', 'underlying', 'value', 'form', 'cs',
-    'fixture-ticker', 'fixtures', 'xcs', 'differentials',
+    'fixture-ticker', 'fixture-outlook', 'fixtures', 'xcs', 'differentials',
     'captain', 'transfers', 'transfer-planner', 'chip-planner',
     'rivals', 'deadline', 'my-squad', 'squad-builder',
 ]
@@ -7924,6 +8005,136 @@ def update_transfers(position, team, max_price, min_minutes):
     table_data = prepare_table_data(sorted_by_activity.nlargest(50, 'abs_net'), cols)
 
     return risers_fig, fallers_fig, scatter_fig, table_data
+
+
+# --- FIXTURE OUTLOOK: modelled grid, not FDR integers ---
+@callback(
+    [Output('fo-heatmap', 'figure'), Output('fo-table', 'children')],
+    [Input('active-page', 'data'), Input('fo-gws', 'value'),
+     Input('fo-view', 'value'), Input('fo-sort', 'value')]
+)
+def update_fixture_outlook(page, n_gws, view, sort_by):
+    blank = go.Figure(); blank.update_layout(template='plotly_white', height=320)
+    if page != 'fixture-outlook':
+        return blank, html.Div()
+
+    data = get_data()
+    fixtures, teams_df = data.get('fixtures_data'), data.get('teams_df')
+    if not fixtures or teams_df is None or teams_df.empty:
+        return blank, html.P("Data not loaded yet.", style={'color': COLORS['text_light']})
+
+    try:
+        n_gws = max(1, min(38, int(n_gws or 6)))
+    except (TypeError, ValueError):
+        n_gws = 6
+
+    anchor_gw = data.get('fixture_anchor_gw') or (data.get('next_gw_num', 1) - 1)
+    odds = data.get('odds_lambdas')
+    ledger = data.get('xg_ledger')
+
+    if view == 'defence':
+        model = calculate_expected_clean_sheets(fixtures, teams_df, anchor_gw,
+                                                num_gws=n_gws, odds_lambdas=odds,
+                                                xg_ledger=ledger)
+        # fixtures: (gw, opp, venue, p_cs) — p_cs already a probability
+        cell_fn = lambda v: v * 100
+        fmt, unit = '{:.0f}%', 'Clean sheet %'
+        total_label, total_fmt = 'Expected CS', '{:.2f}'
+        good_high = True
+    else:
+        genv = calculate_goal_environment(fixtures, teams_df, anchor_gw,
+                                          num_gws=n_gws, odds_lambdas=odds,
+                                          xg_ledger=ledger)
+        model = genv
+        # fixtures: (gw, opp, venue, env_ratio) — convert ratio to goals
+        cell_fn = None
+        fmt, unit = '{:.2f}', 'Expected goals'
+        total_label, total_fmt = 'Expected goals', '{:.2f}'
+        good_high = True
+
+    lg_avg = 1.40
+    for v in model.values():
+        if isinstance(v, dict) and v.get('league_avg_goals'):
+            lg_avg = v['league_avg_goals']
+            break
+
+    short = dict(zip(teams_df['id'], teams_df['short_name']))
+    names = dict(zip(teams_df['id'], teams_df['name']))
+    gws = sorted({gw for v in model.values()
+                  for (gw, *_rest) in (v.get('fixtures') or []) if gw})[:n_gws]
+    if not gws:
+        return blank, html.P("No upcoming fixtures in range.",
+                             style={'color': COLORS['text_light']})
+
+    rows = []
+    for tid, v in model.items():
+        cells = {g: [] for g in gws}
+        for (gw, opp, ven, val) in (v.get('fixtures') or []):
+            if gw in cells:
+                cells[gw].append((opp, ven, val * 100 if view == 'defence' else val * lg_avg))
+        vals = [x[2] for g in gws for x in cells[g]]
+        if not vals:
+            continue
+        rows.append({
+            'tid': tid, 'name': names.get(tid, '?'), 'cells': cells,
+            'total': sum(vals), 'worst': min(vals), 'n': len(vals),
+        })
+    if not rows:
+        return blank, html.P("No fixtures to show.", style={'color': COLORS['text_light']})
+
+    if sort_by == 'name':
+        rows.sort(key=lambda r: r['name'])
+    else:
+        rows.sort(key=lambda r: r['total'], reverse=(sort_by == 'total'))
+
+    z, text, hover = [], [], []
+    for r in rows:
+        zr, tr, hr = [], [], []
+        for g in gws:
+            fx = r['cells'][g]
+            if not fx:
+                zr.append(None); tr.append('BGW'); hr.append('Blank gameweek')
+            else:
+                tot = sum(x[2] for x in fx)
+                zr.append(tot)
+                label = ' + '.join(f"{o} ({vn})" for o, vn, _ in fx)
+                tr.append(f"{label}<br>{fmt.format(tot)}" if len(fx) == 1
+                          else f"DGW<br>{fmt.format(tot)}")
+                hr.append(f"{r['name']} GW{g}<br>{label}<br>{unit}: {fmt.format(tot)}")
+        z.append(zr); text.append(tr); hover.append(hr)
+
+    fig = go.Figure(go.Heatmap(
+        z=z, x=[f"GW{g}" for g in gws], y=[r['name'] for r in rows],
+        text=text, texttemplate='%{text}', textfont={'size': 10},
+        hovertext=hover, hoverinfo='text',
+        colorscale=[[0, '#dc3545'], [0.35, '#ff7043'], [0.55, '#ffc107'],
+                    [0.75, '#7dde9e'], [1, '#00ff87']],
+        showscale=True, colorbar=dict(title=unit), xgap=2, ygap=2))
+    fig.update_layout(template='plotly_white',
+                      height=max(420, 30 * len(rows) + 120),
+                      margin=dict(t=30, b=40, l=130, r=20),
+                      xaxis=dict(side='top'), yaxis=dict(autorange='reversed'),
+                      font=dict(family='Arial, sans-serif'))
+
+    table = dash_table.DataTable(
+        data=[{'team': r['name'], 'total': round(r['total'], 2),
+               'per_fix': round(r['total'] / r['n'], 2),
+               'worst': round(r['worst'], 2), 'n': r['n']} for r in rows],
+        columns=[
+            {'name': 'Team', 'id': 'team'},
+            {'name': f'{total_label} (window)', 'id': 'total', 'type': 'numeric',
+             'format': {'specifier': '.2f'}},
+            {'name': 'Per fixture', 'id': 'per_fix', 'type': 'numeric',
+             'format': {'specifier': '.2f'}},
+            {'name': 'Worst GW', 'id': 'worst', 'type': 'numeric',
+             'format': {'specifier': '.2f'}},
+            {'name': 'Fixtures', 'id': 'n', 'type': 'numeric'},
+        ],
+        sort_action='native',
+        style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
+        style_data=TABLE_STYLE_DATA,
+        style_data_conditional=[{'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'}])
+    return fig, table
 
 
 # --- MODEL LAB: WALK-FORWARD BACKTEST ---
