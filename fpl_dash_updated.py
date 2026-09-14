@@ -6445,7 +6445,7 @@ app.layout = html.Div([
                                 html.Label("Budget (£m)",
                                            style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Slider(
-                                    id='sq-budget', min=75, max=105, step=0.5, value=83,
+                                    id='sq-budget', min=75, max=105, step=0.1, value=100,
                                     marks={i: f'£{i}m' for i in range(75, 106, 5)},
                                     tooltip={"placement": "bottom", "always_visible": True}
                                 )
