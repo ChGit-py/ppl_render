@@ -2218,9 +2218,25 @@ def fetch_market_lambdas(teams_df):
         r = requests.get(f"{ODDS_API_URL}&apiKey={ODDS_API_KEY}", timeout=15)
         r.raise_for_status()
         events = r.json()
+        remaining = r.headers.get('x-requests-remaining')
+        used = r.headers.get('x-requests-last')
+        if remaining is not None:
+            print(f"  Odds API credits: {used or '?'} used this call, "
+                  f"{remaining} remaining this month")
+            if remaining.isdigit() and int(remaining) < 20:
+                print(f"  WARNING: odds API quota nearly exhausted "
+                      f"({remaining} credits left) — market blend will "
+                      f"silently stop once it hits 0")
     except Exception as e:
         print(f"  Odds fetch failed (non-fatal): {e}")
         return {}
+
+    # Dedup below keeps the FIRST fixture seen per team and skips the rest —
+    # that only means "nearest fixture" if events are in kickoff order, which
+    # the API doesn't guarantee. Sort explicitly rather than trust response
+    # order, otherwise a team's second-nearest match could silently win and
+    # get blended into the wrong gameweek's projection.
+    events = sorted(events, key=lambda ev: ev.get('commence_time') or '')
 
     fpl_names = dict(zip(teams_df['id'], teams_df['name']))
     out = {}
@@ -3156,9 +3172,21 @@ import threading
 DATA = {
     'last_refresh': 0,
     'refreshing': False,
+    'odds_last_refresh': 0,
 }
 DATA_LOCK = threading.Lock()
 REFRESH_INTERVAL = 3 * 60 * 60  # 3 hours in seconds
+
+# The-odds-api free tier is 500 credits/month, and an h2h+totals call costs
+# markets x regions = 2 credits. Polling it on the same 3-hour cadence as
+# core stats (8x/day) burns ~480-496 credits/month on the routine cycle
+# alone, before a single Render restart or local dev run — i.e. it silently
+# exhausts the free quota most months (fetch_market_lambdas fails soft, so
+# this would never surface as an error, just as the market blend quietly
+# stopping). Odds also don't move hour-to-hour the way stats do; the value
+# is in catching team news that lands well before kickoff, not in polling
+# every 3 hours. Override via ODDS_REFRESH_INTERVAL_HOURS if needed.
+ODDS_REFRESH_INTERVAL = int(os.environ.get('ODDS_REFRESH_INTERVAL_HOURS', 12)) * 60 * 60
 CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fpl_cache.pkl')
 
 # Keys to persist in cache (excludes transient flags like 'refreshing')
@@ -3168,7 +3196,7 @@ _CACHE_KEYS = [
     'player_histories', 'sorted_teams', 'next_gw_num', 'last_refresh',
     'heavy_loaded', 'fixture_anchor_gw', 'season_started', 'season_label',
     'last_season_priors', 'calibration',
-    'xg_ledger', 'odds_lambdas', 'xcs_next', 'delta_basis',
+    'xg_ledger', 'odds_lambdas', 'odds_last_refresh', 'xcs_next', 'delta_basis',
 ]
 
 # Bump whenever the shape of cached data changes, or at a season rollover.
@@ -3303,10 +3331,21 @@ def refresh_core_data():
             df_active[col] = df_active['team'].map(lambda x, k=key: custom_fdr.get(x, {}).get(k))
         print(f"  Attack/defence FDR computed for {len(custom_fdr)} teams")
 
-        # Market-implied goal expectations (no-op without ODDS_API_KEY)
-        odds_lambdas = fetch_market_lambdas(teams_df)
-        with DATA_LOCK:
-            DATA['odds_lambdas'] = odds_lambdas
+        # Market-implied goal expectations (no-op without ODDS_API_KEY).
+        # Only actually calls the API when ODDS_REFRESH_INTERVAL has
+        # elapsed since the last successful pull — see the constant's
+        # definition for why this can't run on every 3-hour Phase 1 cycle.
+        odds_age = time.time() - DATA.get('odds_last_refresh', 0)
+        if ODDS_API_KEY and (odds_age > ODDS_REFRESH_INTERVAL or not DATA.get('odds_lambdas')):
+            odds_lambdas = fetch_market_lambdas(teams_df)
+            with DATA_LOCK:
+                DATA['odds_lambdas'] = odds_lambdas
+                DATA['odds_last_refresh'] = time.time()
+        else:
+            odds_lambdas = DATA.get('odds_lambdas', {}) or {}
+            if ODDS_API_KEY:
+                print(f"  Odds cache is {odds_age / 3600:.1f}h old "
+                      f"(refreshes every {ODDS_REFRESH_INTERVAL / 3600:.0f}h) — reusing")
 
         # Expected-goals ledger: team xGF/xGC per match, from keeper xGC.
         # Feeds every team-level form estimate below. Failure here is
