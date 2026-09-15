@@ -1999,13 +1999,14 @@ def calculate_expected_clean_sheets(fixtures_data, teams_df, anchor_gw,
             lam = lam_static * ((1 - wT) + wT * own_form) * ((1 - wO) + wO * opp_form)
         if not np.isfinite(lam):
             lam = league_avg_goals
-        # Market blend: when the bookmakers have priced THIS team's next
-        # fixture against THIS opponent, average our model with the market's
-        # goals-against rate — the market prices in team news hours before
-        # any stats feed does.
+        # Market blend: when the bookmakers have priced THIS specific
+        # fixture (this team vs this opponent — could be next GW or a
+        # couple out, whatever fetch_market_lambdas found priced), average
+        # our model with the market's goals-against rate — the market
+        # prices in team news hours before any stats feed does.
         if odds_lambdas:
-            mk = odds_lambdas.get(tid)
-            if mk and mk.get('opp_id') == opp_id:
+            mk = odds_lambdas.get(tid, {}).get(opp_id)
+            if mk:
                 lam = 0.5 * lam + 0.5 * mk['lam_against']
         lam = float(np.clip(lam, 0.25, 3.5))
         p_cs = float(np.exp(-lam))
@@ -2207,10 +2208,21 @@ def _devig(prices):
 
 def fetch_market_lambdas(teams_df):
     """
-    One call per refresh cycle: for each upcoming EPL match with h2h+totals
+    One call per refresh cycle: for every upcoming EPL match with h2h+totals
     prices, expected goals for and against per team. Returns
-    {team_id: {'lam_for': x, 'lam_against': y, 'opp_id': tid}} for teams
-    with a priced next fixture, or {} when no key / any failure.
+    {team_id: {opp_id: {'lam_for': x, 'lam_against': y}}} — every priced
+    fixture for a team, not just its nearest one, keyed by opponent so a
+    consumer looks up its own known next-N-gameweek opponents against this
+    dict rather than assuming only one entry exists. {} when no key / any
+    failure.
+
+    How far ahead this actually reaches depends on the bookmakers, not on
+    this code: EPL markets are usually posted and liquid for the next
+    fixture, sometimes the one after, rarely much beyond that — a market
+    can't price news (an injury, a rotation call) that hasn't happened yet.
+    So most refreshes this will cover 1-2 fixtures per team, occasionally
+    more; consumers should treat a missing (team, opponent) pair as "not
+    priced yet", not as an error.
     """
     if not ODDS_API_KEY:
         return {}
@@ -2231,19 +2243,20 @@ def fetch_market_lambdas(teams_df):
         print(f"  Odds fetch failed (non-fatal): {e}")
         return {}
 
-    # Dedup below keeps the FIRST fixture seen per team and skips the rest —
-    # that only means "nearest fixture" if events are in kickoff order, which
-    # the API doesn't guarantee. Sort explicitly rather than trust response
-    # order, otherwise a team's second-nearest match could silently win and
-    # get blended into the wrong gameweek's projection.
+    # Sorted purely so logs/behaviour are deterministic and the nearest
+    # fixture for a team is the first one processed — no longer load-bearing
+    # for correctness now that every fixture is kept, but still worth having.
     events = sorted(events, key=lambda ev: ev.get('commence_time') or '')
 
     fpl_names = dict(zip(teams_df['id'], teams_df['name']))
     out = {}
+    n_fixtures = 0
     for ev in events:
         home_id = match_odds_team_to_fpl(ev.get('home_team'), fpl_names)
         away_id = match_odds_team_to_fpl(ev.get('away_team'), fpl_names)
-        if not home_id or not away_id or home_id in out or away_id in out:
+        # Dedup by the (team, opponent) PAIR, not by team alone — this is
+        # the change that lets a team carry more than one priced fixture.
+        if not home_id or not away_id or away_id in out.get(home_id, {}):
             continue
         h2h, totals = None, None
         for bm in ev.get('bookmakers', []):
@@ -2269,10 +2282,12 @@ def fetch_market_lambdas(teams_df):
         if not h2h or not totals:
             continue
         lam_h, lam_a = derive_match_lambdas(h2h, totals[0], totals[1])
-        out[home_id] = {'lam_for': lam_h, 'lam_against': lam_a, 'opp_id': away_id}
-        out[away_id] = {'lam_for': lam_a, 'lam_against': lam_h, 'opp_id': home_id}
+        out.setdefault(home_id, {})[away_id] = {'lam_for': lam_h, 'lam_against': lam_a}
+        out.setdefault(away_id, {})[home_id] = {'lam_for': lam_a, 'lam_against': lam_h}
+        n_fixtures += 1
     if out:
-        print(f"  Market lambdas derived for {len(out)} teams")
+        print(f"  Market lambdas derived for {n_fixtures} fixtures "
+              f"across {len(out)} teams")
     return out
 
 
@@ -2371,10 +2386,10 @@ def calculate_goal_environment(fixtures_data, teams_df, anchor_gw, num_gws=5,
             own_f = recent.get(tid, {}).get('scored_pm', league_avg) / league_avg
             opp_f = recent.get(opp_id, {}).get('conceded_pm', league_avg) / league_avg
             lam = lam * ((1 - wT) + wT * own_f) * ((1 - wO) + wO * opp_f)
-        # Market blend for priced fixtures
+        # Market blend for whichever fixtures are actually priced
         if odds_lambdas:
-            mk = odds_lambdas.get(tid)
-            if mk and mk.get('opp_id') == opp_id:
+            mk = odds_lambdas.get(tid, {}).get(opp_id)
+            if mk:
                 lam = 0.5 * lam + 0.5 * mk['lam_for']
         if not np.isfinite(lam):
             lam = league_avg
@@ -3186,7 +3201,7 @@ REFRESH_INTERVAL = 3 * 60 * 60  # 3 hours in seconds
 # stopping). Odds also don't move hour-to-hour the way stats do; the value
 # is in catching team news that lands well before kickoff, not in polling
 # every 3 hours. Override via ODDS_REFRESH_INTERVAL_HOURS if needed.
-ODDS_REFRESH_INTERVAL = int(os.environ.get('ODDS_REFRESH_INTERVAL_HOURS', 4)) * 60 * 60
+ODDS_REFRESH_INTERVAL = int(os.environ.get('ODDS_REFRESH_INTERVAL_HOURS', 6)) * 60 * 60
 CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fpl_cache.pkl')
 
 # Keys to persist in cache (excludes transient flags like 'refreshing')
