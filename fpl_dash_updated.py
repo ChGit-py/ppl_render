@@ -3953,6 +3953,12 @@ app.index_string = '''
             /* ================================================================
                TABLET & BELOW  (≤ 900px)
             ================================================================ */
+            /* Horizontal scroll for fixture grids, all screen sizes */
+            .chart-scroll {
+                overflow-x: auto !important;
+                -webkit-overflow-scrolling: touch;
+            }
+
             @media (max-width: 900px) {
 
                 #hamburger-btn { display: block; }
@@ -3986,9 +3992,22 @@ app.index_string = '''
                     width: 100% !important;
                 }
 
+                /* Grids are the exception: squeezing 6+ gameweek columns into
+                   a 380px screen makes every cell unreadable. These keep a
+                   fixed cell width and scroll sideways instead. */
+                .chart-scroll .js-plotly-plot,
+                .chart-scroll .js-plotly-plot .plotly,
+                .chart-scroll .js-plotly-plot .plotly .main-svg {
+                    width: auto !important;
+                }
+
                 .dash-dropdown { min-width: 100% !important; }
 
-                [style*="display: flex"] > div[style*="minWidth"] {
+                /* React serialises style dicts to hyphenated CSS, so the DOM
+                   attribute reads "min-width: 160px" — a [style*="minWidth"]
+                   selector never matched and none of these filter rows have
+                   been stacking on mobile. */
+                [style*="display: flex"] > div[style*="min-width"] {
                     min-width: 100% !important;
                     flex: 1 1 100% !important;
                     padding-left: 0 !important;
@@ -4054,6 +4073,7 @@ app.index_string = '''
                 }
 
                 .js-plotly-plot { max-height: 300px !important; }
+                .chart-scroll .js-plotly-plot { max-height: none !important; }
             }
             /* Player headshots — keep the box stable while fallbacks resolve */
             .player-photo {
@@ -5308,8 +5328,14 @@ app.layout = html.Div([
                     ], style=CARD_STYLE),
 
                     html.Div([
-                        dcc.Loading(dcc.Graph(id='fo-heatmap', config={'displayModeBar': False}),
-                                    type='circle', color=COLORS['primary'])
+                        dcc.Loading(
+                            html.Div(
+                                dcc.Graph(id='fo-heatmap', config={'displayModeBar': False}),
+                                className='chart-scroll'),
+                            type='circle', color=COLORS['primary']),
+                        html.P("Swipe sideways to see the rest of the window.",
+                               style={'color': COLORS['text_light'], 'fontSize': '12px',
+                                      'margin': '6px 0 0 0'}),
                     ], style=CARD_STYLE),
 
                     html.Div([
@@ -5393,7 +5419,12 @@ app.layout = html.Div([
                                "cell text is hidden to keep the grid readable. In this case hover over any "
                                "cell for the fixture.",
                                style={'color': COLORS['text_light'], 'marginBottom': '12px'}),
-                        dcc.Graph(id='ticker-heatmap', config={'displayModeBar': False})
+                        html.Div(
+                            dcc.Graph(id='ticker-heatmap', config={'displayModeBar': False}),
+                            className='chart-scroll'),
+                        html.P("Swipe sideways to see the rest of the window.",
+                               style={'color': COLORS['text_light'], 'fontSize': '12px',
+                                      'margin': '6px 0 0 0'}),
                     ], style=CARD_STYLE),
 
                 ], style={'padding': '20px 0'})
@@ -7707,14 +7738,19 @@ def update_fixture_ticker(sort_by, num_gws, n):
         textfont=dict(size=cell_font, color='#333333'),
     ))
 
+    # Fixed cell width rather than fitting the viewport. A 380px phone
+    # divided by six columns gives 50px cells in which nothing is legible;
+    # the .chart-scroll container scrolls sideways instead.
+    _cell_w = 74 if n_cols > 4 else 96
     fig.update_layout(
         template='plotly_white',
         height=height,
+        width=118 + _cell_w * max(n_cols, 1) + 28,
         font=dict(family='Arial, sans-serif', size=12),
         xaxis=dict(side='top', tickangle=0 if n_cols <= 15 else -45,
                    fixedrange=True, tickfont=dict(size=tick_font)),
-        yaxis=dict(autorange='reversed', fixedrange=True, tickfont=dict(size=14)),
-        margin=dict(l=110, r=20, t=60, b=10),
+        yaxis=dict(autorange='reversed', fixedrange=True, tickfont=dict(size=12)),
+        margin=dict(l=110, r=18, t=56, b=10),
     )
 
     if showing_all:
@@ -8132,6 +8168,13 @@ def update_fixture_outlook(page, n_gws, view, sort_by):
     else:
         rows.sort(key=lambda r: r['total'], reverse=(sort_by == 'total'))
 
+    # Cell geometry: a fixed width per gameweek beats fitting the screen,
+    # because a 380px phone divided by 6 columns gives 45px cells in which
+    # nothing is readable. The container scrolls instead.
+    compact = len(gws) > 4
+    cell_w = 74 if compact else 96
+    fig_w = 132 + cell_w * len(gws) + 96   # labels + cells + colourbar
+
     z, text, hover = [], [], []
     for r in rows:
         zr, tr, hr = [], [], []
@@ -8143,22 +8186,36 @@ def update_fixture_outlook(page, n_gws, view, sort_by):
                 tot = sum(x[2] for x in fx)
                 zr.append(tot)
                 label = ' + '.join(f"{o} ({vn})" for o, vn, _ in fx)
-                tr.append(f"{label}<br>{fmt.format(tot)}" if len(fx) == 1
-                          else f"DGW<br>{fmt.format(tot)}")
+                if len(fx) > 1:
+                    tr.append(f"DGW<br>{fmt.format(tot)}")
+                elif compact:
+                    # Narrow cells: opponent only on the top line, no venue
+                    # brackets, so the number underneath stays legible.
+                    tr.append(f"{fx[0][0]}<br>{fmt.format(tot)}")
+                else:
+                    tr.append(f"{label}<br>{fmt.format(tot)}")
                 hr.append(f"{r['name']} GW{g}<br>{label}<br>{unit}: {fmt.format(tot)}")
         z.append(zr); text.append(tr); hover.append(hr)
 
     fig = go.Figure(go.Heatmap(
         z=z, x=[f"GW{g}" for g in gws], y=[r['name'] for r in rows],
-        text=text, texttemplate='%{text}', textfont={'size': 10},
+        text=text, texttemplate='%{text}',
+        textfont={'size': 9 if compact else 11, 'family': 'Arial, sans-serif'},
         hovertext=hover, hoverinfo='text',
         colorscale=[[0, '#dc3545'], [0.35, '#ff7043'], [0.55, '#ffc107'],
                     [0.75, '#7dde9e'], [1, '#00ff87']],
-        showscale=True, colorbar=dict(title=unit), xgap=2, ygap=2))
+        showscale=True,
+        colorbar=dict(title=dict(text=unit, side='right'), thickness=12,
+                      len=0.75, tickfont={'size': 10}),
+        xgap=2, ygap=2))
     fig.update_layout(template='plotly_white',
-                      height=max(420, 30 * len(rows) + 120),
-                      margin=dict(t=30, b=40, l=130, r=20),
-                      xaxis=dict(side='top'), yaxis=dict(autorange='reversed'),
+                      width=fig_w,
+                      height=max(360, 34 * len(rows) + 110),
+                      margin=dict(t=34, b=30, l=124, r=8),
+                      xaxis=dict(side='top', fixedrange=True,
+                                 tickfont={'size': 11}),
+                      yaxis=dict(autorange='reversed', fixedrange=True,
+                                 tickfont={'size': 11}),
                       font=dict(family='Arial, sans-serif'))
 
     table = dash_table.DataTable(
