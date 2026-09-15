@@ -3186,7 +3186,7 @@ REFRESH_INTERVAL = 3 * 60 * 60  # 3 hours in seconds
 # stopping). Odds also don't move hour-to-hour the way stats do; the value
 # is in catching team news that lands well before kickoff, not in polling
 # every 3 hours. Override via ODDS_REFRESH_INTERVAL_HOURS if needed.
-ODDS_REFRESH_INTERVAL = int(os.environ.get('ODDS_REFRESH_INTERVAL_HOURS', 12)) * 60 * 60
+ODDS_REFRESH_INTERVAL = int(os.environ.get('ODDS_REFRESH_INTERVAL_HOURS', 4)) * 60 * 60
 CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fpl_cache.pkl')
 
 # Keys to persist in cache (excludes transient flags like 'refreshing')
