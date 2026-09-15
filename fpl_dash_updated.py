@@ -5341,7 +5341,7 @@ app.layout = html.Div([
                     html.Div([
                         html.H4("Run Summary", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
                         html.P("Worst GW is the single weakest fixture in the window \u2014 a run of "
-                               "2,2,2,5,2 and one of 3,3,3,3,3 average the same and plan very "
+                               "2,2,2,5,2 and one of 3,3,3,3,3 average produce a similar average yet plan "
                                "differently.",
                                style={'color': COLORS['text_light'], 'marginBottom': '12px'}),
                         html.Div(id='fo-table')
