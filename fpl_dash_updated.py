@@ -5333,7 +5333,7 @@ app.layout = html.Div([
                                 dcc.Graph(id='fo-heatmap', config={'displayModeBar': False}),
                                 className='chart-scroll'),
                             type='circle', color=COLORS['primary']),
-                        html.P("If needed, swipe sideways to see the rest of the window.",
+                        html.P("If needed, swipe sideways to see the rest of the window",
                                style={'color': COLORS['text_light'], 'fontSize': '12px',
                                       'margin': '6px 0 0 0'}),
                     ], style=CARD_STYLE),
