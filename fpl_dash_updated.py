@@ -4662,7 +4662,7 @@ app.layout = html.Div([
                         html.P([
                             "This shows how ", html.Strong("consistently"),
                             f" players hit their defcon bonus threshold (DEF: {DEF_THR}+, MID/FWD: {MID_THR}+) in individual matches. ",
-                            "A player averaging the threshold per 90 minutes might be inconsistent (20 one week, 0 the next) vs someone who reliably hits it every game."
+                            "A player averaging the threshold per 90 minutes might be inconsistent (20 one week, 0 the next) vs someone who reliably hits it most games."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div([
                             html.Span("Based on games with a minimum of 60 minutes played",
