@@ -8433,7 +8433,7 @@ def _render_backtest_inner():
                 style={'color': COLORS['primary'], 'margin': '24px 0 8px 0'}),
         html.P("What the model projected and what he actually scored. Sort any column, "
                "or type in a filter box \u2014 e.g. GW3 in the GW column, or a name. "
-               "Diff is actual minus projected, so positive means the model was too low.",
+               "'DIFF' is actual minus projected, so positive means the model was too low.",
                style={'color': COLORS['text_light'], 'marginBottom': '12px'}),
         dash_table.DataTable(
             data=player_rows,
