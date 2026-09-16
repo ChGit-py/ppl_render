@@ -6125,7 +6125,11 @@ app.layout = html.Div([
                                            'borderRadius': '8px', 'fontWeight': '600',
                                            'cursor': 'pointer', 'marginBottom': '16px'}),
                         dcc.Loading(html.Div(id='lab-bt-out'), type='circle',
-                                    color=COLORS['primary'])
+                                    color=COLORS['primary']),
+                        # Full unfiltered per-player-per-GW rows from the last backtest
+                        # run — lets the Diff/Mins filter controls re-slice instantly
+                        # without re-running the (expensive) backtest itself.
+                        dcc.Store(id='lab-player-rows-store')
                     ], style=CARD_STYLE),
 
                     html.Div([
@@ -8294,8 +8298,41 @@ def update_fixture_outlook(page, n_gws, view, sort_by):
 
 
 # --- MODEL LAB: WALK-FORWARD BACKTEST ---
+
+# Shared by the Diff and Mins filter dropdowns on the backtest player table —
+# a plain-English operator picker instead of requiring Dash's native
+# `{diff} >= 4`-style filter-box syntax.
+NUMERIC_FILTER_OPTIONS = [
+    {'label': 'Any', 'value': 'any'},
+    {'label': 'Greater than (>)', 'value': 'gt'},
+    {'label': 'Greater than or equal to (\u2265)', 'value': 'gte'},
+    {'label': 'Less than (<)', 'value': 'lt'},
+    {'label': 'Less than or equal to (\u2264)', 'value': 'lte'},
+    {'label': 'Equal to (=)', 'value': 'eq'},
+    {'label': 'Not equal to (\u2260)', 'value': 'neq'},
+]
+_NUMERIC_FILTER_FNS = {
+    'gt': lambda v, t: v > t, 'gte': lambda v, t: v >= t,
+    'lt': lambda v, t: v < t, 'lte': lambda v, t: v <= t,
+    'eq': lambda v, t: v == t, 'neq': lambda v, t: v != t,
+}
+
+
+def _apply_numeric_filter(rows, field, op, value):
+    """Filter a list of row dicts on one numeric field by operator + value.
+    No-ops (returns rows unchanged) if op is 'any'/unset or value is blank —
+    0 is a legitimate threshold, so this checks for None, not falsiness."""
+    fn = _NUMERIC_FILTER_FNS.get(op)
+    if fn is None or value is None or value == '':
+        return rows
+    try:
+        threshold = float(value)
+    except (TypeError, ValueError):
+        return rows
+    return [r for r in rows if r.get(field) is not None and fn(r[field], threshold)]
+
 @callback(
-    Output('lab-bt-out', 'children'),
+    [Output('lab-bt-out', 'children'), Output('lab-player-rows-store', 'data')],
     Input('lab-bt-run', 'n_clicks'),
     prevent_initial_call=True
 )
@@ -8314,15 +8351,18 @@ def render_backtest(n_clicks):
                             'padding': '10px', 'borderRadius': '6px'}),
             html.P("Full traceback is in the server logs.",
                    style={'color': COLORS['text_light'], 'fontSize': '13px'}),
-        ])
+        ]), []
 
 
 def _render_backtest_inner():
+    """Returns (children, player_rows) — player_rows is the raw, unfiltered
+    per-player-per-GW list that feeds lab-player-rows-store, so the Diff/Mins
+    filter controls can re-slice it without re-running the backtest."""
     data = get_data()
     dfa, boot = data.get('df_active'), data.get('bootstrap_data')
     fixtures, teams_df = data.get('fixtures_data'), data.get('teams_df')
     if dfa is None or dfa.empty or not fixtures or teams_df is None:
-        return html.P("Data not loaded yet.", style={'color': COLORS['text_light']})
+        return html.P("Data not loaded yet.", style={'color': COLORS['text_light']}), []
 
     finished_gws = sorted({f['event'] for f in fixtures
                            if f.get('event') and (f.get('finished') or
@@ -8332,7 +8372,8 @@ def _render_backtest_inner():
     if not gws:
         return html.P("No completed gameweeks with a prior gameweek to learn from yet. "
                       "The backtest becomes available from GW2.",
-                      style={'color': COLORS['text_light']})
+                      style={'color': COLORS['text_light']}), []
+
 
     # Fetch budget. Render kills long-running HTTP requests, and fetching
     # ~600 element-summaries inside a callback blows straight through that —
@@ -8368,7 +8409,7 @@ def _render_backtest_inner():
     if len(usable) < 30:
         return html.P(f"Only {len(usable)} player histories available. Press Run "
                       f"Backtest again — each press fetches another batch and keeps "
-                      f"what it already has.", style={'color': COLORS['text_light']})
+                      f"what it already has.", style={'color': COLORS['text_light']}), []
     print(f"[backtest] scoring {len(usable)} players over GWs {gws}")
 
     meta = {int(r.id): {'position': r.position, 'team': int(r.team),
@@ -8382,7 +8423,7 @@ def _render_backtest_inner():
           f"{len(rows)} gameweeks scored")
     if not rows:
         return html.P("Not enough reconstructable history yet.",
-                      style={'color': COLORS['text_light']})
+                      style={'color': COLORS['text_light']}), []
 
     n = sum(r['players'] for r in rows)
     w = lambda k: sum(r[k] * r['players'] for r in rows) / n
@@ -8432,10 +8473,41 @@ def _render_backtest_inner():
         html.H4("Every Player, Every Gameweek",
                 style={'color': COLORS['primary'], 'margin': '24px 0 8px 0'}),
         html.P("What the model projected and what he actually scored. Sort any column, "
-               "or type in a filter box \u2014 e.g. GW3 in the GW column, or a name. "
-               "'DIFF' is actual minus projected, so positive means the model was too low.",
+               "or type in the GW/Player/Pos boxes to search by text. "
+               "Diff is actual minus projected, so positive means the model was too low. "
+               "Use the Diff/Mins filters below for numeric thresholds \u2014 no query "
+               "syntax needed.",
                style={'color': COLORS['text_light'], 'marginBottom': '12px'}),
+
+        html.Div([
+            html.Div([
+                html.Label("Diff filter", style={'fontWeight': '600', 'marginBottom': '6px',
+                                                  'display': 'block'}),
+                html.Div([
+                    dcc.Dropdown(id='lab-diff-op', options=NUMERIC_FILTER_OPTIONS,
+                                 value='any', clearable=False,
+                                 style={'minWidth': '190px', 'flex': '1'}),
+                    dcc.Input(id='lab-diff-value', type='number', placeholder='e.g. 0',
+                              style={'width': '90px', 'padding': '8px', 'marginLeft': '8px',
+                                     'borderRadius': '4px', 'border': '1px solid #ccc'}),
+                ], style={'display': 'flex', 'alignItems': 'center'})
+            ], style={'flex': '1', 'minWidth': '280px', 'padding': '0 10px'}),
+            html.Div([
+                html.Label("Mins filter", style={'fontWeight': '600', 'marginBottom': '6px',
+                                                  'display': 'block'}),
+                html.Div([
+                    dcc.Dropdown(id='lab-mins-op', options=NUMERIC_FILTER_OPTIONS,
+                                 value='any', clearable=False,
+                                 style={'minWidth': '190px', 'flex': '1'}),
+                    dcc.Input(id='lab-mins-value', type='number', placeholder='e.g. 90',
+                              style={'width': '90px', 'padding': '8px', 'marginLeft': '8px',
+                                     'borderRadius': '4px', 'border': '1px solid #ccc'}),
+                ], style={'display': 'flex', 'alignItems': 'center'})
+            ], style={'flex': '1', 'minWidth': '280px', 'padding': '0 10px'}),
+        ], style={'display': 'flex', 'flexWrap': 'wrap', 'marginBottom': '16px'}),
+
         dash_table.DataTable(
+            id='lab-player-table',
             data=player_rows,
             columns=[
                 {'name': 'GW', 'id': 'gw'},
@@ -8462,7 +8534,25 @@ def _render_backtest_inner():
                 {'if': {'filter_query': '{minutes_played} = 0'},
                  'color': COLORS['text_light'], 'fontStyle': 'italic'},
             ])
-    ])
+    ]), player_rows
+
+
+@callback(
+    Output('lab-player-table', 'data'),
+    [Input('lab-diff-op', 'value'), Input('lab-diff-value', 'value'),
+     Input('lab-mins-op', 'value'), Input('lab-mins-value', 'value')],
+    State('lab-player-rows-store', 'data'),
+    prevent_initial_call=True
+)
+def filter_backtest_player_table(diff_op, diff_val, mins_op, mins_val, stored_rows):
+    """Re-slices the already-computed backtest rows on the Diff/Mins operator
+    + value controls. Deliberately separate from render_backtest — that one
+    re-runs the (slow, rate-limited) backtest itself, and a filter tweak
+    shouldn't trigger that."""
+    rows = stored_rows or []
+    rows = _apply_numeric_filter(rows, 'diff', diff_op, diff_val)
+    rows = _apply_numeric_filter(rows, 'minutes_played', mins_op, mins_val)
+    return rows
 
 
 # --- MODEL LAB: PROJECTION BREAKDOWN ---
