@@ -7155,6 +7155,18 @@ def update_home_tab(n):
 
 
 # RANK CONGESTION TOOL
+def get_congestion_divisor(rank_gap: int) -> int:
+    """Pick a scale so 'pts per N ranks' stays in a readable range."""
+    if rank_gap < 1_000:
+        return 100
+    elif rank_gap < 10_000:
+        return 1_000
+    elif rank_gap < 100_000:
+        return 10_000
+    else:
+        return 100_000
+
+
 @callback(
     Output('rank-result', 'children'),
     Input('rank-check-btn', 'n_clicks'),
@@ -7194,7 +7206,12 @@ def check_rank_gap(n_clicks, your_rank, rival_rank):
 
     gap = abs(rival_points - your_points)
     rank_gap = abs(your_rank - rival_rank)
-    pts_per_1k_ranks = round((gap / rank_gap) * 1000, 1) if rank_gap > 0 else 0
+    if rank_gap > 0:
+        congestion_divisor = get_congestion_divisor(rank_gap)
+        pts_per_x_ranks = round((gap / rank_gap) * congestion_divisor, 1)
+    else:
+        congestion_divisor = 0
+        pts_per_x_ranks = 0
     higher_rank = rival_rank if rival_rank < your_rank else your_rank
     lower_rank = your_rank if rival_rank < your_rank else rival_rank
     higher_pts = rival_points if rival_rank < your_rank else your_points
@@ -7226,10 +7243,10 @@ def check_rank_gap(n_clicks, your_rank, rival_rank):
                 html.P("Congestion", style={'color': COLORS['text_light'], 'fontSize': '13px',
                                             'marginBottom': '4px', 'textTransform': 'uppercase',
                                             'letterSpacing': '0.5px', 'fontWeight': '600'}),
-                html.H3(f"{pts_per_1k_ranks} pts", style={'color': COLORS['success'], 'margin': '0',
-                                                           'fontSize': '28px', 'fontWeight': '700'}),
-                html.P("per 1,000 rank places", style={'color': COLORS['text_light'],
-                                                        'fontSize': '13px', 'margin': '4px 0 0 0'}),
+                html.H3(f"{pts_per_x_ranks} pts", style={'color': COLORS['success'], 'margin': '0',
+                                                          'fontSize': '28px', 'fontWeight': '700'}),
+                html.P(f"per {congestion_divisor:,} rank places", style={'color': COLORS['text_light'],
+                                                                          'fontSize': '13px', 'margin': '4px 0 0 0'}),
             ], style={**STAT_CARD_STYLE, 'flex': '1', 'minWidth': '160px', 'minHeight': 'auto', 'padding': '16px'}),
 
             html.Div([
