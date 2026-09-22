@@ -8,6 +8,7 @@ import pandas as pd
 import numpy as np
 import dash
 from dash import Dash, html, dcc, dash_table, callback, Output, Input, State, ctx, clientside_callback, ALL
+from dash.exceptions import PreventUpdate
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
@@ -4392,12 +4393,33 @@ home_value_cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'tot
 DEF_THR = SEASON['thresholds'].get('DEF', 10)
 MID_THR = SEASON['thresholds'].get('MID', 12)
 
+# Pages whose content is rendered on demand: only when first opened, and
+# again only if the underlying data has refreshed since. Everything else on
+# the page (dropdowns, filters) still re-renders live as you change it.
+LAZY_PAGES = [
+    'home', 'defcon-bonus', 'bonus-consistency', 'defcon', 'xg', 'underlying',
+    'value', 'form', 'cs', 'fixtures', 'fixture-ticker', 'fixture-outlook',
+    'differentials', 'captain', 'transfers', 'model-lab', 'transfer-planner',
+    'squad-builder', 'xcs',
+]
+
+
+def _need_visit(visit):
+    """Page callbacks bail until their page has actually been opened."""
+    if not visit:
+        raise PreventUpdate
+
+
 app.layout = html.Div([
     # Interval + stores
     dcc.Interval(id='refresh-interval', interval=2 * 60 * 1000, n_intervals=0),
     dcc.Store(id='active-page', data='home'),
     dcc.Store(id='active-page-local'),
     dcc.Store(id='sidebar-open', data=False),
+    # Lazy page rendering — see LAZY_PAGES / gate_page_renders below.
+    dcc.Store(id='data-version'),
+    dcc.Store(id='page-rendered', data={}),
+    *[dcc.Store(id=f'visit-{p}') for p in LAZY_PAGES],
     dcc.Store(id='my-squad-store', data=None),
 
     # Header
@@ -6882,6 +6904,37 @@ clientside_callback(
 )
 
 
+# --- LAZY PAGES: only render a page when it's opened (or its data changed) ---
+# Previously every page's callbacks fired on load and every 2 minutes whether
+# visible or not, so the page you were actually looking at queued behind ~20
+# hidden ones on Render's single worker. Now each page renders the first time
+# it's opened, and again only if the data version has moved since — revisiting
+# an up-to-date page costs nothing, because its content is still in the DOM.
+clientside_callback(
+    """
+    function(active, version, rendered) {
+        var lazy = %s;
+        var noUp = window.dash_clientside.no_update;
+        var out = lazy.map(function() { return noUp; });
+        var idx = lazy.indexOf(active);
+        rendered = rendered || {};
+        if (!version || idx === -1 || rendered[active] === version) {
+            out.push(noUp);
+            return out;
+        }
+        var next = Object.assign({}, rendered);
+        next[active] = version;
+        out[idx] = version;
+        out.push(next);
+        return out;
+    }
+    """ % json.dumps(LAZY_PAGES),
+    [Output(f'visit-{p}', 'data') for p in LAZY_PAGES] + [Output('page-rendered', 'data')],
+    [Input('active-page', 'data'), Input('data-version', 'data')],
+    State('page-rendered', 'data'),
+)
+
+
 # --- SIDEBAR: toggle open/closed on mobile, in one step ---
 clientside_callback(
     """
@@ -6906,10 +6959,20 @@ clientside_callback(
 
 
 @callback(
-    [Output('gw-status-text', 'children'), Output('last-updated-text', 'children')],
+    [Output('gw-status-text', 'children'), Output('last-updated-text', 'children'),
+     Output('data-version', 'data')],
     Input('refresh-interval', 'n_intervals')
 )
 def update_refresh_status(n):
+    gw_text, status_text = _refresh_status_text(n)
+    last = DATA.get('last_refresh', 0)
+    # Changes only when the data does: a full refresh, or the heavy stats
+    # phase finishing after startup. Drives lazy page re-renders.
+    version = f"{int(last)}-{int(bool(DATA.get('heavy_loaded', False)))}" if last else None
+    return gw_text, status_text, version
+
+
+def _refresh_status_text(n):
     """Check data freshness every 2 minutes. Trigger background refresh if stale."""
     check_and_refresh()
     current_gw_now = DATA.get('current_gw')
@@ -6951,10 +7014,12 @@ def filter_data(position, team, max_price, min_minutes, positions_allowed=None):
 # HOME TAB (dynamic - rebuilds from fresh DATA on each interval tick)
 @callback(
     Output('home-content', 'children'),
-    Input('refresh-interval', 'n_intervals')
+    Input('visit-home', 'data'),
+    prevent_initial_call=True
 )
 def update_home_tab(n):
     """Rebuild the entire Home tab from current DATA so it reflects refreshed data."""
+    _need_visit(n)
     data = get_data()
     df_now = data.get('df_active', pd.DataFrame())
     current_gw_now = data.get('current_gw')
@@ -7302,9 +7367,11 @@ def check_rank_gap(n_clicks, your_rank, rival_rank):
 @callback(
     [Output('bonus-scatter', 'figure'), Output('bonus-bar', 'figure'), Output('bonus-table', 'data')],
     [Input('bonus-position', 'value'), Input('bonus-team', 'value'), Input('bonus-price', 'value'),
-     Input('bonus-minutes', 'value')]
+     Input('bonus-minutes', 'value'), Input('visit-defcon-bonus', 'data')],
+    prevent_initial_call=True
 )
-def update_bonus(position, team, max_price, min_minutes):
+def update_bonus(position, team, max_price, min_minutes, _visit=None):
+    _need_visit(_visit)
     filtered = filter_data(position, team, max_price, min_minutes, positions_allowed=SEASON['defcon_positions'])
     filtered = filtered.dropna(subset=['defcon_per_90'])
 
@@ -7345,9 +7412,11 @@ def update_bonus(position, team, max_price, min_minutes):
     [Output('consistency-bar', 'figure'), Output('consistency-scatter', 'figure'), Output('consistency-table', 'data')],
     [Input('consistency-position', 'value'), Input('consistency-team', 'value'), Input('consistency-price', 'value'),
      Input('consistency-games', 'value'), Input('consistency-minutes', 'value'),
-     Input('refresh-interval', 'n_intervals')]
+     Input('visit-bonus-consistency', 'data')],
+    prevent_initial_call=True
 )
 def update_consistency(position, team, max_price, min_games, min_minutes, _n):
+    _need_visit(_n)
     # Guard invalid/blank inputs (Dash sends None for out-of-step values)
     min_games = 1 if min_games is None else min_games
     min_minutes = 0 if min_minutes is None else min_minutes
@@ -7460,9 +7529,11 @@ def update_consistency(position, team, max_price, min_games, min_minutes, _n):
 @callback(
     [Output('defcon-scatter', 'figure'), Output('defcon-table', 'data')],
     [Input('defcon-position', 'value'), Input('defcon-team', 'value'), Input('defcon-price', 'value'),
-     Input('defcon-minutes', 'value')]
+     Input('defcon-minutes', 'value'), Input('visit-defcon', 'data')],
+    prevent_initial_call=True
 )
-def update_defcon(position, team, max_price, min_minutes):
+def update_defcon(position, team, max_price, min_minutes, _visit=None):
+    _need_visit(_visit)
     filtered = filter_data(position, team, max_price, min_minutes, positions_allowed=SEASON['defcon_positions'])
     filtered = filtered.dropna(subset=['defcon_per_90', 'expected_defcon'])
 
@@ -7486,9 +7557,11 @@ def update_defcon(position, team, max_price, min_minutes):
 # XG
 @callback(
     [Output('xg-scatter', 'figure'), Output('xg-table', 'data')],
-    [Input('xg-position', 'value'), Input('xg-team', 'value'), Input('xg-price', 'value'), Input('xg-minutes', 'value')]
+    [Input('xg-position', 'value'), Input('xg-team', 'value'), Input('xg-price', 'value'), Input('xg-minutes', 'value'), Input('visit-xg', 'data')],
+    prevent_initial_call=True
 )
-def update_xg(position, team, max_price, min_minutes):
+def update_xg(position, team, max_price, min_minutes, _visit=None):
+    _need_visit(_visit)
     filtered = filter_data(position, team, max_price, min_minutes)
     filtered = filtered.dropna(subset=['expected_goals'])
 
@@ -7514,9 +7587,11 @@ def update_xg(position, team, max_price, min_minutes):
 @callback(
     [Output('under-scatter', 'figure'), Output('under-table', 'data')],
     [Input('under-position', 'value'), Input('under-team', 'value'), Input('under-price', 'value'),
-     Input('under-minutes', 'value')]
+     Input('under-minutes', 'value'), Input('visit-underlying', 'data')],
+    prevent_initial_call=True
 )
-def update_underlying(position, team, max_price, min_minutes):
+def update_underlying(position, team, max_price, min_minutes, _visit=None):
+    _need_visit(_visit)
     filtered = filter_data(position, team, max_price, min_minutes)
     filtered = filtered.dropna(subset=['xgi_per_90', 'gi_per_90'])
 
@@ -7545,9 +7620,11 @@ def update_underlying(position, team, max_price, min_minutes):
 @callback(
     [Output('value-scatter', 'figure'), Output('value-table', 'data')],
     [Input('value-position', 'value'), Input('value-team', 'value'), Input('value-price', 'value'),
-     Input('value-minutes', 'value')]
+     Input('value-minutes', 'value'), Input('visit-value', 'data')],
+    prevent_initial_call=True
 )
-def update_value(position, team, max_price, min_minutes):
+def update_value(position, team, max_price, min_minutes, _visit=None):
+    _need_visit(_visit)
     filtered = filter_data(position, team, max_price, min_minutes)
     filtered = filtered.dropna(subset=['points_per_million'])
 
@@ -7568,9 +7645,11 @@ def update_value(position, team, max_price, min_minutes):
 @callback(
     [Output('form-chart', 'figure'), Output('form-table', 'data')],
     [Input('form-position', 'value'), Input('form-team', 'value'), Input('form-price', 'value'),
-     Input('form-minutes', 'value')]
+     Input('form-minutes', 'value'), Input('visit-form', 'data')],
+    prevent_initial_call=True
 )
-def update_form(position, team, max_price, min_minutes):
+def update_form(position, team, max_price, min_minutes, _visit=None):
+    _need_visit(_visit)
     filtered = filter_data(position, team, max_price, min_minutes)
     filtered = filtered.dropna(subset=['form_vs_season'])
     top_form = filtered.nlargest(20, 'form_vs_season')
@@ -7594,9 +7673,11 @@ def update_form(position, team, max_price, min_minutes):
 # CLEAN SHEETS
 @callback(
     [Output('cs-chart', 'figure'), Output('cs-table', 'data')],
-    [Input('cs-position', 'value'), Input('cs-team', 'value'), Input('cs-price', 'value'), Input('cs-minutes', 'value')]
+    [Input('cs-position', 'value'), Input('cs-team', 'value'), Input('cs-price', 'value'), Input('cs-minutes', 'value'), Input('visit-cs', 'data')],
+    prevent_initial_call=True
 )
-def update_cs(position, team, max_price, min_minutes):
+def update_cs(position, team, max_price, min_minutes, _visit=None):
+    _need_visit(_visit)
     filtered = filter_data(position, team, max_price, min_minutes, positions_allowed=['GKP', 'DEF'])
     filtered = filtered.dropna(subset=['cs_per_90', 'gc_per_90'])
 
@@ -7617,9 +7698,11 @@ def update_cs(position, team, max_price, min_minutes):
 @callback(
     [Output('fdr-team-bar', 'figure'), Output('fdr-scatter', 'figure'), Output('fdr-table', 'data')],
     [Input('fdr-position', 'value'), Input('fdr-team', 'value'), Input('fdr-price', 'value'),
-     Input('fdr-minutes', 'value')]
+     Input('fdr-minutes', 'value'), Input('visit-fixtures', 'data')],
+    prevent_initial_call=True
 )
-def update_fdr(position, team, max_price, min_minutes):
+def update_fdr(position, team, max_price, min_minutes, _visit=None):
+    _need_visit(_visit)
     # Team bar chart uses ALL teams (unfiltered) since FDR is team-level
     data = get_data()
     all_active = data['df_active'].dropna(subset=['avg_fdr_5'])
@@ -7699,9 +7782,11 @@ def update_fdr(position, team, max_price, min_minutes):
 @callback(
     [Output('ticker-heatmap', 'figure'), Output('ticker-title', 'children')],
     [Input('ticker-sort', 'value'), Input('ticker-gws', 'value'),
-     Input('refresh-interval', 'n_intervals')]
+     Input('visit-fixture-ticker', 'data')],
+    prevent_initial_call=True
 )
 def update_fixture_ticker(sort_by, num_gws, n):
+    _need_visit(n)
     data = get_data()
     fixtures_data = data.get('fixtures_data', [])
     teams_df      = data.get('teams_df', pd.DataFrame())
@@ -7877,9 +7962,11 @@ def update_fixture_ticker(sort_by, num_gws, n):
 @callback(
     [Output('diff-scatter', 'figure'), Output('diff-bar', 'figure'), Output('diff-table', 'data')],
     [Input('diff-position', 'value'), Input('diff-team', 'value'), Input('diff-price', 'value'),
-     Input('diff-max-own', 'value'), Input('diff-minutes', 'value')]
+     Input('diff-max-own', 'value'), Input('diff-minutes', 'value'), Input('visit-differentials', 'data')],
+    prevent_initial_call=True
 )
-def update_differentials(position, team, max_price, max_own, min_minutes):
+def update_differentials(position, team, max_price, max_own, min_minutes, _visit=None):
+    _need_visit(_visit)
     filtered = filter_data(position, team, max_price, min_minutes)
     filtered = filtered[filtered['ownership'] <= max_own]
     filtered = filtered.dropna(subset=['ppg', 'ownership'])
@@ -7957,9 +8044,11 @@ def sync_own_slider(input_val):
 # --- REGRESSION WATCHLIST ---
 @callback(
     [Output('regress-sell-table', 'data'), Output('regress-buy-table', 'data')],
-    Input('refresh-interval', 'n_intervals')
+    Input('visit-form', 'data'),
+    prevent_initial_call=True
 )
 def update_regression_watchlist(_n):
+    _need_visit(_n)
     data = get_data()
     dfa = data.get('df_active', pd.DataFrame())
     if dfa.empty or 'xgi_diff_per_90' not in dfa.columns:
@@ -7982,9 +8071,11 @@ def update_regression_watchlist(_n):
 # --- FIXTURE SWING DETECTOR ---
 @callback(
     Output('fdr-swing-table', 'data'),
-    Input('refresh-interval', 'n_intervals')
+    Input('visit-fixtures', 'data'),
+    prevent_initial_call=True
 )
 def update_fixture_swings(_n):
+    _need_visit(_n)
     data = get_data()
     fixtures_data = data.get('fixtures_data', [])
     teams_df = data.get('teams_df', pd.DataFrame())
@@ -8019,7 +8110,8 @@ def update_fixture_swings(_n):
     [Output('cap-bar', 'figure'), Output('cap-ha-scatter', 'figure'), Output('cap-table', 'data')],
     [Input('cap-position', 'value'), Input('cap-team', 'value'), Input('cap-price', 'value'),
      Input('cap-minutes', 'value'), Input('cap-mode', 'value'),
-     Input('refresh-interval', 'n_intervals')]
+     Input('visit-captain', 'data')],
+    prevent_initial_call=True
 )
 def update_captain(position, team, max_price, min_minutes, mode, _n):
     """
@@ -8030,6 +8122,7 @@ def update_captain(position, team, max_price, min_minutes, mode, _n):
     captain is your variance lever and P(2+ involvements) is the metric.
     Defensive: any failure renders an error message, never a dead page.
     """
+    _need_visit(_n)
     try:
         filtered = filter_data(position, team, max_price, min_minutes,
                                positions_allowed=SEASON['outfield_positions'])
@@ -8134,9 +8227,11 @@ def update_captain(position, team, max_price, min_minutes, mode, _n):
      Output('xfer-scatter', 'figure'), Output('xfer-table', 'data'),
      Output('xfer-delta-basis', 'children')],
     [Input('xfer-position', 'value'), Input('xfer-team', 'value'),
-     Input('xfer-price', 'value'), Input('xfer-minutes', 'value')]
+     Input('xfer-price', 'value'), Input('xfer-minutes', 'value'), Input('visit-transfers', 'data')],
+    prevent_initial_call=True
 )
-def update_transfers(position, team, max_price, min_minutes):
+def update_transfers(position, team, max_price, min_minutes, _visit=None):
+    _need_visit(_visit)
     filtered = filter_data(position, team, max_price, min_minutes)
     filtered = filtered.dropna(subset=['net_transfers_gw'])
 
@@ -8202,13 +8297,13 @@ def update_transfers(position, team, max_price, min_minutes):
 # --- FIXTURE OUTLOOK: modelled grid, not FDR integers ---
 @callback(
     [Output('fo-heatmap', 'figure'), Output('fo-table', 'children')],
-    [Input('active-page', 'data'), Input('fo-gws', 'value'),
-     Input('fo-view', 'value'), Input('fo-sort', 'value')]
+    [Input('visit-fixture-outlook', 'data'), Input('fo-gws', 'value'),
+     Input('fo-view', 'value'), Input('fo-sort', 'value')],
+    prevent_initial_call=True
 )
 def update_fixture_outlook(page, n_gws, view, sort_by):
+    _need_visit(page)
     blank = go.Figure(); blank.update_layout(template='plotly_white', height=320)
-    if page != 'fixture-outlook':
-        return blank, html.Div()
 
     data = get_data()
     fixtures, teams_df = data.get('fixtures_data'), data.get('teams_df')
@@ -8619,15 +8714,15 @@ XP_PART_COLOURS = {'Appear': '#9e9e9e', 'Goals': COLORS['accent'], 'Assists': '#
 
 @callback(
     [Output('lab-bd-chart', 'figure'), Output('lab-bd-table', 'children')],
-    [Input('active-page', 'data'), Input('lab-bd-position', 'value'),
-     Input('lab-bd-team', 'value'), Input('lab-bd-search', 'value')]
+    [Input('visit-model-lab', 'data'), Input('lab-bd-position', 'value'),
+     Input('lab-bd-team', 'value'), Input('lab-bd-search', 'value')],
+    prevent_initial_call=True
 )
 def render_projection_breakdown(page, position, team, search):
     """Split each next-GW projection into its eight scoring components."""
+    _need_visit(page)
     blank = go.Figure()
     blank.update_layout(template='plotly_white', height=320)
-    if page != 'model-lab':
-        return blank, html.Div()
 
     dfa = get_data().get('df_active')
     if dfa is None or dfa.empty or 'xp_goals' not in dfa.columns:
@@ -8715,11 +8810,11 @@ def render_projection_breakdown(page, position, team, search):
 # --- MODEL LAB ---
 @callback(
     Output('lab-calibration', 'children'),
-    Input('active-page', 'data')
+    Input('visit-model-lab', 'data'),
+    prevent_initial_call=True
 )
 def render_lab_calibration(page):
-    if page != 'model-lab':
-        return html.Div()
+    _need_visit(page)
     cal = compute_calibration()
     if not cal:
         return html.P("Nothing scoreable yet. Calibration appears once a logged gameweek "
@@ -8991,9 +9086,11 @@ def check_price_alerts(n_clicks, team_id):
 # --- SQUAD BUILDER chip-target options ---
 @callback(
     Output('sq-chip-gw', 'options'),
-    Input('active-page', 'data')
+    Input('visit-squad-builder', 'data'),
+    prevent_initial_call=True
 )
 def populate_chip_gw_options(page):
+    _need_visit(page)
     data = get_data()
     anchor_gw = data.get('fixture_anchor_gw')
     if anchor_gw is None:
@@ -9610,11 +9707,13 @@ def load_my_squad(n_clicks, team_id):
 
 @callback(
     [Output('tp-player-out', 'options'), Output('tp-player-in', 'options')],
-    Input('active-page', 'data')
+    Input('visit-transfer-planner', 'data'),
+    prevent_initial_call=True
 )
 def populate_transfer_planner_options(page):
     """Refresh the player pools whenever the page is visited (cheap, and
     avoids serving a boot-time snapshot after a data refresh)."""
+    _need_visit(page)
     data = get_data()
     dfa = data.get('df_active', pd.DataFrame())
     if dfa.empty:
@@ -10587,9 +10686,11 @@ def load_rivals(n_clicks, league_id, my_id):
     [Output('xcs-bar', 'figure'), Output('xcs-team-table', 'data'),
      Output('xcs-player-table', 'data'), Output('xcs-chart-title', 'children'),
      Output('xcs-form-note', 'children')],
-    [Input('xcs-horizon', 'value'), Input('refresh-interval', 'n_intervals')]
+    [Input('xcs-horizon', 'value'), Input('visit-xcs', 'data')],
+    prevent_initial_call=True
 )
 def update_expected_clean_sheets(horizon, n):
+    _need_visit(n)
     data = get_data()
     fixtures_data = data.get('fixtures_data', [])
     teams_df = data.get('teams_df', pd.DataFrame())
