@@ -3925,7 +3925,8 @@ app.index_string = '''
                 overflow-y: auto;
                 overflow-x: hidden;
                 z-index: 500;
-                transition: transform 0.28s ease;
+                transition: transform 0.22s ease-out;
+                will-change: transform;
                 flex-shrink: 0;
                 padding-bottom: 24px;
             }
@@ -4000,8 +4001,18 @@ app.index_string = '''
                 color: white;
                 font-size: 22px;
                 cursor: pointer;
-                padding: 4px 10px 4px 0;
+                /* 44x44 is the minimum comfortable touch target; the old
+                   ~26px button was easy to half-miss on a phone. */
+                min-width: 44px;
+                min-height: 44px;
+                padding: 0 10px 0 0;
                 line-height: 1;
+                -webkit-tap-highlight-color: transparent;
+            }
+
+            /* Kill the legacy ~300ms double-tap-zoom wait on taps */
+            button, .nav-item, #sidebar-overlay {
+                touch-action: manipulation;
             }
 
             /* ================================================================
@@ -6755,39 +6766,73 @@ ALL_PAGES = [
     'rivals', 'deadline', 'my-squad', 'squad-builder',
 ]
 
+# -----------------------------------------------------------------------------
+# NAVIGATION & SIDEBAR — all clientside.
+# These used to be server callbacks, so every hamburger tap and nav click made
+# a network round trip to Render (two, for the hamburger: toggle -> store ->
+# classes) and had to queue behind whatever heavy callback a gunicorn worker
+# was already running. None of this needs Python — it's pure show/hide — so
+# it now runs in the browser and responds instantly. Page CONTENT callbacks
+# that listen to active-page are unchanged and still run server-side.
+# -----------------------------------------------------------------------------
+
+def _nav_trigger_js():
+    """Shared JS snippet: id of whatever triggered this clientside callback."""
+    return """
+        var trig = (window.dash_clientside.callback_context.triggered || [])[0];
+        var propId = trig ? trig.prop_id : '';
+        var trigId = propId.substring(0, propId.lastIndexOf('.'));
+        var trigVal = trig ? trig.value : null;
+    """
+
+
 # --- NAV: clicks → active-page store ---
-@callback(
+clientside_callback(
+    """
+    function() {
+        var args = Array.prototype.slice.call(arguments);
+        var localVal = args[args.length - 1];
+        var pages = %s;
+        %s
+        if (trigId === 'active-page-local') {
+            return pages.indexOf(localVal) !== -1 ? localVal : 'home';
+        }
+        if (trigId.indexOf('nav-') === 0) {
+            return trigId.substring(4);
+        }
+        return window.dash_clientside.no_update;
+    }
+    """ % (json.dumps(ALL_PAGES), _nav_trigger_js()),
     Output('active-page', 'data'),
     [Input(f'nav-{p}', 'n_clicks') for p in ALL_PAGES],
     Input('active-page-local', 'data'),
     prevent_initial_call=True
 )
-def set_active_page(*args):
-    # Last arg is the localStorage value (from active-page-local)
-    local_val = args[-1]
-    if ctx.triggered_id == 'active-page-local':
-        # On load: restore from localStorage if valid
-        return local_val if local_val in ALL_PAGES else 'home'
-    if ctx.triggered_id:
-        return ctx.triggered_id[4:]  # strip 'nav-' prefix
-    return 'home'
 
 
 # --- Home spotlight / stat cards → jump to the full page ---
 # Separate from the sidebar router because those Inputs are keyed on
 # `nav-<page>` and reusing those ids would duplicate them. Pattern-matching
 # ids plus allow_duplicate lets both write to the same store.
-@callback(
+clientside_callback(
+    """
+    function(clicks) {
+        var pages = %s;
+        %s
+        // Re-rendered Home cards fire with n_clicks 0/null — ignore those.
+        if (!trigVal) { return window.dash_clientside.no_update; }
+        try {
+            var page = JSON.parse(trigId).page;
+            return pages.indexOf(page) !== -1 ? page : window.dash_clientside.no_update;
+        } catch (e) {
+            return window.dash_clientside.no_update;
+        }
+    }
+    """ % (json.dumps(ALL_PAGES), _nav_trigger_js()),
     Output('active-page', 'data', allow_duplicate=True),
     Input({'type': 'home-jump', 'page': ALL}, 'n_clicks'),
     prevent_initial_call=True
 )
-def home_card_jump(clicks):
-    if not clicks or not any(clicks):
-        return dash.no_update
-    tid = ctx.triggered_id
-    page = tid.get('page') if isinstance(tid, dict) else None
-    return page if page in ALL_PAGES else dash.no_update
 
 
 # --- Read saved page from localStorage on load ---
@@ -6817,55 +6862,46 @@ clientside_callback(
 )
 
 
-# --- PAGES: active-page store → show/hide each page div ---
-@callback(
-    [Output(f'page-{p}', 'style') for p in ALL_PAGES],
+# --- PAGES: show active page, hide the rest; highlight its nav button ---
+clientside_callback(
+    """
+    function(active) {
+        var pages = %s;
+        var styles = pages.map(function(p) {
+            return p === active ? {'display': 'block'} : {'display': 'none'};
+        });
+        var classes = pages.map(function(p) {
+            return p === active ? 'nav-item active' : 'nav-item';
+        });
+        return styles.concat(classes);
+    }
+    """ % json.dumps(ALL_PAGES),
+    [Output(f'page-{p}', 'style') for p in ALL_PAGES]
+    + [Output(f'nav-{p}', 'className') for p in ALL_PAGES],
     Input('active-page', 'data')
 )
-def show_active_page(active):
-    return [
-        {'display': 'block'} if p == active else {'display': 'none'}
-        for p in ALL_PAGES
-    ]
 
 
-# --- NAV ITEMS: highlight active nav button ---
-@callback(
-    [Output(f'nav-{p}', 'className') for p in ALL_PAGES],
-    Input('active-page', 'data')
-)
-def highlight_nav(active):
-    return [
-        'nav-item active' if p == active else 'nav-item'
-        for p in ALL_PAGES
-    ]
-
-
-# --- SIDEBAR: toggle open/closed on mobile ---
-@callback(
-    Output('sidebar-open', 'data'),
+# --- SIDEBAR: toggle open/closed on mobile, in one step ---
+clientside_callback(
+    """
+    function(hamburgerClicks, overlayClicks, activePage, isOpen) {
+        %s
+        var open = (trigId === 'hamburger-btn') ? !isOpen : false;
+        return [open,
+                open ? 'sidebar sidebar-open' : 'sidebar',
+                open ? 'overlay-open' : ''];
+    }
+    """ % _nav_trigger_js(),
+    [Output('sidebar-open', 'data'),
+     Output('sidebar', 'className'),
+     Output('sidebar-overlay', 'className')],
     [Input('hamburger-btn', 'n_clicks'),
      Input('sidebar-overlay', 'n_clicks'),
      Input('active-page', 'data')],
     State('sidebar-open', 'data'),
     prevent_initial_call=True
 )
-def toggle_sidebar(hamburger_clicks, overlay_clicks, active_page, is_open):
-    trigger = ctx.triggered_id
-    if trigger == 'hamburger-btn':
-        return not is_open
-    return False  # overlay click or page navigation → close
-
-
-@callback(
-    [Output('sidebar', 'className'),
-     Output('sidebar-overlay', 'className')],
-    Input('sidebar-open', 'data')
-)
-def apply_sidebar_classes(is_open):
-    if is_open:
-        return 'sidebar sidebar-open', 'overlay-open'
-    return 'sidebar', ''
 
 
 
