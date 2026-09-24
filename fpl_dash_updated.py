@@ -3949,6 +3949,10 @@ _CACHE_KEYS = [
 # A mismatch (or an over-age cache) forces a clean fetch instead of serving
 # last season's teams and players from disk.
 CACHE_VERSION = 10
+# Render sets RENDER_GIT_COMMIT on every deploy. Stamping the cache with it
+# means a new deploy never reuses data pickled by an older build (or a local
+# run that ended up in the repo), so "Updated" always resets on deploy.
+BUILD_ID = os.environ.get('RENDER_GIT_COMMIT', 'local')
 MAX_CACHE_AGE = REFRESH_INTERVAL
 
 
@@ -3958,6 +3962,7 @@ def save_cache():
         payload = {k: DATA[k] for k in _CACHE_KEYS if k in DATA}
         payload['_cache_version'] = CACHE_VERSION
         payload['_season_label'] = SEASON['label']
+        payload['_build'] = BUILD_ID
         with open(CACHE_PATH, 'wb') as f:
             pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
         size_mb = os.path.getsize(CACHE_PATH) / (1024 * 1024)
@@ -3989,10 +3994,15 @@ def load_cache():
         if age > MAX_CACHE_AGE:
             print(f"  Cache is {age_hrs:.1f}h old (limit {MAX_CACHE_AGE / 3600:.0f}h) — refetching")
             return False
+        if cached.get('_build', 'local') != BUILD_ID:
+            print(f"  Cache is from build {str(cached.get('_build'))[:7]}, this is "
+                  f"{BUILD_ID[:7]} — new deploy, refetching")
+            return False
 
         print(f"  Cache found ({age_hrs:.1f}h old, season {cached.get('_season_label')}) — loading...")
         cached.pop('_cache_version', None)
         cached.pop('_season_label', None)
+        cached.pop('_build', None)
         with DATA_LOCK:
             DATA.update(cached)
             DATA['refreshing'] = False
@@ -4805,6 +4815,26 @@ app.index_string = '''
                 -webkit-overflow-scrolling: touch;
             }
 
+            /* ================================================================
+               HEADER — compact single row on phones and narrow tablets
+            ================================================================ */
+            .hdr-short { display: none; }
+            @media (max-width: 700px) {
+                .hdr { padding: 8px 0 !important; }
+                .hdr-row { padding: 0 8px 0 4px !important; }
+                .hdr-logo { height: 28px !important; margin-right: 8px !important; }
+                .hdr-pill { font-size: 14px !important; padding: 4px 8px !important;
+                            margin-right: 0 !important; }
+                .hdr-long, .hdr-sub, .hdr-gw { display: none !important; }
+                .hdr-short { display: inline; }
+                .hdr-updated { font-size: 11px !important; white-space: nowrap; }
+                #hamburger-btn { min-width: 40px; padding: 0 !important; }
+                #app-body { height: calc(100vh - 64px); }   /* 60px compact header + 4px stripe */
+            }
+            @media (max-width: 360px) {
+                .hdr-updated { display: none; }
+            }
+
             @media (max-width: 900px) {
 
                 #hamburger-btn { display: block; }
@@ -5221,27 +5251,32 @@ app.layout = html.Div([
             html.Div([
                 # Hamburger (visible on mobile only via CSS)
                 html.Button('☰', id='hamburger-btn', n_clicks=0),
-                html.Img(src="/assets/premier_league_logo.png",
+                html.Img(src="/assets/premier_league_logo.png", className='hdr-logo',
                          style={'height': '40px', 'marginRight': '12px'}),
-                html.Span(f"Fantasy Premier League {SEASON['label']}",
-                          style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
-                                 'padding': '6px 12px', 'borderRadius': '6px', 'fontWeight': '800',
-                                 'fontSize': '18px', 'marginRight': '12px'}),
-                html.Span("Analytics Hub", style={'color': 'white', 'fontSize': '20px', 'fontWeight': '600'})
-            ], style={'display': 'flex', 'alignItems': 'center'}),
+                html.Span([
+                    html.Span(f"Fantasy Premier League {SEASON['label']}", className='hdr-long'),
+                    html.Span(f"FPL {SEASON['label']}", className='hdr-short'),
+                ], className='hdr-pill',
+                   style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
+                          'padding': '6px 12px', 'borderRadius': '6px', 'fontWeight': '800',
+                          'fontSize': '18px', 'marginRight': '12px', 'whiteSpace': 'nowrap'}),
+                html.Span("Analytics Hub", className='hdr-sub',
+                          style={'color': 'white', 'fontSize': '20px', 'fontWeight': '600'})
+            ], style={'display': 'flex', 'alignItems': 'center', 'minWidth': '0'}),
             html.Div([
-                html.Span(id='gw-status-text',
+                html.Span(id='gw-status-text', className='hdr-gw',
                           style={'color': 'rgba(255,255,255,0.8)', 'fontSize': '13px'}),
-                html.Span(" | ", style={'color': 'rgba(255,255,255,0.5)', 'fontSize': '13px'}),
-                html.Span(id='last-updated-text',
+                html.Span(" | ", className='hdr-gw',
+                          style={'color': 'rgba(255,255,255,0.5)', 'fontSize': '13px'}),
+                html.Span(id='last-updated-text', className='hdr-updated',
                           style={'color': 'rgba(255,255,255,0.6)', 'fontSize': '12px'}),
                 # Home-screen app only (no Safari reload button there); CSS shows it
                 html.Button('\u21bb', id='app-refresh-btn', n_clicks=0,
                             title='Refresh', **{'aria-label': 'Refresh'}),
-            ], style={'display': 'flex', 'alignItems': 'center', 'gap': '4px'})
-        ], style={'display': 'flex', 'justifyContent': 'space-between', 'alignItems': 'center',
-                  'maxWidth': '100%', 'margin': '0 auto', 'padding': '0 20px'})
-    ], style={'backgroundColor': COLORS['primary'], 'padding': '12px 0', 'position': 'sticky',
+            ], className='hdr-status', style={'display': 'flex', 'alignItems': 'center', 'gap': '4px'})
+        ], className='hdr-row', style={'display': 'flex', 'justifyContent': 'space-between', 'alignItems': 'center',
+                  'maxWidth': '100%', 'margin': '0 auto', 'padding': '0 20px', 'gap': '8px'})
+    ], className='hdr', style={'backgroundColor': COLORS['primary'], 'padding': '12px 0', 'position': 'sticky',
               'top': '0', 'zIndex': '1000', 'boxShadow': '0 2px 8px rgba(0,0,0,0.15)'}),
     html.Div(className='fpl-stripe'),
 
@@ -7795,7 +7830,10 @@ app.layout = html.Div([
         html.P(["Built for analytical Fantasy Premier League decision making  Data from ",
                 html.A("Official FPL API", href="https://fantasy.premierleague.com/api/bootstrap-static/", target="_blank",
                        style={'color': COLORS['secondary']})],
-               style={'color': 'rgba(255,255,255,0.7)', 'fontSize': '13px', 'margin': '0'})
+               style={'color': 'rgba(255,255,255,0.7)', 'fontSize': '13px', 'margin': '0'}),
+        # Which commit is actually live — the quickest check that a deploy took
+        html.P(f"Version {BUILD_ID[:7]}",
+               style={'color': 'rgba(255,255,255,0.45)', 'fontSize': '11px', 'margin': '6px 0 0'}),
     ], style={'backgroundColor': COLORS['primary'], 'padding': '20px', 'textAlign': 'center'})
 
 ], style={'fontFamily': FONT_FAMILY, 'backgroundColor': COLORS['background'], 'margin': '0', 'padding': '0'})
