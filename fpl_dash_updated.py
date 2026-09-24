@@ -5418,7 +5418,7 @@ app.layout = html.Div([
                     html.Div([
                         html.H3("Quality vs Volume", style={'color': COLORS['primary'], 'marginBottom': '4px'}),
                         html.P("Top right = shoots often AND from good positions. Bottom right = volume shooter "
-                               "from distance. Top left = few but excellent chances. Bubble size = npxG per 90.",
+                               "from positions that produce low quality chances. Top left = few but excellent chances. Bubble size = npxG per 90.",
                                style={'color': COLORS['text_light'], 'fontSize': '13px'}),
                         dcc.Graph(id='cq-scatter', config={'displayModeBar': False}),
                     ], style=CARD_STYLE),
@@ -6290,7 +6290,7 @@ app.layout = html.Div([
                     html.Div([
                         html.H3("Fixture Outlook", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
                         html.P([
-                            "FDR asks ", html.Strong("how difficult is this opponent"), ". This looks ",
+                            "FDR asks ", html.Strong("how hard is this opponent"), ". This looks ",
                             html.Strong("at what this team could actually produce in this fixture"),
                             " \u2014 which for a weak side is a very different question. A "
                             "promoted team at home to a poor defence is a green cell on FDR and "
