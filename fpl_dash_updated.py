@@ -3184,6 +3184,614 @@ TABLE_STYLE_DATA = {
 import time
 import threading
 
+# =============================================================================
+# SHOT INTELLIGENCE — where chances are created and conceded (Understat)
+# =============================================================================
+# The FPL API has no location data, so this pulls shot-level data from
+# Understat's JSON endpoints: every shot with pitch coordinates, xG, situation
+# (open play / corner / free kick / penalty), body part and the action that
+# set it up (cross, through ball, ...), plus per-match rosters for minutes and
+# left/right positions.
+#
+# Fetch-once-per-match: a finished match never changes, so each one is
+# downloaded once, stored in the snapshot SQLite DB and never re-requested.
+# Current FPL season only. Understat is an unofficial source, so every fetch
+# fails soft — nothing else in the app depends on it.
+
+UNDERSTAT_BASE = 'https://understat.com/'
+UNDERSTAT_HEADERS = {
+    # Understat's data endpoints only answer JSON to requests that look like
+    # its own page's XHR calls — without these the response is HTML or a 404.
+    'User-Agent': ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
+                   '(KHTML, like Gecko) Chrome/126.0 Safari/537.36'),
+    'X-Requested-With': 'XMLHttpRequest',
+    'Referer': UNDERSTAT_BASE,
+    'Accept': 'application/json, text/javascript, */*; q=0.01',
+}
+SHOTS_REFRESH_INTERVAL = float(os.environ.get('SHOTS_REFRESH_INTERVAL_HOURS', '6')) * 3600
+# Cap per sync so a from-scratch catch-up late in the season is spread over a
+# few runs (10 minutes apart) instead of one long burst of requests.
+SHOTS_MAX_PER_RUN = int(os.environ.get('SHOTS_MAX_MATCHES_PER_RUN', '60'))
+SHOTS_REQUEST_GAP = 1.5          # seconds between match requests — be polite
+# Matches of league-average "prior" each team's zone profile is shrunk toward.
+# Same idea as FPL_TEAM_FORM_K: early-season profiles lean on the league,
+# and earn their way out as real matches accumulate.
+SHOT_PROFILE_K = float(os.environ.get('FPL_SHOT_PROFILE_K', '6'))
+
+# Pitch geometry on Understat's 0-1 grid: X runs towards the goal being
+# attacked (1 = goal line), Y runs across the pitch.
+SHOT_BOX_X, SHOT_SIX_X = 0.83, 0.945
+SHOT_BOX_Y = (0.211, 0.789)
+SHOT_CENTRE_Y = (0.368, 0.632)   # six-yard-box width = the central channel
+SHOT_BIG_CHANCE_XG = 0.30        # "high-quality chance" threshold
+
+SET_PIECE_SITUATIONS = {'FromCorner', 'SetPiece', 'DirectFreekick'}
+# Mutually exclusive split of every non-penalty shot. Flanks are always in
+# the ATTACKING team's frame: 'op_left' = attacking down their own left.
+SHOT_COMPONENTS = ['set_piece', 'cross', 'op_centre', 'op_left', 'op_right']
+COMP_LABEL_ATT = {
+    'set_piece': 'Set pieces', 'cross': 'Crosses', 'op_centre': 'Open play: central',
+    'op_left': 'Open play: down their left', 'op_right': 'Open play: down their right',
+}
+# A defence conceding down ITS left is being attacked down the attacker's right.
+COMP_LABEL_DEF = {
+    'set_piece': 'Set pieces', 'cross': 'Crosses', 'op_centre': 'Open play: central',
+    'op_left': 'Open play: down their right', 'op_right': 'Open play: down their left',
+}
+COMP_TAG = {'set_piece': 'Set pcs', 'cross': 'Crosses', 'op_centre': 'Central',
+            'op_left': 'Left', 'op_right': 'Right'}
+
+# Understat roster positions carry a side, which gives each player's flank
+# directly and lets the app check Understat's Y orientation from the data.
+_US_POS_SIDE = {
+    'DL': 'left', 'DML': 'left', 'ML': 'left', 'AML': 'left', 'FWL': 'left',
+    'DR': 'right', 'DMR': 'right', 'MR': 'right', 'AMR': 'right', 'FWR': 'right',
+}
+
+
+def _season_start_year():
+    """FPL season start year (2026/27 -> 2026), which is also how Understat
+    keys its seasons."""
+    try:
+        return int(str(SEASON.get('label', ''))[:4])
+    except (TypeError, ValueError):
+        now = datetime.now()
+        return now.year if now.month >= 7 else now.year - 1
+
+
+def _us_float(v, default=0.0):
+    try:
+        f = float(v)
+        return f if np.isfinite(f) else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _us_int(v, default=0):
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return default
+
+
+def _shots_conn():
+    conn = sqlite3.connect(SNAPSHOT_DB_PATH, timeout=30)
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS us_matches (
+            match_id INTEGER PRIMARY KEY, season INTEGER, kickoff TEXT,
+            h_team TEXT, a_team TEXT, h_short TEXT, a_short TEXT,
+            h_goals INTEGER, a_goals INTEGER, fetched_at REAL
+        );
+        CREATE TABLE IF NOT EXISTS us_shots (
+            shot_id INTEGER PRIMARY KEY, match_id INTEGER, season INTEGER,
+            minute INTEGER, result TEXT, x REAL, y REAL, xg REAL,
+            player TEXT, player_id INTEGER, side TEXT, team TEXT, opponent TEXT,
+            situation TEXT, shot_type TEXT, last_action TEXT, assisted_by TEXT
+        );
+        CREATE TABLE IF NOT EXISTS us_rosters (
+            match_id INTEGER, player_id INTEGER, season INTEGER, team TEXT,
+            player TEXT, position TEXT, minutes INTEGER, key_passes INTEGER,
+            xa REAL, PRIMARY KEY (match_id, player_id)
+        );
+        CREATE INDEX IF NOT EXISTS ix_us_shots_season ON us_shots(season);
+        CREATE INDEX IF NOT EXISTS ix_us_rosters_season ON us_rosters(season);
+    """)
+    return conn
+
+
+_US_SESSION = None
+
+
+def _understat_get(path):
+    global _US_SESSION
+    if _US_SESSION is None:
+        _US_SESSION = requests.Session()
+        _US_SESSION.headers.update(UNDERSTAT_HEADERS)
+    r = _US_SESSION.get(UNDERSTAT_BASE + path, timeout=20)
+    r.raise_for_status()
+    return r.json()   # ValueError if Understat served HTML instead
+
+
+def parse_understat_match(match_id, payload, season, meta):
+    """getMatchData payload -> (shot rows, roster rows) for the DB. Own goals
+    are dropped: they aren't a chance the scoring side created."""
+    payload = payload or {}
+    shot_rows, roster_rows = [], []
+    teams = {'h': meta.get('h_team'), 'a': meta.get('a_team')}
+    shots = payload.get('shots') or {}
+    for side in ('h', 'a'):
+        team = teams[side]
+        opp = teams['a' if side == 'h' else 'h']
+        for s in (shots.get(side) or []):
+            if s.get('result') == 'OwnGoal':
+                continue
+            shot_rows.append((
+                _us_int(s.get('id')), match_id, season, _us_int(s.get('minute')),
+                s.get('result'), _us_float(s.get('X')), _us_float(s.get('Y')),
+                _us_float(s.get('xG')), s.get('player'), _us_int(s.get('player_id')),
+                side, team, opp, s.get('situation'), s.get('shotType'),
+                s.get('lastAction'), s.get('player_assisted') or None,
+            ))
+    rosters = payload.get('rosters') or {}
+    for side in ('h', 'a'):
+        block = rosters.get(side) or {}
+        entries = block.values() if isinstance(block, dict) else block
+        for r in entries:
+            roster_rows.append((
+                match_id, _us_int(r.get('player_id')), season, teams[side],
+                r.get('player'), r.get('position'), _us_int(r.get('time')),
+                _us_int(r.get('key_passes')), _us_float(r.get('xA')),
+            ))
+    return shot_rows, roster_rows
+
+
+def sync_understat_shots():
+    """Download any newly finished matches, then rebuild the shot model.
+    Runs in a background thread; never raises."""
+    with DATA_LOCK:
+        if DATA.get('shots_syncing'):
+            return
+        DATA['shots_syncing'] = True
+    error, fetched, pending = None, 0, 0
+    try:
+        season = _season_start_year()
+        conn = _shots_conn()
+        try:
+            try:
+                league = _understat_get(f'getLeagueData/EPL/{season}')
+                dates = league.get('dates') or []
+            except Exception as e:
+                dates = []
+                error = f"Understat unreachable ({type(e).__name__})"
+                print(f"  Shot data: {error}: {e}")
+            finished = [d for d in dates if str(d.get('isResult')).lower() in ('true', '1')]
+            have = {row[0] for row in conn.execute(
+                "SELECT match_id FROM us_matches WHERE season = ?", (season,))}
+            todo = sorted((d for d in finished if _us_int(d.get('id')) not in have),
+                          key=lambda d: d.get('datetime') or '')
+            pending = max(0, len(todo) - SHOTS_MAX_PER_RUN)
+            if todo:
+                print(f"  Shot data: fetching {min(len(todo), SHOTS_MAX_PER_RUN)} new "
+                      f"match(es){f', {pending} queued for the next run' if pending else ''}")
+            for d in todo[:SHOTS_MAX_PER_RUN]:
+                mid = _us_int(d.get('id'))
+                h, a = d.get('h') or {}, d.get('a') or {}
+                meta = {'h_team': h.get('title'), 'a_team': a.get('title')}
+                try:
+                    payload = _understat_get(f'getMatchData/{mid}')
+                except Exception as e:
+                    error = f"Match fetch failed ({type(e).__name__}); will retry"
+                    print(f"  Shot data: match {mid} failed: {e}")
+                    pending += 1
+                    break
+                shot_rows, roster_rows = parse_understat_match(mid, payload, season, meta)
+                goals = d.get('goals') or {}
+                with conn:
+                    conn.executemany(
+                        "INSERT OR REPLACE INTO us_shots VALUES "
+                        "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", shot_rows)
+                    conn.executemany(
+                        "INSERT OR REPLACE INTO us_rosters VALUES (?,?,?,?,?,?,?,?,?)",
+                        roster_rows)
+                    conn.execute(
+                        "INSERT OR REPLACE INTO us_matches VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (mid, season, d.get('datetime'), meta['h_team'], meta['a_team'],
+                         h.get('short_title'), a.get('short_title'),
+                         _us_int(goals.get('h')), _us_int(goals.get('a')), time.time()))
+                fetched += 1
+                time.sleep(SHOTS_REQUEST_GAP)
+
+            shots = pd.read_sql_query("SELECT * FROM us_shots WHERE season = ?", conn,
+                                      params=(season,))
+            rosters = pd.read_sql_query("SELECT * FROM us_rosters WHERE season = ?", conn,
+                                        params=(season,))
+            matches = pd.read_sql_query("SELECT * FROM us_matches WHERE season = ?", conn,
+                                        params=(season,))
+        finally:
+            conn.close()
+
+        changed = fetched > 0 or DATA.get('shot_intel') is None
+        intel = build_shot_intel(shots, rosters, matches, DATA.get('teams_df'),
+                                 DATA.get('fixtures_data'), DATA.get('df_active'))
+        with DATA_LOCK:
+            DATA['shot_intel'] = intel
+            if changed and intel is not None:
+                DATA['shots_version'] = int(time.time())
+            DATA['shots_status'] = {
+                'synced_at': time.time(), 'matches': int(len(matches)),
+                'pending': pending, 'error': error, 'fetched': fetched,
+            }
+        if intel is not None:
+            print(f"  Shot data: {len(matches)} matches, {len(shots)} shots stored "
+                  f"({fetched} new). Orientation: {intel['orientation_note']}")
+            if intel.get('unmatched_teams'):
+                print(f"  Shot data WARNING: unmatched Understat teams "
+                      f"{intel['unmatched_teams']} — add them to _ODDS_TEAM_ALIASES")
+    except Exception as e:
+        error = f"Shot model failed ({type(e).__name__})"
+        print(f"  Shot data ERROR: {e}")
+        with DATA_LOCK:
+            DATA['shots_status'] = {'synced_at': time.time(), 'error': error,
+                                    'pending': pending, 'fetched': fetched}
+    finally:
+        with DATA_LOCK:
+            DATA['shots_syncing'] = False
+            retry_soon = pending > 0 or error is not None
+            DATA['shots_next_due'] = time.time() + (600 if retry_soon else SHOTS_REFRESH_INTERVAL)
+
+
+def check_shots_sync():
+    """Kick off a background shot sync when due. Cheap to call often."""
+    if DATA.get('shots_syncing') or time.time() < DATA.get('shots_next_due', 0):
+        return
+    if DATA.get('teams_df') is None:
+        return   # FPL data not loaded yet — team mapping needs it
+    with DATA_LOCK:
+        DATA['shots_next_due'] = time.time() + 600   # debounce concurrent callers
+    threading.Thread(target=sync_understat_shots, daemon=True).start()
+
+
+# --- Model ------------------------------------------------------------------
+
+def _classify_shots(shots, y0_is_right):
+    """Add zone / channel / component columns in the attacking team's frame."""
+    s = shots.copy()
+    x, y = s['x'], s['y']
+    in_centre = (y >= SHOT_CENTRE_Y[0]) & (y <= SHOT_CENTRE_Y[1])
+    in_box_w = (y >= SHOT_BOX_Y[0]) & (y <= SHOT_BOX_Y[1])
+    s['zone'] = np.select(
+        [(x >= SHOT_SIX_X) & in_centre, (x >= SHOT_BOX_X) & in_centre,
+         (x >= SHOT_BOX_X) & in_box_w],
+        ['six_yard', 'central_box', 'wide_box'], 'outside_box')
+    low, high = y < SHOT_CENTRE_Y[0], y > SHOT_CENTRE_Y[1]
+    right = low if y0_is_right else high
+    left = high if y0_is_right else low
+    s['channel'] = np.select([left, right], ['left', 'right'], 'centre')
+    # Horizontal plot coordinate with the attacked goal at the top: the
+    # attacker's right is on the right of the picture.
+    s['hx'] = (1 - y) if y0_is_right else y
+    sit = s['situation'].fillna('')
+    pen = sit == 'Penalty'
+    sp = sit.isin(SET_PIECE_SITUATIONS)
+    cross = (~sp) & (~pen) & (s['last_action'].fillna('') == 'Cross')
+    s['component'] = np.select(
+        [pen, sp, cross, s['channel'] == 'left', s['channel'] == 'right'],
+        ['penalty', 'set_piece', 'cross', 'op_left', 'op_right'], 'op_centre')
+    s['is_goal'] = s['result'].fillna('') == 'Goal'
+    return s
+
+
+def _detect_orientation(shots, rosters):
+    """Which way does Understat's Y axis run? Measured, not assumed: players
+    listed on the right (AMR, MR, DR, ...) should shoot from right of centre.
+    Falls back to 'Y=0 is the attacker's right' until there's enough data."""
+    if rosters is None or rosters.empty or shots.empty:
+        return True, 'default (not enough data yet to check)'
+    side = rosters[['match_id', 'player_id', 'position']].copy()
+    side['pside'] = side['position'].map(_US_POS_SIDE)
+    m = shots.merge(side[['match_id', 'player_id', 'pside']],
+                    on=['match_id', 'player_id'], how='left')
+    r_y = m.loc[m['pside'] == 'right', 'y']
+    l_y = m.loc[m['pside'] == 'left', 'y']
+    if len(r_y) < 25 or len(l_y) < 25:
+        return True, 'default (not enough data yet to check)'
+    y0_right = bool(r_y.mean() < l_y.mean())
+    gap = abs(r_y.mean() - l_y.mean())
+    return y0_right, f"measured from {len(r_y) + len(l_y)} wide-player shots (separation {gap:.2f})"
+
+
+def _match_counts(matches, team_map, match_ids=None):
+    mm = matches if match_ids is None else matches[matches['match_id'].isin(match_ids)]
+    ids = pd.concat([mm['h_team'], mm['a_team']]).map(team_map).dropna().astype(int)
+    return ids.value_counts().to_dict()
+
+
+def _profiles_from(np_shots, n_by_team):
+    """Shrunk per-match xG rates by component, created and conceded."""
+    n_team_matches = sum(n_by_team.values())
+    if n_team_matches == 0 or np_shots.empty:
+        return None, None
+    tot = np_shots.groupby('component')['xg'].sum()
+    league = {c: float(tot.get(c, 0.0)) / n_team_matches for c in SHOT_COMPONENTS}
+    made = np_shots.groupby(['team_id', 'component'])['xg'].sum()
+    conc = np_shots.groupby(['opp_id', 'component'])['xg'].sum()
+    K = SHOT_PROFILE_K
+    profiles = {}
+    for tid, n in n_by_team.items():
+        cr, cc = {}, {}
+        for c in SHOT_COMPONENTS:
+            cr[c] = (float(made.get((tid, c), 0.0)) + K * league[c]) / (n + K)
+            cc[c] = (float(conc.get((tid, c), 0.0)) + K * league[c]) / (n + K)
+        profiles[tid] = {'n': int(n), 'created': cr, 'conceded': cc,
+                         'created_total': sum(cr.values()), 'conceded_total': sum(cc.values())}
+    return profiles, league
+
+
+def shot_matchup(att, dfn, league):
+    """
+    Style-aware expected npxG for `att` attacking `dfn`, vs a strength-only
+    baseline. Each component: attack rate x defence leak rate / league rate.
+    If both sides have league-typical mixes the two agree exactly; the gap is
+    the matchup — an attack built on crosses meeting a defence that leaks
+    them. Returns (baseline, style_total, per-component xG, per-component
+    edge vs what a league-typical mix would give).
+    """
+    lt = sum(league.values())
+    if not att or not dfn or lt <= 0:
+        return None
+    base = att['created_total'] * dfn['conceded_total'] / lt
+    comps, edges = {}, {}
+    for c in SHOT_COMPONENTS:
+        if league[c] <= 0:
+            continue
+        comps[c] = att['created'][c] * dfn['conceded'][c] / league[c]
+        edges[c] = comps[c] - base * league[c] / lt
+    return base, sum(comps.values()), comps, edges
+
+
+def _validate_matchups(np_shots, matches, team_map, fixtures):
+    """
+    Out-of-sample check: for each gameweek, build profiles only from earlier
+    gameweeks, predict each team's npxG in that gameweek both ways, and
+    compare with what actually happened. Tells you whether the style model
+    earns its keep before you lean on it.
+    """
+    if not fixtures or matches.empty:
+        return None
+    ev = {(f.get('team_h'), f.get('team_a')): f.get('event') for f in fixtures}
+    mm = matches.copy()
+    mm['h_id'] = mm['h_team'].map(team_map)
+    mm['a_id'] = mm['a_team'].map(team_map)
+    mm['gw'] = [ev.get((h, a)) for h, a in zip(mm['h_id'], mm['a_id'])]
+    mm = mm.dropna(subset=['gw', 'h_id', 'a_id'])
+    if mm.empty:
+        return None
+    actual = np_shots.groupby(['match_id', 'team_id'])['xg'].sum()
+    err_b, err_s, closer = [], [], 0
+    for g in sorted(mm['gw'].unique()):
+        train = mm[mm['gw'] < g]
+        test = mm[mm['gw'] == g]
+        if train.empty:
+            continue
+        n_by = _match_counts(train, team_map)
+        if len(n_by) < 16 or min(n_by.values()) < 3:
+            continue   # too early: most teams need 3+ matches of history
+        prof, league = _profiles_from(np_shots[np_shots['match_id'].isin(train['match_id'])], n_by)
+        if not prof:
+            continue
+        for _, r in test.iterrows():
+            for att_id, def_id in ((r['h_id'], r['a_id']), (r['a_id'], r['h_id'])):
+                res = shot_matchup(prof.get(att_id), prof.get(def_id), league)
+                if res is None:
+                    continue
+                base, style = res[0], res[1]
+                act = float(actual.get((r['match_id'], att_id), 0.0))
+                eb, es = abs(base - act), abs(style - act)
+                err_b.append(eb)
+                err_s.append(es)
+                closer += es < eb
+    if not err_b:
+        return None
+    n = len(err_b)
+    return {'n': n, 'mae_base': float(np.mean(err_b)), 'mae_style': float(np.mean(err_s)),
+            'closer_pct': 100.0 * closer / n}
+
+
+def _norm_person(s):
+    import unicodedata
+    import re
+    s = unicodedata.normalize('NFKD', str(s or '')).encode('ascii', 'ignore').decode().lower()
+    s = re.sub(r"[^a-z ]", " ", s.replace('-', ' ').replace("'", ''))
+    return ' '.join(s.split())
+
+
+def _map_players_to_fpl(us_players, df_fpl):
+    """Understat player -> FPL element id, matched within the same club.
+    Returns {understat_player_id: fpl_id}. Ambiguous matches are left out
+    rather than guessed."""
+    import difflib
+    if df_fpl is None or df_fpl.empty:
+        return {}
+    cands = {}
+    for r in df_fpl.itertuples(index=False):
+        first = _norm_person(getattr(r, 'first_name', '') or '')
+        second = _norm_person(getattr(r, 'second_name', '') or '')
+        web = _norm_person(r.web_name)
+        full = f"{first} {second}".strip() or web
+        cands.setdefault(r.team, []).append((r.id, full, web, first, second))
+    out = {}
+    for pid, name, tid in us_players[['player_id', 'player', 'team_id']].itertuples(index=False):
+        if pd.isna(tid):
+            continue
+        pool = cands.get(int(tid), [])
+        nm = _norm_person(name)
+        toks = set(nm.split())
+        if not nm or not pool:
+            continue
+        strategies = (
+            lambda c: c[1] == nm,
+            lambda c: c[2] == nm,
+            lambda c: toks <= set(c[1].split()) or set(c[1].split()) <= toks,
+            lambda c: bool(c[4]) and nm.split()[-1] == c[4].split()[-1]
+                      and c[3][:1] == nm[:1],
+            lambda c: bool(c[2]) and set(c[2].split()) <= toks,
+        )
+        hit = None
+        for test in strategies:
+            m = [c for c in pool if test(c)]
+            if len(m) == 1:
+                hit = m[0][0]
+                break
+            if len(m) > 1:
+                break   # ambiguous at this level — don't guess
+        if hit is None:
+            best = difflib.get_close_matches(nm, [c[1] for c in pool], n=2, cutoff=0.85)
+            if len(best) == 1:
+                hit = next(c[0] for c in pool if c[1] == best[0])
+        if hit is not None:
+            out[int(pid)] = int(hit)
+    return out
+
+
+def _player_shot_table(s, rosters, team_map, df_fpl):
+    """Per-player chance quality, chance creation and flank, FPL-linked."""
+    if rosters is None or rosters.empty:
+        return pd.DataFrame()
+    ro = rosters.copy()
+    ro['team_id'] = ro['team'].map(team_map)
+    mins = ro.groupby('player_id')['minutes'].sum()
+    latest = ro.sort_values('match_id').groupby('player_id').tail(1).set_index('player_id')
+    started = ro[ro['position'].fillna('Sub') != 'Sub']
+    side_mode = started.groupby('player_id')['position'].agg(
+        lambda p: Counter(_US_POS_SIDE.get(x, 'centre') for x in p).most_common(1)[0][0])
+
+    np_s = s[s['component'] != 'penalty']
+    g = np_s.groupby('player_id')
+    t = pd.DataFrame({
+        'shots': g.size(),
+        'npxg': g['xg'].sum(),
+        'box_shots': g['zone'].apply(lambda z: (z != 'outside_box').sum()),
+        'big_chances': g['xg'].apply(lambda x: (x >= SHOT_BIG_CHANCE_XG).sum()),
+        'headers': g['shot_type'].apply(lambda x: (x == 'Head').sum()),
+        'sp_npxg': g.apply(lambda d: d.loc[d['component'] == 'set_piece', 'xg'].sum()),
+        'np_goals': g['is_goal'].sum(),
+    })
+    # Chances created: shots a player set up, linked back to his roster id
+    ast = np_s.dropna(subset=['assisted_by'])[['match_id', 'team', 'assisted_by', 'xg',
+                                                'component']]
+    ast = ast.merge(ro[['match_id', 'team', 'player', 'player_id']].rename(
+        columns={'player': 'assisted_by', 'player_id': 'creator_id'}),
+        on=['match_id', 'team', 'assisted_by'], how='inner')
+    ga = ast.groupby('creator_id')
+    created = pd.DataFrame({
+        'chances_created': ga.size(),
+        'xa': ga['xg'].sum(),
+        'crosses_created': ga['component'].apply(lambda c: (c == 'cross').sum()),
+        'sp_created': ga['component'].apply(lambda c: (c == 'set_piece').sum()),
+        'sp_xa': ga.apply(lambda d: d.loc[d['component'] == 'set_piece', 'xg'].sum()),
+    })
+    base = pd.DataFrame({'minutes': mins})
+    base = base.join(latest[['player', 'team_id']]).join(t).join(created)
+    base['side'] = side_mode.reindex(base.index).fillna('centre')
+    base = base.reset_index().rename(columns={'index': 'player_id'})
+    fill0 = ['shots', 'npxg', 'box_shots', 'big_chances', 'headers', 'sp_npxg', 'np_goals',
+             'chances_created', 'xa', 'crosses_created', 'sp_created', 'sp_xa']
+    base[fill0] = base[fill0].fillna(0)
+    base = base[(base['shots'] > 0) | (base['chances_created'] > 0)]
+    m90 = base['minutes'].where(base['minutes'] > 0) / 90
+    base['shots_90'] = base['shots'] / m90
+    base['npxg_90'] = base['npxg'] / m90
+    base['xa_90'] = base['xa'] / m90
+    base['chances_90'] = base['chances_created'] / m90
+    base['big_90'] = base['big_chances'] / m90
+    base['sp_threat_90'] = (base['sp_npxg'] + base['sp_xa']) / m90
+    base['xg_per_shot'] = base['npxg'] / base['shots'].where(base['shots'] > 0)
+    base['box_pct'] = 100 * base['box_shots'] / base['shots'].where(base['shots'] > 0)
+    base['head_pct'] = 100 * base['headers'] / base['shots'].where(base['shots'] > 0)
+    base['cross_pct'] = 100 * base['crosses_created'] / base['chances_created'].where(
+        base['chances_created'] > 0)
+    fmap = _map_players_to_fpl(base, df_fpl)
+    base['fpl_id'] = base['player_id'].map(fmap)
+    return base
+
+
+def build_shot_intel(shots, rosters, matches, teams_df, fixtures, df_active):
+    """Everything the Shot Intelligence pages need, computed once per sync."""
+    if shots is None or shots.empty or matches is None or matches.empty \
+            or teams_df is None or teams_df.empty:
+        return None
+    fpl_names = dict(zip(teams_df['id'], teams_df['name']))
+    id_by_short = {str(v).upper(): k for k, v in zip(teams_df['id'], teams_df['short_name'])}
+    shorts = dict(zip(matches['h_team'], matches['h_short']))
+    shorts.update(zip(matches['a_team'], matches['a_short']))
+    team_map, unmatched = {}, []
+    for title in sorted(set(matches['h_team']) | set(matches['a_team'])):
+        tid = match_odds_team_to_fpl(title, fpl_names)
+        if tid is None:
+            tid = id_by_short.get(str(shorts.get(title) or '').upper())
+        if tid is None:
+            unmatched.append(title)
+        else:
+            team_map[title] = int(tid)
+
+    y0_right, orient_note = _detect_orientation(shots, rosters)
+    s = _classify_shots(shots, y0_right)
+    s['team_id'] = s['team'].map(team_map)
+    s['opp_id'] = s['opponent'].map(team_map)
+    s = s.dropna(subset=['team_id', 'opp_id'])
+    s['team_id'] = s['team_id'].astype(int)
+    s['opp_id'] = s['opp_id'].astype(int)
+    np_s = s[s['component'] != 'penalty']
+
+    n_by = _match_counts(matches, team_map)
+    profiles, league = _profiles_from(np_s, n_by)
+    if not profiles:
+        return None
+
+    # Raw (unshrunk) descriptors for the team table
+    team_rows = []
+    for tid, p in profiles.items():
+        n = max(p['n'], 1)
+        mine = np_s[np_s['team_id'] == tid]
+        vs = np_s[np_s['opp_id'] == tid]
+        op_vs = vs[vs['component'] != 'set_piece']
+        op_mine = mine[mine['component'] != 'set_piece']
+        tot_vs_op = op_vs['xg'].sum()
+        def _pct(num, den):
+            return round(100 * num / den, 1) if den > 0 else None
+        team_rows.append({
+            'team_id': tid, 'team': fpl_names.get(tid, str(tid)), 'matches': p['n'],
+            'npxg_for_pm': round(mine['xg'].sum() / n, 2),
+            'npxg_against_pm': round(vs['xg'].sum() / n, 2),
+            'sp_for_pm': round(mine.loc[mine['component'] == 'set_piece', 'xg'].sum() / n, 2),
+            'sp_against_pm': round(vs.loc[vs['component'] == 'set_piece', 'xg'].sum() / n, 2),
+            'cross_pct_for': _pct(op_mine.loc[op_mine['component'] == 'cross', 'xg'].sum(),
+                                  op_mine['xg'].sum()),
+            'box_pct_for': _pct(mine.loc[mine['zone'] != 'outside_box', 'xg'].sum(),
+                                mine['xg'].sum()),
+            'box_pct_against': _pct(vs.loc[vs['zone'] != 'outside_box', 'xg'].sum(),
+                                    vs['xg'].sum()),
+            # Defender's perspective: attacker's right = the defence's left
+            'conc_their_left_pct': _pct(op_vs.loc[op_vs['channel'] == 'right', 'xg'].sum(), tot_vs_op),
+            'conc_centre_pct': _pct(op_vs.loc[op_vs['channel'] == 'centre', 'xg'].sum(), tot_vs_op),
+            'conc_their_right_pct': _pct(op_vs.loc[op_vs['channel'] == 'left', 'xg'].sum(), tot_vs_op),
+        })
+
+    players = _player_shot_table(s, rosters, team_map, df_active)
+    validation = _validate_matchups(np_s, matches, team_map, fixtures)
+    last_kick = str(matches['kickoff'].dropna().max() or '')[:10]
+    return {
+        'shots': s[['match_id', 'team_id', 'opp_id', 'player', 'player_id', 'minute', 'x', 'hx',
+                    'xg', 'result', 'is_goal', 'situation', 'shot_type', 'last_action',
+                    'zone', 'channel', 'component']].reset_index(drop=True),
+        'profiles': profiles, 'league': league, 'team_table': pd.DataFrame(team_rows),
+        'players': players, 'validation': validation, 'team_map': team_map,
+        'unmatched_teams': unmatched, 'y0_is_right': y0_right,
+        'orientation_note': orient_note, 'n_matches': int(len(matches)),
+        'last_match_date': last_kick,
+    }
+
+
 # Global data store
 DATA = {
     'last_refresh': 0,
@@ -3829,6 +4437,7 @@ def refresh_all_data():
 
 def check_and_refresh():
     """Check if data is stale and refresh in background if needed."""
+    check_shots_sync()   # independent cadence; no-op unless due
     age = time.time() - DATA.get('last_refresh', 0)
     if age > REFRESH_INTERVAL and not DATA.get('refreshing', False):
         print(f"Data is {age / 3600:.1f}h old. Triggering background refresh...")
@@ -4400,7 +5009,7 @@ LAZY_PAGES = [
     'home', 'defcon-bonus', 'bonus-consistency', 'defcon', 'xg', 'underlying',
     'value', 'form', 'cs', 'fixtures', 'fixture-ticker', 'fixture-outlook',
     'differentials', 'captain', 'transfers', 'model-lab', 'transfer-planner',
-    'squad-builder', 'xcs',
+    'squad-builder', 'xcs', 'shot-profiles', 'matchups', 'chance-quality',
 ]
 
 
@@ -4484,6 +5093,15 @@ app.layout = html.Div([
                 html.Button('Underlying Numbers',
                             id='nav-underlying', className='nav-item', n_clicks=0),
 
+                # SHOT INTELLIGENCE
+                html.P('Shot Intelligence', className='nav-group-label'),
+                html.Button('Team Shot Profiles',
+                            id='nav-shot-profiles', className='nav-item', n_clicks=0),
+                html.Button('Matchup Finder',
+                            id='nav-matchups', className='nav-item', n_clicks=0),
+                html.Button('Chance Quality',
+                            id='nav-chance-quality', className='nav-item', n_clicks=0),
+
                 # VALUE & FORM
                 html.P('Value & Form', className='nav-group-label'),
                 html.Button('Value Analysis',
@@ -4530,6 +5148,272 @@ app.layout = html.Div([
             # #app-body flex row it renders as a third column and shoves every
             # page off the right-hand edge of the viewport.
             html.Div(id='stale-stats-banner'),
+
+            # =================================================================
+            # SHOT INTELLIGENCE PAGES
+            # =================================================================
+            html.Div(id='page-shot-profiles', style={'display': 'none'}, children=[
+                html.Div([
+                    html.Div([
+                        html.H3("Team Shot Profiles", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
+                        html.P([
+                            "Where each team creates its chances and where it gives them away, from every "
+                            "non-penalty shot this season (Understat shot locations). The pitch maps show the "
+                            "raw shots; the bars compare the team with the league average (",
+                            html.Strong("100 = average"),
+                            "), split into set pieces, crosses and open play by channel. Bars are shrunk "
+                            "towards the league average until a team has enough matches, so early-season "
+                            "extremes are damped rather than taken at face value."
+                        ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '0'}),
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+                    html.Div(id='sp-status'),
+                    html.Div([
+                        html.Div([
+                            html.Label("Team", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                            dcc.Dropdown(id='sp-team', options=[{'label': t, 'value': t} for t in sorted_teams],
+                                         value=sorted_teams[0] if sorted_teams else None, clearable=False),
+                        ], style={'flex': '0 1 320px', 'minWidth': '220px', 'padding': '0 10px'}),
+                    ], style={**CARD_STYLE, 'display': 'flex', 'flexWrap': 'wrap'}),
+                    html.Div([
+                        html.Div([
+                            html.H3("Where they create", style={'color': COLORS['primary'], 'marginBottom': '4px'}),
+                            html.P("Their shots, attacking the goal at the top. Bigger = higher xG; stars are goals.",
+                                   style={'color': COLORS['text_light'], 'fontSize': '13px'}),
+                            dcc.Graph(id='sp-map-created', config={'displayModeBar': False}),
+                        ], style={**CARD_STYLE, 'flex': '1 1 340px', 'minWidth': '300px'}),
+                        html.Div([
+                            html.H3("Where they concede", style={'color': COLORS['primary'], 'marginBottom': '4px'}),
+                            html.P("Opponents' shots against them, into their goal at the top. "
+                                   "Left/right are from the defending team's point of view.",
+                                   style={'color': COLORS['text_light'], 'fontSize': '13px'}),
+                            dcc.Graph(id='sp-map-conceded', config={'displayModeBar': False}),
+                        ], style={**CARD_STYLE, 'flex': '1 1 340px', 'minWidth': '300px'}),
+                    ], style={'display': 'flex', 'flexWrap': 'wrap', 'gap': '20px'}),
+                    html.Div([
+                        html.Div([
+                            html.H3("Attack profile", style={'color': COLORS['primary'], 'marginBottom': '4px'}),
+                            html.P("xG created per match by route, vs league average (100). "
+                                   "Above 100 = a strength.",
+                                   style={'color': COLORS['text_light'], 'fontSize': '13px'}),
+                            dcc.Graph(id='sp-bars-att', config={'displayModeBar': False}),
+                        ], style={**CARD_STYLE, 'flex': '1 1 340px', 'minWidth': '300px'}),
+                        html.Div([
+                            html.H3("Defence profile", style={'color': COLORS['primary'], 'marginBottom': '4px'}),
+                            html.P("xG conceded per match by route, vs league average (100). "
+                                   "Above 100 = a weakness to target.",
+                                   style={'color': COLORS['text_light'], 'fontSize': '13px'}),
+                            dcc.Graph(id='sp-bars-def', config={'displayModeBar': False}),
+                        ], style={**CARD_STYLE, 'flex': '1 1 340px', 'minWidth': '300px'}),
+                    ], style={'display': 'flex', 'flexWrap': 'wrap', 'gap': '20px'}),
+                    html.Div([
+                        html.H4("All Teams", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+                        html.P("Raw per-match figures (not shrunk). Conceded-side splits are from the defending "
+                               "team's point of view and cover open play only.",
+                               style={'color': COLORS['text_light'], 'marginBottom': '16px'}),
+                        dash_table.DataTable(
+                            id='sp-team-table', data=[],
+                            columns=[
+                                {'name': 'Team', 'id': 'team'},
+                                {'name': 'Matches', 'id': 'matches', 'type': 'numeric'},
+                                {'name': 'npxG for/m', 'id': 'npxg_for_pm', 'type': 'numeric'},
+                                {'name': 'npxG against/m', 'id': 'npxg_against_pm', 'type': 'numeric'},
+                                {'name': 'Set-piece xG for/m', 'id': 'sp_for_pm', 'type': 'numeric'},
+                                {'name': 'Set-piece xG against/m', 'id': 'sp_against_pm', 'type': 'numeric'},
+                                {'name': 'Open-play xG from crosses %', 'id': 'cross_pct_for', 'type': 'numeric'},
+                                {'name': 'xG from inside box %', 'id': 'box_pct_for', 'type': 'numeric'},
+                                {'name': 'Conceded inside box %', 'id': 'box_pct_against', 'type': 'numeric'},
+                                {'name': 'Conceded down their left %', 'id': 'conc_their_left_pct', 'type': 'numeric'},
+                                {'name': 'Conceded central %', 'id': 'conc_centre_pct', 'type': 'numeric'},
+                                {'name': 'Conceded down their right %', 'id': 'conc_their_right_pct', 'type': 'numeric'},
+                            ],
+                            sort_action='native', page_size=20,
+                            sort_by=[{'column_id': 'npxg_against_pm', 'direction': 'desc'}],
+                            style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
+                            style_data=TABLE_STYLE_DATA,
+                            style_data_conditional=[{'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'}],
+                        ),
+                    ], style=CARD_STYLE),
+                ], style={'padding': '20px 0'})
+            ]),
+
+            html.Div(id='page-matchups', style={'display': 'none'}, children=[
+                html.Div([
+                    html.Div([
+                        html.H3("Matchup Finder", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
+                        html.P([
+                            "FDR and expected goals rate each fixture by overall strength. This asks a different "
+                            "question: ", html.Strong("does this attack's style suit this defence's weaknesses?"),
+                            " Each team's chances are split into set pieces, crosses and open play by channel, and "
+                            "each defence's leaks the same way. ", html.Strong("Style fit"), " is how much more "
+                            "(or less) xG the matchup should produce than strength alone suggests, e.g. a "
+                            "cross-heavy attack meeting a defence that leaks crosses. The tag shows the biggest "
+                            "single edge."
+                        ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
+                        html.Div(id='mu-validation'),
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+                    html.Div(id='mu-status'),
+                    html.Div([
+                        html.Div([
+                            html.Label("Gameweeks ahead", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                            dcc.Slider(id='mu-gws', min=1, max=6, step=1, value=4,
+                                       marks={i: str(i) for i in range(1, 7)}),
+                        ], style={'flex': '0 1 320px', 'minWidth': '220px', 'padding': '0 10px'}),
+                        html.Div([
+                            html.Label("Position (target lists)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                            dcc.Dropdown(id='mu-position', options=[{'label': 'All', 'value': 'All'}] +
+                                         [{'label': p, 'value': p} for p in ['DEF', 'MID', 'FWD']],
+                                         value='All', clearable=False),
+                        ], style={'flex': '0 1 200px', 'minWidth': '150px', 'padding': '0 10px'}),
+                        html.Div([
+                            html.Label("Min. minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                            dcc.Input(id='mu-minutes', type='number', value=DEF_MINS_LO, min=0, step=50,
+                                      style={'width': '100%', 'padding': '8px', 'borderRadius': '4px',
+                                             'border': '1px solid #ccc'}),
+                        ], style={'flex': '0 1 140px', 'minWidth': '100px', 'padding': '0 10px'}),
+                    ], style={**CARD_STYLE, 'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-end'}),
+                    html.Div([
+                        html.H3("Style Fit by Fixture", style={'color': COLORS['primary'], 'marginBottom': '4px'}),
+                        html.P("Green = the attacking team's style suits this opponent; red = it plays into the "
+                               "opponent's strengths. Tags: Set pcs, Crosses, Central, Left/Right = attacking "
+                               "down their own left/right. Hover for the numbers.",
+                               style={'color': COLORS['text_light'], 'fontSize': '13px'}),
+                        html.Div(dcc.Graph(id='mu-heatmap', config={'displayModeBar': False}),
+                                 className='chart-scroll'),
+                    ], style=CARD_STYLE),
+                    html.Div([
+                        html.H4("Set-Piece Targets", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+                        html.P("Players who get on the end of (or deliver) set-piece chances, facing defences that "
+                               "concede them. Opponent index: 1.0 = league-average set-piece defence, 1.4 = concedes "
+                               "40% more. Horizon SP xGI = their set-piece threat per 90 x the opponent indices.",
+                               style={'color': COLORS['text_light'], 'marginBottom': '16px'}),
+                        dash_table.DataTable(
+                            id='mu-sp-table', data=[],
+                            columns=[
+                                {'name': 'Player', 'id': 'web_name'},
+                                {'name': 'Team', 'id': 'team_name'},
+                                {'name': 'Pos', 'id': 'position'},
+                                {'name': 'Price', 'id': 'price', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                {'name': 'SP threat/90', 'id': 'sp_threat_90', 'type': 'numeric', 'format': {'specifier': '.3f'}},
+                                {'name': 'Headers %', 'id': 'head_pct', 'type': 'numeric', 'format': {'specifier': '.0f'}},
+                                {'name': 'SP chances made', 'id': 'sp_created', 'type': 'numeric'},
+                                {'name': 'Fixtures (opp index)', 'id': 'fixtures'},
+                                {'name': 'Horizon SP xGI', 'id': 'horizon', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                            ],
+                            sort_action='native', page_size=15,
+                            style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
+                            style_data=TABLE_STYLE_DATA,
+                            style_data_conditional=[{'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'}],
+                        ),
+                    ], style=CARD_STYLE),
+                    html.Div([
+                        html.H4("Flank Targets", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
+                        html.P("Wide players and attacking full-backs whose side of the pitch lines up with where "
+                               "their opponents leak chances. Flank edge = how much their output should rise (or "
+                               "fall) over the horizon, weighted by how much of their shooting comes down that side.",
+                               style={'color': COLORS['text_light'], 'marginBottom': '16px'}),
+                        dash_table.DataTable(
+                            id='mu-flank-table', data=[],
+                            columns=[
+                                {'name': 'Player', 'id': 'web_name'},
+                                {'name': 'Team', 'id': 'team_name'},
+                                {'name': 'Pos', 'id': 'position'},
+                                {'name': 'Side', 'id': 'side_label'},
+                                {'name': 'Price', 'id': 'price', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                {'name': 'npxGI/90', 'id': 'xgi_90', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'Shots down that side %', 'id': 'channel_pct', 'type': 'numeric', 'format': {'specifier': '.0f'}},
+                                {'name': 'Fixtures (opp index)', 'id': 'fixtures'},
+                                {'name': 'Flank edge %', 'id': 'edge_pct', 'type': 'numeric', 'format': {'specifier': '+.0f'}},
+                                {'name': 'Horizon npxGI', 'id': 'horizon', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                            ],
+                            sort_action='native', page_size=15,
+                            style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
+                            style_data=TABLE_STYLE_DATA,
+                            style_data_conditional=[
+                                {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
+                                {'if': {'filter_query': '{edge_pct} >= 10', 'column_id': 'edge_pct'},
+                                 'backgroundColor': '#e8f5e9', 'fontWeight': '600'},
+                                {'if': {'filter_query': '{edge_pct} <= -10', 'column_id': 'edge_pct'},
+                                 'backgroundColor': '#ffebee'},
+                            ],
+                        ),
+                    ], style=CARD_STYLE),
+                ], style={'padding': '20px 0'})
+            ]),
+
+            html.Div(id='page-chance-quality', style={'display': 'none'}, children=[
+                html.Div([
+                    html.Div([
+                        html.H3("Chance Quality", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
+                        html.P([
+                            "Two players with the same xG can get there very differently: lots of speculative long "
+                            "shots, or a few chances from six yards. ", html.Strong("xG per shot"), ", box share and ",
+                            html.Strong("big chances"), " (xG 0.30+) show who gets into the positions that produce "
+                            "hauls; the creation columns show who sets them up, and how (crosses, set pieces). "
+                            "Non-penalty throughout, so penalty takers aren't flattered."
+                        ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '0'}),
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+                    html.Div(id='cq-status'),
+                    html.Div([
+                        html.Div([
+                            html.Label("Position", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                            dcc.Dropdown(id='cq-position', options=[{'label': 'All', 'value': 'All'}] +
+                                         [{'label': p, 'value': p} for p in ['DEF', 'MID', 'FWD']],
+                                         value='All', clearable=False),
+                        ], style={'flex': '0 1 200px', 'minWidth': '150px', 'padding': '0 10px'}),
+                        html.Div([
+                            html.Label("Team", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                            dcc.Dropdown(id='cq-team', options=[{'label': 'All', 'value': 'All'}] +
+                                         [{'label': t, 'value': t} for t in sorted_teams],
+                                         value='All', clearable=False),
+                        ], style={'flex': '0 1 240px', 'minWidth': '150px', 'padding': '0 10px'}),
+                        html.Div([
+                            html.Label("Min. minutes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                            dcc.Input(id='cq-minutes', type='number', value=DEF_MINS_LO, min=0, step=50,
+                                      style={'width': '100%', 'padding': '8px', 'borderRadius': '4px',
+                                             'border': '1px solid #ccc'}),
+                        ], style={'flex': '0 1 140px', 'minWidth': '100px', 'padding': '0 10px'}),
+                    ], style={**CARD_STYLE, 'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-end'}),
+                    html.Div([
+                        html.H3("Quality vs Volume", style={'color': COLORS['primary'], 'marginBottom': '4px'}),
+                        html.P("Top right = shoots often AND from good positions. Bottom right = volume shooter "
+                               "from distance. Top left = few but excellent chances. Bubble size = npxG per 90.",
+                               style={'color': COLORS['text_light'], 'fontSize': '13px'}),
+                        dcc.Graph(id='cq-scatter', config={'displayModeBar': False}),
+                    ], style=CARD_STYLE),
+                    html.Div([
+                        html.H4("Player Chance Profiles", style={'color': COLORS['primary'], 'marginBottom': '16px'}),
+                        dash_table.DataTable(
+                            id='cq-table', data=[],
+                            columns=[
+                                {'name': 'Player', 'id': 'web_name'},
+                                {'name': 'Team', 'id': 'team_name'},
+                                {'name': 'Pos', 'id': 'position'},
+                                {'name': 'Price', 'id': 'price', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                {'name': 'Mins', 'id': 'minutes', 'type': 'numeric', 'format': {'specifier': ','}},
+                                {'name': 'Shots/90', 'id': 'shots_90', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'npxG/90', 'id': 'npxg_90', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'xG/shot', 'id': 'xg_per_shot', 'type': 'numeric', 'format': {'specifier': '.3f'}},
+                                {'name': 'Box %', 'id': 'box_pct', 'type': 'numeric', 'format': {'specifier': '.0f'}},
+                                {'name': 'Big chances/90', 'id': 'big_90', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'Headers %', 'id': 'head_pct', 'type': 'numeric', 'format': {'specifier': '.0f'}},
+                                {'name': 'Chances made/90', 'id': 'chances_90', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'xA/90', 'id': 'xa_90', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                                {'name': 'From crosses %', 'id': 'cross_pct', 'type': 'numeric', 'format': {'specifier': '.0f'}},
+                                {'name': 'SP threat/90', 'id': 'sp_threat_90', 'type': 'numeric', 'format': {'specifier': '.3f'}},
+                                {'name': 'Side', 'id': 'side_label'},
+                                {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                            ],
+                            sort_action='native', page_size=20,
+                            sort_by=[{'column_id': 'npxg_90', 'direction': 'desc'}],
+                            style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
+                            style_data=TABLE_STYLE_DATA,
+                            style_data_conditional=[{'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'}],
+                        ),
+                    ], style=CARD_STYLE),
+                ], style={'padding': '20px 0'})
+            ]),
 
             # HOME PAGE
             html.Div(id='page-home', style={'display': 'block'}, children=[
@@ -6786,6 +7670,7 @@ ALL_PAGES = [
     'fixture-ticker', 'fixture-outlook', 'fixtures', 'xcs', 'differentials',
     'captain', 'transfers', 'transfer-planner', 'chip-planner',
     'rivals', 'deadline', 'my-squad', 'squad-builder',
+    'shot-profiles', 'matchups', 'chance-quality',
 ]
 
 # -----------------------------------------------------------------------------
@@ -6968,7 +7853,8 @@ def update_refresh_status(n):
     last = DATA.get('last_refresh', 0)
     # Changes only when the data does: a full refresh, or the heavy stats
     # phase finishing after startup. Drives lazy page re-renders.
-    version = f"{int(last)}-{int(bool(DATA.get('heavy_loaded', False)))}" if last else None
+    version = (f"{int(last)}-{int(bool(DATA.get('heavy_loaded', False)))}"
+               f"-{DATA.get('shots_version', 0)}") if last else None
     return gw_text, status_text, version
 
 
@@ -10776,6 +11662,420 @@ def update_expected_clean_sheets(horizon, n):
 
     title = f"Expected Clean Sheets \u2014 Next {horizon} Gameweek{'s' if horizon > 1 else ''}"
     return [bar_fig, rows, player_rows, title, note]
+
+
+# =============================================================================
+# SHOT INTELLIGENCE — callbacks
+# =============================================================================
+
+_SHOT_COMP_COLOURS = {'set_piece': COLORS['accent'], 'cross': COLORS['info'],
+                      'op_centre': COLORS['primary'], 'op_left': COLORS['primary'],
+                      'op_right': COLORS['primary']}
+_SIDE_LABEL = {'left': 'Left', 'right': 'Right', 'centre': 'Central'}
+
+
+def _shot_note(text, tone='info'):
+    colours = {'info': ('#e3f2fd', '#90caf9'), 'warn': ('#fff8e1', '#ffe082')}
+    bg, border = colours.get(tone, colours['info'])
+    return html.Div(text, style={'backgroundColor': bg, 'border': f'1px solid {border}',
+                                 'borderRadius': '8px', 'padding': '12px 16px',
+                                 'marginBottom': '20px', 'fontSize': '14px',
+                                 'color': COLORS['text_dark']})
+
+
+def _shot_intel_status(data):
+    """(intel or None, status banner). Kicks a sync if one is due."""
+    check_shots_sync()
+    intel = data.get('shot_intel')
+    st = data.get('shots_status') or {}
+    if intel is None:
+        if data.get('shots_syncing') or not st:
+            msg = ("Syncing shot data from Understat. The first sync downloads every match played "
+                   "so far (a minute or two); this page fills in automatically within a couple of "
+                   "minutes of it finishing.")
+        else:
+            msg = (f"Shot data isn't available right now ({st.get('error') or 'no matches yet'}). "
+                   f"It retries automatically every 10 minutes.")
+        return None, _shot_note(msg, 'warn')
+    bits = [f"Shot data: {intel['n_matches']} matches"]
+    if intel.get('last_match_date'):
+        bits.append(f"latest {intel['last_match_date']}")
+    if st.get('pending'):
+        bits.append(f"{st['pending']} more still downloading")
+    bits.append(f"profiles shrunk towards league average over {SHOT_PROFILE_K:.0f} matches")
+    tone = 'info'
+    extra = []
+    if intel.get('unmatched_teams'):
+        extra.append(f" Couldn't match Understat team(s) {', '.join(intel['unmatched_teams'])} to FPL.")
+        tone = 'warn'
+    if str(intel.get('orientation_note', '')).startswith('default'):
+        extra.append(" Left/right orientation not yet verified from the data (needs a few more matches).")
+    if st.get('error'):
+        extra.append(f" Last sync issue: {st['error']}.")
+        tone = 'warn'
+    return intel, _shot_note(' · '.join(bits) + '.' + ''.join(extra), tone)
+
+
+def _blank_fig(msg='', height=300):
+    fig = go.Figure()
+    if msg:
+        fig.add_annotation(text=msg, xref='paper', yref='paper', x=0.5, y=0.5, showarrow=False,
+                           font=dict(size=14, color=COLORS['text_light']))
+    fig.update_layout(template='plotly_white', height=height, xaxis=dict(visible=False),
+                      yaxis=dict(visible=False), margin=dict(l=10, r=10, t=10, b=10))
+    return fig
+
+
+def _half_pitch_fig(shots, left_label, right_label):
+    """Vertical half pitch, attacked goal at the top, shots sized by xG."""
+    line = dict(color='#bdbdbd', width=1.5)
+    fig = go.Figure()
+    shapes = [
+        dict(type='rect', x0=0, y0=0.5, x1=1, y1=1, line=line),
+        dict(type='rect', x0=SHOT_BOX_Y[0], y0=SHOT_BOX_X, x1=SHOT_BOX_Y[1], y1=1, line=line),
+        dict(type='rect', x0=SHOT_CENTRE_Y[0], y0=SHOT_SIX_X, x1=SHOT_CENTRE_Y[1], y1=1, line=line),
+        dict(type='rect', x0=0.446, y0=1, x1=0.554, y1=1.015,
+             line=dict(color='#9e9e9e', width=2)),
+    ]
+    # Penalty arc (outside the box only) and centre-circle arc, 9.15m radius
+    t = np.linspace(0, np.pi, 60)
+    rx, ry = 9.15 / 68, 9.15 / 105
+    arc_x, arc_y = 0.5 + rx * np.cos(t), 0.885 - ry * np.sin(t)
+    keep = arc_y < SHOT_BOX_X
+    fig.add_trace(go.Scatter(x=arc_x[keep], y=arc_y[keep], mode='lines', line=line,
+                             hoverinfo='skip', showlegend=False))
+    fig.add_trace(go.Scatter(x=0.5 + rx * np.cos(t), y=0.5 + ry * np.sin(t), mode='lines',
+                             line=line, hoverinfo='skip', showlegend=False))
+    fig.add_trace(go.Scatter(x=[0.5], y=[0.885], mode='markers', marker=dict(size=4, color='#bdbdbd'),
+                             hoverinfo='skip', showlegend=False))
+    groups = [('Open play', shots['component'].isin(['op_centre', 'op_left', 'op_right']), COLORS['primary']),
+              ('Crosses', shots['component'] == 'cross', COLORS['info']),
+              ('Set pieces', shots['component'] == 'set_piece', COLORS['accent'])]
+    for name, mask, colour in groups:
+        d = shots[mask & (shots['x'] >= 0.5)]
+        if d.empty:
+            continue
+        fig.add_trace(go.Scatter(
+            x=d['hx'], y=d['x'], mode='markers', name=name,
+            marker=dict(size=5 + 28 * np.sqrt(d['xg'].clip(lower=0)), color=colour,
+                        symbol=np.where(d['is_goal'], 'star', 'circle'),
+                        opacity=0.72, line=dict(width=0.5, color='white')),
+            customdata=np.stack([d['player'].fillna(''), d['xg'], d['result'].fillna(''),
+                                 d['last_action'].fillna('')], axis=-1),
+            hovertemplate='%{customdata[0]}<br>xG %{customdata[1]:.2f} · %{customdata[2]}'
+                          '<br>Set up by: %{customdata[3]}<extra></extra>'))
+    fig.add_annotation(x=0.02, y=0.505, xanchor='left', yanchor='bottom', showarrow=False,
+                       text=left_label, font=dict(size=11, color=COLORS['text_light']))
+    fig.add_annotation(x=0.98, y=0.505, xanchor='right', yanchor='bottom', showarrow=False,
+                       text=right_label, font=dict(size=11, color=COLORS['text_light']))
+    fig.update_layout(
+        template='plotly_white', height=420, shapes=shapes,
+        xaxis=dict(range=[-0.02, 1.02], visible=False, fixedrange=True),
+        yaxis=dict(range=[0.49, 1.03], visible=False, fixedrange=True,
+                   scaleanchor='x', scaleratio=105 / 68),
+        legend=dict(orientation='h', y=-0.02, x=0.5, xanchor='center'),
+        margin=dict(l=4, r=4, t=4, b=4), plot_bgcolor='#fbfdf9')
+    return fig
+
+
+def _profile_bars(profile, league, which, labels, high_is_good):
+    comps = SHOT_COMPONENTS
+    idx = [100 * profile[which][c] / league[c] if league[c] > 0 else 100 for c in comps]
+    good = [(v >= 100) == high_is_good for v in idx]
+    fig = go.Figure(go.Bar(
+        y=[labels[c] for c in comps], x=idx, orientation='h',
+        marker_color=[COLORS['success'] if g else COLORS['danger'] for g in good],
+        text=[f"{v:.0f}" for v in idx], textposition='outside',
+        customdata=[profile[which][c] for c in comps],
+        hovertemplate='%{y}: %{x:.0f} (%{customdata:.2f} xG per match)<extra></extra>'))
+    fig.add_vline(x=100, line_dash='dash', line_color='#999')
+    fig.update_layout(template='plotly_white', height=280, showlegend=False,
+                      xaxis=dict(range=[0, max(160, max(idx) * 1.15)], title='Index (100 = league average)',
+                                 fixedrange=True),
+                      yaxis=dict(autorange='reversed', fixedrange=True),
+                      margin=dict(l=10, r=20, t=10, b=40))
+    return fig
+
+
+@callback(
+    [Output('sp-status', 'children'), Output('sp-map-created', 'figure'),
+     Output('sp-map-conceded', 'figure'), Output('sp-bars-att', 'figure'),
+     Output('sp-bars-def', 'figure'), Output('sp-team-table', 'data')],
+    [Input('visit-shot-profiles', 'data'), Input('sp-team', 'value')],
+    prevent_initial_call=True
+)
+def update_shot_profiles(visit, team_name):
+    _need_visit(visit)
+    data = get_data()
+    intel, note = _shot_intel_status(data)
+    if intel is None:
+        b = _blank_fig('Waiting for shot data')
+        return note, b, b, b, b, []
+    teams_df = data.get('teams_df')
+    tid = None
+    if teams_df is not None and team_name:
+        m = teams_df.loc[teams_df['name'] == team_name, 'id']
+        tid = int(m.iloc[0]) if len(m) else None
+    prof = intel['profiles'].get(tid) if tid is not None else None
+    table = prepare_table_data(intel['team_table'], list(intel['team_table'].columns))
+    if prof is None:
+        b = _blank_fig('No shot data for this team yet')
+        return note, b, b, b, b, table
+    s = intel['shots']
+    np_s = s[s['component'] != 'penalty']
+    created = _half_pitch_fig(np_s[np_s['team_id'] == tid], 'Their left', 'Their right')
+    # Opponents attack the top goal; the attacker's right (picture right) is
+    # the defending team's left.
+    conceded = _half_pitch_fig(np_s[np_s['opp_id'] == tid], 'Their right', 'Their left')
+    att = _profile_bars(prof, intel['league'], 'created', COMP_LABEL_ATT, high_is_good=True)
+    dfn = _profile_bars(prof, intel['league'], 'conceded', COMP_LABEL_DEF, high_is_good=False)
+    return note, created, conceded, att, dfn, table
+
+
+def _upcoming_by_team(data, n_gws):
+    """{team_id: [(gw, opp_id, venue), ...]} over the next n gameweeks."""
+    anchor = data.get('fixture_anchor_gw')
+    if anchor is None:
+        anchor = (data.get('next_gw_num') or 1) - 1
+    scheduled = {f.get('event') for f in data.get('fixtures_data') or []}
+    gws = [g for g in range(anchor + 1, anchor + 1 + n_gws) if g <= 38 and g in scheduled]
+    out = {}
+    for f in data.get('fixtures_data') or []:
+        g = f.get('event')
+        if g in gws:
+            out.setdefault(f['team_h'], []).append((g, f['team_a'], 'H'))
+            out.setdefault(f['team_a'], []).append((g, f['team_h'], 'A'))
+    return gws, out
+
+
+def _matchup_heatmap(intel, data, gws, fixtures_by_team):
+    teams_df = data.get('teams_df')
+    names = dict(zip(teams_df['id'], teams_df['name']))
+    shorts = dict(zip(teams_df['id'], teams_df['short_name']))
+    prof, league = intel['profiles'], intel['league']
+    rows = []
+    for tid in names:
+        cells, fits = [], []
+        for g in gws:
+            fx = [f for f in fixtures_by_team.get(tid, []) if f[0] == g]
+            if not fx:
+                cells.append((None, 'BLANK', 'No fixture'))
+                continue
+            vals, texts, hovers = [], [], []
+            for _, opp, venue in fx:
+                res = shot_matchup(prof.get(tid), prof.get(opp), league)
+                opp_s = shorts.get(opp, '?') + ('' if venue == 'H' else ' (A)')
+                if res is None:
+                    texts.append(opp_s)
+                    hovers.append(f"vs {names.get(opp, '?')}: no shot data")
+                    continue
+                base, style, comps, edges = res
+                fit = 100 * (style / base - 1) if base > 0 else 0.0
+                vals.append(fit)
+                best = max(edges, key=edges.get)
+                worst = min(edges, key=edges.get)
+                tag = f" {COMP_TAG[best]}" if edges[best] >= 0.03 else ''
+                texts.append(f"{opp_s}<br>{fit:+.0f}%{tag}")
+                hovers.append(
+                    f"vs {names.get(opp, '?')} ({venue}): style fit {fit:+.0f}%<br>"
+                    f"Expected npxG {style:.2f} vs {base:.2f} on strength alone<br>"
+                    f"Biggest edge: {COMP_LABEL_ATT[best]} ({edges[best]:+.2f} xG)<br>"
+                    f"Biggest drag: {COMP_LABEL_ATT[worst]} ({edges[worst]:+.2f} xG)")
+            z = float(np.mean(vals)) if vals else None
+            if z is not None:
+                fits.append(z)
+            if len(texts) == 1:
+                text = texts[0]
+            else:   # double gameweek: both opponents, averaged fit
+                text = ' + '.join(t.split('<br>')[0] for t in texts)
+                if z is not None:
+                    text += f"<br>{z:+.0f}%"
+            cells.append((z, text, '<br>—<br>'.join(hovers)))
+        rows.append((names[tid], cells, float(np.mean(fits)) if fits else -999))
+    rows.sort(key=lambda r: r[2], reverse=True)
+    z = [[c[0] for c in r[1]] for r in rows]
+    fig = go.Figure(go.Heatmap(
+        z=z, x=[f"GW{g}" for g in gws], y=[r[0] for r in rows],
+        text=[[c[1] for c in r[1]] for r in rows],
+        customdata=[[c[2] for c in r[1]] for r in rows],
+        texttemplate='%{text}', textfont=dict(size=11, color='#333333'),
+        colorscale=[[0, '#ef9a9a'], [0.5, '#f7f7f7'], [1, '#81c784']],
+        zmin=-25, zmax=25, zmid=0, showscale=False, xgap=2, ygap=2,
+        hovertemplate='<b>%{y}</b> %{x}<br>%{customdata}<extra></extra>'))
+    cell_w = 84 if len(gws) > 3 else 104
+    fig.update_layout(
+        template='plotly_white', height=40 * len(rows) + 70,
+        width=118 + cell_w * max(len(gws), 1) + 28,
+        xaxis=dict(side='top', fixedrange=True), yaxis=dict(autorange='reversed', fixedrange=True),
+        font=dict(family='Arial, sans-serif', size=12), margin=dict(l=110, r=18, t=40, b=10))
+    return fig
+
+
+def _fixture_index_text(fx, shorts, idx_fn):
+    parts = []
+    for g, opp, venue in fx:
+        parts.append(f"{shorts.get(opp, '?')}{'' if venue == 'H' else '(A)'} {idx_fn(opp):.2f}")
+    return ', '.join(parts)
+
+
+@callback(
+    [Output('mu-status', 'children'), Output('mu-validation', 'children'),
+     Output('mu-heatmap', 'figure'), Output('mu-sp-table', 'data'),
+     Output('mu-flank-table', 'data')],
+    [Input('visit-matchups', 'data'), Input('mu-gws', 'value'),
+     Input('mu-position', 'value'), Input('mu-minutes', 'value')],
+    prevent_initial_call=True
+)
+def update_matchups(visit, n_gws, position, min_minutes):
+    _need_visit(visit)
+    data = get_data()
+    intel, note = _shot_intel_status(data)
+    if intel is None:
+        return note, None, _blank_fig('Waiting for shot data'), [], []
+    try:
+        n_gws = max(1, min(6, int(n_gws or 4)))
+    except (TypeError, ValueError):
+        n_gws = 4
+    min_minutes = 0 if min_minutes is None else min_minutes
+    position = position or 'All'
+
+    v = intel.get('validation')
+    if v:
+        better = v['mae_style'] < v['mae_base']
+        val = html.P([
+            html.Strong("Does it work? "),
+            f"Tested out-of-sample on {v['n']} team-matches (each gameweek predicted only from earlier "
+            f"ones): style-aware error {v['mae_style']:.3f} xG vs {v['mae_base']:.3f} for strength alone; "
+            f"closer in {v['closer_pct']:.0f}% of cases. ",
+            ("The style model is currently adding accuracy." if better else
+             "The style model isn't beating strength alone yet, so treat these as tie-breakers, "
+             "not headline calls."),
+        ], style={'fontSize': '14px', 'color': COLORS['text_dark'], 'margin': '0'})
+    else:
+        val = html.P("Accuracy check: appears once most teams have 3+ matches of data, so each gameweek "
+                     "can be predicted from earlier ones and scored. Until then, treat style fit as a "
+                     "tie-breaker.", style={'fontSize': '14px', 'color': COLORS['text_light'], 'margin': '0'})
+
+    gws, fx_by_team = _upcoming_by_team(data, n_gws)
+    if not gws:
+        return note, val, _blank_fig('No upcoming fixtures'), [], []
+    heat = _matchup_heatmap(intel, data, gws, fx_by_team)
+
+    teams_df = data.get('teams_df')
+    shorts = dict(zip(teams_df['id'], teams_df['short_name']))
+    prof, league = intel['profiles'], intel['league']
+    dfa = data.get('df_active', pd.DataFrame())
+    pl = intel['players']
+    if pl is None or pl.empty or dfa.empty:
+        return note, val, heat, [], []
+    fpl_cols = ['id', 'web_name', 'team', 'team_name', 'position', 'price', 'ownership']
+    j = pl.dropna(subset=['fpl_id']).merge(dfa[fpl_cols], left_on='fpl_id', right_on='id', how='inner')
+    j = j[j['minutes'] >= min_minutes]
+    j = j[j['position'].isin(['DEF', 'MID', 'FWD'])]
+    if position != 'All':
+        j = j[j['position'] == position]
+
+    def sp_idx(opp):
+        p = prof.get(opp)
+        return p['conceded']['set_piece'] / league['set_piece'] if p and league['set_piece'] > 0 else 1.0
+
+    sp_rows = []
+    for r in j.itertuples(index=False):
+        fx = fx_by_team.get(r.team, [])
+        if not fx or not (r.sp_threat_90 > 0):
+            continue
+        sp_rows.append({
+            'web_name': r.web_name, 'team_name': r.team_name, 'position': r.position,
+            'price': r.price, 'sp_threat_90': r.sp_threat_90, 'head_pct': r.head_pct,
+            'sp_created': int(r.sp_created), 'ownership': r.ownership,
+            'fixtures': _fixture_index_text(fx, shorts, sp_idx),
+            'horizon': r.sp_threat_90 * sum(sp_idx(o) for _, o, _ in fx),
+        })
+    sp_rows = sorted(sp_rows, key=lambda d: d['horizon'], reverse=True)[:40]
+
+    s = intel['shots']
+    np_s = s[s['component'] != 'penalty']
+    ch_counts = np_s.groupby(['player_id', 'channel']).size().unstack(fill_value=0)
+    flank_rows = []
+    for r in j[j['side'].isin(['left', 'right'])].itertuples(index=False):
+        fx = fx_by_team.get(r.team, [])
+        if not fx:
+            continue
+        comp = 'op_' + r.side
+
+        def fl_idx(opp, comp=comp):
+            p = prof.get(opp)
+            return p['conceded'][comp] / league[comp] if p and league[comp] > 0 else 1.0
+
+        n_sh = int(ch_counts.loc[r.player_id].sum()) if r.player_id in ch_counts.index else 0
+        n_side = int(ch_counts.loc[r.player_id].get(r.side, 0)) if n_sh else 0
+        share = n_side / n_sh if n_sh >= 5 else 0.5   # too few shots: assume half
+        xgi90 = (r.npxg_90 if pd.notna(r.npxg_90) else 0) + (r.xa_90 if pd.notna(r.xa_90) else 0)
+        mults = [1 + share * (fl_idx(o) - 1) for _, o, _ in fx]
+        flank_rows.append({
+            'web_name': r.web_name, 'team_name': r.team_name, 'position': r.position,
+            'side_label': _SIDE_LABEL.get(r.side, ''), 'price': r.price, 'xgi_90': xgi90,
+            'channel_pct': 100 * share, 'ownership': r.ownership,
+            'fixtures': _fixture_index_text(fx, shorts, fl_idx),
+            'edge_pct': 100 * (float(np.mean(mults)) - 1), 'horizon': xgi90 * sum(mults),
+        })
+    flank_rows = sorted(flank_rows, key=lambda d: d['horizon'], reverse=True)[:40]
+    sp_df = pd.DataFrame(sp_rows)
+    fl_df = pd.DataFrame(flank_rows)
+    return (note, val, heat,
+            prepare_table_data(sp_df, list(sp_df.columns)) if not sp_df.empty else [],
+            prepare_table_data(fl_df, list(fl_df.columns)) if not fl_df.empty else [])
+
+
+@callback(
+    [Output('cq-status', 'children'), Output('cq-scatter', 'figure'), Output('cq-table', 'data')],
+    [Input('visit-chance-quality', 'data'), Input('cq-position', 'value'),
+     Input('cq-team', 'value'), Input('cq-minutes', 'value')],
+    prevent_initial_call=True
+)
+def update_chance_quality(visit, position, team, min_minutes):
+    _need_visit(visit)
+    data = get_data()
+    intel, note = _shot_intel_status(data)
+    if intel is None:
+        return note, _blank_fig('Waiting for shot data'), []
+    dfa = data.get('df_active', pd.DataFrame())
+    pl = intel['players']
+    if pl is None or pl.empty or dfa.empty:
+        return note, _blank_fig('No player data yet'), []
+    min_minutes = 0 if min_minutes is None else min_minutes
+    fpl_cols = ['id', 'web_name', 'team_name', 'position', 'price', 'ownership']
+    j = pl.dropna(subset=['fpl_id']).merge(dfa[fpl_cols], left_on='fpl_id', right_on='id', how='inner')
+    j = j[(j['minutes'] >= min_minutes) & j['position'].isin(['DEF', 'MID', 'FWD'])]
+    if position and position != 'All':
+        j = j[j['position'] == position]
+    if team and team != 'All':
+        j = j[j['team_name'] == team]
+    j = j.copy()
+    j['side_label'] = j['side'].map(_SIDE_LABEL)
+    sc = j[(j['shots'] >= 3) & j['xg_per_shot'].notna()]
+    if sc.empty:
+        fig = _blank_fig('Not enough shots for these filters')
+    else:
+        fig = px.scatter(sc, x='shots_90', y='xg_per_shot', color='position', size='npxg_90',
+                         size_max=26, hover_name='web_name',
+                         hover_data={'team_name': True, 'npxg_90': ':.2f', 'box_pct': ':.0f',
+                                     'big_90': ':.2f', 'shots_90': ':.2f', 'xg_per_shot': ':.3f',
+                                     'position': False},
+                         labels={'shots_90': 'Shots per 90', 'xg_per_shot': 'xG per shot',
+                                 'npxg_90': 'npxG/90', 'box_pct': 'Box %', 'big_90': 'Big chances/90',
+                                 'team_name': 'Team'},
+                         color_discrete_map={'DEF': COLORS['primary'], 'MID': COLORS['accent'],
+                                             'FWD': COLORS['info']})
+        fig.add_hline(y=float(sc['xg_per_shot'].median()), line_dash='dash', line_color='#999')
+        fig.add_vline(x=float(sc['shots_90'].median()), line_dash='dash', line_color='#999')
+        fig.update_layout(template='plotly_white', height=420, font=dict(family='Arial, sans-serif'),
+                          legend=dict(orientation='h', y=1.02, yanchor='bottom', x=0.5, xanchor='center'))
+    cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'shots_90', 'npxg_90',
+            'xg_per_shot', 'box_pct', 'big_90', 'head_pct', 'chances_90', 'xa_90', 'cross_pct',
+            'sp_threat_90', 'side_label', 'ownership']
+    table = prepare_table_data(j.sort_values('npxg_90', ascending=False).head(150), cols)
+    return note, fig, table
 
 
 if __name__ == '__main__':
