@@ -3122,46 +3122,36 @@ def get_target_gw_num(data):
 # STYLING
 # =============================================================================
 
-# FPL Room design language: paper, ink, and two signals. Blue always means
-# "good for you", orange always means "bad for you"; they differ in lightness
-# as well as hue, so they still read for colour-blind users. Names are kept
-# from the old palette so every existing page picks the new look up.
+# The official FPL palette: purple, neon green and pink, with standard
+# green / amber / red for good / neutral / bad.
 COLORS = {
-    'primary': '#15171C',     # ink: headings, nav, table headers, DEF
-    'secondary': '#E7ECFB',   # blue tint: highlight pills (ink text on top)
-    'accent': '#C2570C',      # risk orange; also the MID series colour
-    'background': '#F4F2EC',  # paper
+    'primary': '#37003c',     # FPL purple: header, nav, table headers, DEF
+    'secondary': '#00ff87',   # FPL green: highlight pills (purple text on top)
+    'accent': '#e90052',      # FPL pink; also the MID series colour
+    'background': '#f5f5f5',
     'card_bg': '#ffffff',
-    'text_dark': '#15171C',
-    'text_light': '#5B5E66',
-    'success': '#2448B8',     # gain blue
-    'warning': '#B8860B',
-    'danger': '#C2570C',      # risk orange
-    'info': '#2F7D8C',        # FWD series colour
+    'text_dark': '#333333',
+    'text_light': '#666666',
+    'success': '#28a745',
+    'warning': '#ffc107',
+    'danger': '#dc3545',
+    'info': '#17a2b8',        # FWD series colour
 }
-FONT_BODY = "Public Sans, system-ui, -apple-system, Segoe UI, sans-serif"
-FONT_DISPLAY = "Bricolage Grotesque, Public Sans, system-ui, sans-serif"
-FONT_MONO = "IBM Plex Mono, ui-monospace, Menlo, monospace"
-TINT_GOOD = '#E7ECFB'
-TINT_BAD = '#FBEADB'
-# Fixture ease: one green ladder, orange only for the genuinely hard end.
-EASE_SCALE = ['#7FAE92', '#B4D3BF', '#E3E0D8', '#F4D6BC', '#E9A877']
+# Premier Sans is the FPL site's typeface. It's licensed to the Premier
+# League only, so it can't be bundled: the @font-face rules in index_string
+# pick it up from the visitor's machine or from assets/fonts/ if licensed
+# copies are placed there. Otherwise this is FPL's own fallback stack.
+FONT_BODY = "'Premier Sans', Arial, 'Helvetica Neue', Helvetica, sans-serif"
+TINT_GOOD = '#e8f5e9'
+TINT_BAD = '#ffebee'
+# Fixture difficulty, easiest to hardest (FDR 1-5).
+EASE_SCALE = ['#00ff87', '#7dde9e', '#ffc107', '#ff7043', '#dc3545']
 
-# One chart style everywhere. Every figure in the app already requests
-# template='plotly_white', so restyling that template once re-skins them all
-# without touching each chart.
+# Every figure in the app requests template='plotly_white', so setting the
+# font on that template once gives every chart the FPL typeface.
 import plotly.io as pio
 _tpl = pio.templates['plotly_white']
-_tpl.layout.font = dict(family=FONT_BODY, color=COLORS['text_dark'], size=13)
-_tpl.layout.colorway = [COLORS['success'], COLORS['accent'], COLORS['info'], COLORS['primary'],
-                        '#8B8F99', '#7FAE92', COLORS['warning']]
-for _ax in (_tpl.layout.xaxis, _tpl.layout.yaxis):
-    _ax.update(gridcolor='#ECE9E1', linecolor='#D6D2C8', zerolinecolor='#D6D2C8',
-               tickfont=dict(color=COLORS['text_light']),
-               title=dict(font=dict(color=COLORS['text_light'])))
-_tpl.layout.hoverlabel = dict(font=dict(family=FONT_BODY, color=COLORS['text_dark']),
-                              bgcolor='#FFFFFF', bordercolor='#D6D2C8')
-_tpl.layout.title = dict(font=dict(family=FONT_DISPLAY, size=18))
+_tpl.layout.font.family = FONT_BODY
 pio.templates['plotly_white'] = _tpl
 
 CARD_STYLE = {
@@ -3170,7 +3160,7 @@ CARD_STYLE = {
     'padding': '24px',
     'marginBottom': '20px',
     'boxShadow': 'none',
-    'border': '1px solid #E3DFD6'
+    'border': '1px solid #e0e0e0'
 }
 
 STAT_CARD_STYLE = {
@@ -3179,7 +3169,7 @@ STAT_CARD_STYLE = {
     'padding': '20px',
     'textAlign': 'center',
     'boxShadow': 'none',
-    'border': '1px solid #E3DFD6',
+    'border': '1px solid #e0e0e0',
     'minHeight': '140px'
 }
 
@@ -3195,15 +3185,15 @@ TABLE_STYLE_HEADER = {
     'color': 'white',
     'fontWeight': '600',
     'textTransform': 'uppercase',
-    'fontFamily': FONT_MONO,
-    'fontSize': '11px',
-    'letterSpacing': '0.08em',
+    'fontFamily': FONT_BODY,
+    'fontSize': '12px',
+    'letterSpacing': '0.5px',
     'padding': '14px 16px'
 }
 
 TABLE_STYLE_DATA = {
     'backgroundColor': 'white',
-    'borderBottom': '1px solid #ECE9E1'
+    'borderBottom': '1px solid #e0e0e0'
 }
 
 # =============================================================================
@@ -4826,6 +4816,32 @@ app = Dash(__name__, meta_tags=[
 ])
 server = app.server
 
+# Premier Sans faces: (weight range, file name stem, installed-font names).
+_PREMIER_SANS = [
+    ('100 500', 'PremierSans-Regular', ['Premier Sans Regular', 'PremierSans-Regular', 'Premier Sans']),
+    ('600 700', 'PremierSans-Bold', ['Premier Sans Bold', 'PremierSans-Bold']),
+    ('800 900', 'PremierSans-Heavy', ['Premier Sans Heavy', 'PremierSans-Heavy']),
+]
+_FONT_FORMATS = {'woff2': 'woff2', 'woff': 'woff', 'otf': 'opentype', 'ttf': 'truetype'}
+
+
+def _premier_sans_css():
+    """@font-face rules for Premier Sans: an installed copy first, then a
+    licensed file in assets/fonts/ if one has been added. Only files that
+    exist are referenced, so browsers without the font don't request 404s."""
+    fonts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets', 'fonts')
+    rules = []
+    for weight, stem, names in _PREMIER_SANS:
+        src = [f"local('{n}')" for n in names]
+        for ext, fmt in _FONT_FORMATS.items():
+            if os.path.exists(os.path.join(fonts_dir, f'{stem}.{ext}')):
+                src.append(f"url('{app.get_asset_url(f'fonts/{stem}.{ext}')}') format('{fmt}')")
+                break
+        rules.append(f"@font-face {{ font-family: 'Premier Sans'; font-weight: {weight}; "
+                     f"font-display: swap; src: {', '.join(src)}; }}")
+    return '\n            '.join(rules)
+
+
 # Responsive CSS for mobile devices
 app.index_string = '''
 <!DOCTYPE html>
@@ -4835,58 +4851,60 @@ app.index_string = '''
         <title>FPL Room</title>
         {%favicon%}
         {%css%}
-        <link rel="preconnect" href="https://fonts.googleapis.com">
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-        <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..800&family=Public+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
         <style>
+            /* Premier Sans, the FPL site's typeface (see FONT_BODY) */
+            /*__FONT_FACES__*/
             /* ================================================================
-               DESIGN LANGUAGE — paper, ink, two signals (blue good, orange bad)
+               DESIGN LANGUAGE — FPL purple, green and pink
             ================================================================ */
             body {
                 margin: 0;
-                background: #F4F2EC;
-                color: #15171C;
-                font-family: 'Public Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+                background: #f5f5f5;
+                color: #333333;
+                font-family: 'Premier Sans', Arial, 'Helvetica Neue', Helvetica, sans-serif;
                 font-variant-numeric: tabular-nums;
             }
-            h1, h2, h3, h4 {
-                font-family: 'Bricolage Grotesque', 'Public Sans', system-ui, sans-serif;
-                letter-spacing: -0.01em;
-            }
             button, input, select, textarea { font-family: inherit; }
-            .mono { font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace; }
+            .small-label { font-weight: 700; }
             .brand-wordmark {
-                font-family: 'Bricolage Grotesque', sans-serif;
-                font-weight: 800; font-size: 22px; letter-spacing: -0.02em; color: #FFFFFF;
+                font-weight: 800; font-size: 22px; color: #FFFFFF; white-space: nowrap;
             }
             .brand-season {
-                font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #9A9DA6;
-                letter-spacing: 0.08em;
+                background: #00ff87; color: #37003c; font-size: 13px; font-weight: 700;
+                padding: 4px 10px; border-radius: 6px; white-space: nowrap;
+            }
+            .header-status {
+                display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end;
+                column-gap: 10px; row-gap: 2px; text-align: right;
+            }
+            .header-divider { color: rgba(255,255,255,0.4); font-size: 13px; }
+            @media (max-width: 600px) {
+                .header-divider, #last-updated-text { display: none; }
             }
             /* Segmented control built from dcc.RadioItems (className='seg') */
-            .seg { display: inline-flex; flex-wrap: wrap; gap: 4px; background: #ECE9E1;
+            .seg { display: inline-flex; flex-wrap: wrap; gap: 4px; background: #f0e6f6;
                    border-radius: 10px; padding: 4px; }
             .seg label { position: relative; display: inline-flex; align-items: center;
                          min-height: 40px; padding: 0 14px; border-radius: 8px; cursor: pointer;
-                         font-size: 14px; font-weight: 600; color: #3D4048; margin: 0; }
+                         font-size: 14px; font-weight: 600; color: #37003c; margin: 0; }
             .seg input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; }
-            .seg label:has(input:checked) { background: #15171C; color: #FFFFFF; }
-            .seg label:has(input:focus-visible) { outline: 2px solid #2448B8; outline-offset: 2px; }
-            .tag { display: inline-block; font-family: 'IBM Plex Mono', monospace; font-size: 11px;
-                   font-weight: 600; letter-spacing: 0.04em; border-radius: 6px; padding: 3px 8px; }
-            .tag-good { background: #E7ECFB; color: #1A3690; }
-            .tag-bad { background: #FBEADB; color: #8A3D05; }
-            .tag-neutral { background: #ECE9E1; color: #3D4048; }
+            .seg label:has(input:checked) { background: #37003c; color: #FFFFFF; }
+            .seg label:has(input:focus-visible) { outline: 2px solid #e90052; outline-offset: 2px; }
+            .tag { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
+                   border-radius: 6px; padding: 3px 8px; }
+            .tag-good { background: #e8f5e9; color: #1b5e20; }
+            .tag-bad { background: #ffebee; color: #b71c1c; }
+            .tag-neutral { background: #f0f0f0; color: #444444; }
             .tw-row { display: flex; align-items: center; justify-content: space-between; gap: 12px;
-                      min-height: 50px; border-bottom: 1px solid #ECE9E1; }
+                      min-height: 50px; border-bottom: 1px solid #eeeeee; }
             .tw-row:last-child { border-bottom: 0; }
             .tw-col { min-width: 280px; }
             @media (max-width: 900px) { .tw-col { min-width: 100%; } }
             /* Mobile bottom tab bar (hidden on desktop) */
             #tab-bar { display: none; }
             .tab-item { background: none; border: 0; min-height: 56px; font-size: 12px;
-                        font-weight: 600; color: #5B5E66; cursor: pointer; touch-action: manipulation; }
-            .tab-item.active { color: #15171C; font-weight: 800; box-shadow: inset 0 3px 0 #2448B8; }
+                        font-weight: 600; color: #666666; cursor: pointer; touch-action: manipulation; }
+            .tab-item.active { color: #37003c; font-weight: 800; box-shadow: inset 0 3px 0 #e90052; }
             /* ================================================================
                BASE — all screen sizes
             ================================================================ */
@@ -4914,8 +4932,8 @@ app.index_string = '''
             #sidebar {
                 width: 240px;
                 min-width: 240px;
-                background: #15171C;
-                border-right: 0;
+                background: #ffffff;
+                border-right: 1px solid #e0e0e0;
                 height: 100%;
                 overflow-y: auto;
                 overflow-x: hidden;
@@ -4928,20 +4946,19 @@ app.index_string = '''
 
             /* Section label (This Week, My Team, Leagues, Planner, Research) */
             .nav-group-label {
-                font-family: 'IBM Plex Mono', monospace;
-                font-size: 11px;
-                font-weight: 600;
+                font-size: 13px;
+                font-weight: 800;
                 text-transform: uppercase;
-                letter-spacing: 0.12em;
-                color: #9A9DA6;
+                letter-spacing: 1px;
+                color: #37003c;
                 padding: 20px 22px 6px 22px;
                 margin: 0;
             }
             /* Sub-group inside Research */
             .nav-subgroup-label {
                 font-size: 12px;
-                font-weight: 600;
-                color: #7C808A;
+                font-weight: 700;
+                color: #767676;
                 padding: 10px 22px 2px 22px;
                 margin: 0;
             }
@@ -4961,7 +4978,7 @@ app.index_string = '''
                 font-size: 14px;
                 font-family: inherit;
                 font-weight: 500;
-                color: #C9CBD1;
+                color: #444444;
                 cursor: pointer;
                 text-align: left;
                 transition: background 0.15s, color 0.15s;
@@ -4970,13 +4987,13 @@ app.index_string = '''
             }
 
             .nav-item:hover {
-                background: #22262E;
-                color: #FFFFFF;
+                background: #f5f5f5;
+                color: #37003c;
             }
 
             .nav-item.active {
-                background: #2A2E37;
-                color: #FFFFFF;
+                background: #f0e6f6;
+                color: #37003c;
                 font-weight: 700;
             }
             .nav-item.active::before {
@@ -4988,7 +5005,7 @@ app.index_string = '''
                 height: 7px;
                 margin-top: -3.5px;
                 border-radius: 4px;
-                background: #7FA7FF;
+                background: #e90052;
             }
 
             /* --- Content area --- */
@@ -4998,7 +5015,7 @@ app.index_string = '''
                 height: 100%;
                 overflow-y: auto;
                 padding: 28px 32px;
-                background: #F4F2EC;
+                background: #f5f5f5;
             }
 
             /* --- Mobile overlay: covers app-body, not the header --- */
@@ -5073,7 +5090,7 @@ app.index_string = '''
                     position: fixed;
                     left: 0; right: 0; bottom: 0;
                     background: #FFFFFF;
-                    border-top: 1px solid #E3DFD6;
+                    border-top: 1px solid #e0e0e0;
                     padding-bottom: env(safe-area-inset-bottom, 0px);
                     z-index: 700;
                 }
@@ -5170,7 +5187,7 @@ app.index_string = '''
             /* Player headshots — keep the box stable while fallbacks resolve */
             .player-photo {
                 object-fit: cover;
-                background: #ECE9E1;
+                background: #efeaf3;
                 border-radius: 8px;
             }
         </style>
@@ -5198,7 +5215,7 @@ app.index_string = '''
         </footer>
     </body>
 </html>
-'''
+'''.replace('/*__FONT_FACES__*/', _premier_sans_css())
 
 
 # =============================================================================
@@ -5458,18 +5475,20 @@ app.layout = html.Div([
                 html.Button('☰', id='hamburger-btn', n_clicks=0, **{'aria-label': 'Open menu'}),
                 html.Span("FPL Room", className='brand-wordmark'),
                 html.Span(SEASON['label'], className='brand-season'),
-            ], style={'display': 'flex', 'alignItems': 'center', 'gap': '12px'}),
+            ], style={'display': 'flex', 'alignItems': 'center', 'gap': '14px', 'flexShrink': '0'}),
             html.Div([
                 html.Span(id='gw-status-text',
-                          style={'color': 'rgba(255,255,255,0.8)', 'fontSize': '13px'}),
-                html.Span(" | ", style={'color': 'rgba(255,255,255,0.5)', 'fontSize': '13px'}),
+                          style={'color': 'rgba(255,255,255,0.85)', 'fontSize': '13px'}),
+                html.Span("|", className='header-divider'),
                 html.Span(id='last-updated-text',
-                          style={'color': 'rgba(255,255,255,0.6)', 'fontSize': '12px'})
-            ])
+                          style={'color': 'rgba(255,255,255,0.65)', 'fontSize': '12px'})
+            ], className='header-status', style={'minWidth': '0'})
+        # flex: 1 so the row spans the bar; otherwise it shrinks to its content
+        # and space-between leaves the two groups touching.
         ], style={'display': 'flex', 'justifyContent': 'space-between', 'alignItems': 'center',
-                  'maxWidth': '100%', 'margin': '0 auto', 'padding': '0 20px'})
+                  'gap': '24px', 'flex': '1', 'minWidth': '0', 'padding': '0 20px'})
     ], style={'backgroundColor': COLORS['primary'], 'padding': '10px 0', 'position': 'sticky',
-              'top': '0', 'zIndex': '1000', 'borderBottom': '1px solid #2A2E37',
+              'top': '0', 'zIndex': '1000', 'boxShadow': '0 2px 8px rgba(0,0,0,0.15)',
               'minHeight': '44px', 'display': 'flex', 'alignItems': 'center'}),
 
     # Body: sidebar + content
@@ -5540,14 +5559,14 @@ app.layout = html.Div([
                 html.Div([
                     html.Div([
                         html.Div([
-                            html.Div("THIS WEEK", className='mono',
+                            html.Div("THIS WEEK", className='small-label',
                                      style={'fontSize': '12px', 'letterSpacing': '0.12em',
                                             'color': COLORS['text_light']}),
                             html.H1(id='tw-title', children="This Week",
                                     style={'margin': '0', 'fontSize': '44px', 'fontWeight': '800',
                                            'lineHeight': '1.05', 'letterSpacing': '-0.03em',
                                            'color': COLORS['primary']}),
-                            html.Div(id='tw-deadline', style={'fontSize': '15px', 'color': '#3D4048'}),
+                            html.Div(id='tw-deadline', style={'fontSize': '15px', 'color': '#555555'}),
                         ], style={'display': 'flex', 'flexDirection': 'column', 'gap': '6px'}),
                         html.Div([
                             html.Label("Your FPL team ID", htmlFor='tw-team-id',
@@ -5557,7 +5576,7 @@ app.layout = html.Div([
                                 dcc.Input(id='tw-team-id', type='number', placeholder='e.g. 1234567',
                                           min=1, step=1,
                                           style={'width': '160px', 'minHeight': '44px', 'padding': '0 12px',
-                                                 'borderRadius': '10px', 'border': '1px solid #D6D2C8',
+                                                 'borderRadius': '10px', 'border': '1px solid #cccccc',
                                                  'fontSize': '15px'}),
                                 html.Button('Load', id='tw-load-btn', n_clicks=0,
                                             style={'minHeight': '44px', 'padding': '0 18px', 'border': '0',
@@ -5598,7 +5617,7 @@ app.layout = html.Div([
                             "towards the league average until a team has enough matches, so early-season "
                             "extremes are damped rather than taken at face value."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '0'}),
-                    ], style={**CARD_STYLE, 'backgroundColor': '#FBFAF7'}),
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
                     html.Div(id='sp-status'),
                     html.Div([
                         html.Div([
@@ -5722,7 +5741,7 @@ app.layout = html.Div([
                             "single edge."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div(id='mu-validation'),
-                    ], style={**CARD_STYLE, 'backgroundColor': '#FBFAF7'}),
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
                     html.Div(id='mu-status'),
                     html.Div([
                         html.Div([
@@ -5805,9 +5824,9 @@ app.layout = html.Div([
                             style_data_conditional=[
                                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                                 {'if': {'filter_query': '{edge_pct} >= 10', 'column_id': 'edge_pct'},
-                                 'backgroundColor': '#E7ECFB', 'fontWeight': '600'},
+                                 'backgroundColor': '#e8f5e9', 'fontWeight': '600'},
                                 {'if': {'filter_query': '{edge_pct} <= -10', 'column_id': 'edge_pct'},
-                                 'backgroundColor': '#FBEADB'},
+                                 'backgroundColor': '#ffebee'},
                             ],
                         ),
                     ], style=CARD_STYLE),
@@ -5825,7 +5844,7 @@ app.layout = html.Div([
                             "hauls; the creation columns show who sets them up, and how (crosses, set pieces). "
                             "Non-penalty throughout, so penalty takers aren't flattered."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '0'}),
-                    ], style={**CARD_STYLE, 'backgroundColor': '#FBFAF7'}),
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
                     html.Div(id='cq-status'),
                     html.Div([
                         html.Div([
@@ -5947,7 +5966,7 @@ app.layout = html.Div([
                                             style={'backgroundColor': COLORS['secondary'],
                                                    'color': COLORS['primary'], 'padding': '8px 16px',
                                                    'borderRadius': '20px', 'fontWeight': '600'})])
-                    ], style={**CARD_STYLE, 'backgroundColor': '#FBFAF7'}),
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
                     html.Div([
                         html.Div([
@@ -6031,9 +6050,9 @@ app.layout = html.Div([
                             style_data_conditional=[
                                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                                 {'if': {'filter_query': '{defcon_vs_bonus} >= 0', 'column_id': 'defcon_vs_bonus'},
-                                 'backgroundColor': '#E7ECFB'},
+                                 'backgroundColor': '#e8f5e9'},
                                 {'if': {'filter_query': '{defcon_vs_bonus} < 0', 'column_id': 'defcon_vs_bonus'},
-                                 'backgroundColor': '#FBEADB'}
+                                 'backgroundColor': '#ffebee'}
                             ]
                         )
                     ], style=CARD_STYLE)
@@ -6059,7 +6078,7 @@ app.layout = html.Div([
                                              'color': COLORS['primary'], 'padding': '8px 16px', 'borderRadius': '20px',
                                              'fontWeight': '600'})
                         ])
-                    ], style={**CARD_STYLE, 'backgroundColor': '#FBFAF7'}),
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
                     # Filters
                     html.Div([
@@ -6160,11 +6179,11 @@ app.layout = html.Div([
                             style_data_conditional=[
                                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                                 {'if': {'filter_query': '{hit_rate} >= 50', 'column_id': 'hit_rate'},
-                                 'backgroundColor': '#E7ECFB'},
+                                 'backgroundColor': '#e8f5e9'},
                                 {'if': {'filter_query': '{hit_rate} >= 25 && {hit_rate} < 50', 'column_id': 'hit_rate'},
                                  'backgroundColor': '#fff8e1'},
                                 {'if': {'filter_query': '{hit_rate} < 25', 'column_id': 'hit_rate'},
-                                 'backgroundColor': '#FBEADB'}
+                                 'backgroundColor': '#ffebee'}
                             ]
                         )
                     ], style=CARD_STYLE)
@@ -6248,9 +6267,9 @@ app.layout = html.Div([
                             style_data_conditional=[
                                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                                 {'if': {'filter_query': '{defcon_diff} > 0', 'column_id': 'defcon_diff'},
-                                 'backgroundColor': '#E7ECFB'},
+                                 'backgroundColor': '#e8f5e9'},
                                 {'if': {'filter_query': '{defcon_diff} < 0', 'column_id': 'defcon_diff'},
-                                 'backgroundColor': '#FBEADB'}
+                                 'backgroundColor': '#ffebee'}
                             ]
                         )
                     ], style=CARD_STYLE)
@@ -6337,7 +6356,7 @@ app.layout = html.Div([
                                 {'if': {'filter_query': '{xg_diff} >= -1 && {xg_diff} <= 1', 'column_id': 'xg_diff'},
                                  'backgroundColor': '#FFB938'},
                                 {'if': {'filter_query': '{xg_diff} > 1', 'column_id': 'xg_diff'},
-                                 'backgroundColor': '#E7ECFB'}
+                                 'backgroundColor': '#e8f5e9'}
                             ]
                         )
                     ], style=CARD_STYLE)
@@ -6363,7 +6382,7 @@ app.layout = html.Div([
                                       style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
                                              'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
                         ])
-                    ], style={**CARD_STYLE, 'backgroundColor': '#FBFAF7'}),
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
                     # Filters
                     html.Div([
@@ -6431,8 +6450,8 @@ app.layout = html.Div([
                             style_data=TABLE_STYLE_DATA,
                             style_data_conditional=[
                                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
-                                {'if': {'filter_query': '{xgi_diff_per_90} < 0.00', 'column_id': 'xgi_diff_per_90'}, 'backgroundColor': '#FBEADB'},
-                                {'if': {'filter_query': '{xgi_diff_per_90} > 0.00', 'column_id': 'xgi_diff_per_90'}, 'backgroundColor': '#E7ECFB'},
+                                {'if': {'filter_query': '{xgi_diff_per_90} < 0.00', 'column_id': 'xgi_diff_per_90'}, 'backgroundColor': '#ffebee'},
+                                {'if': {'filter_query': '{xgi_diff_per_90} > 0.00', 'column_id': 'xgi_diff_per_90'}, 'backgroundColor': '#e8f5e9'},
                             ]
                         )
                     ], style=CARD_STYLE)
@@ -6630,9 +6649,9 @@ app.layout = html.Div([
                             style_data_conditional=[
                                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                                 {'if': {'filter_query': '{form_vs_season} > 1', 'column_id': 'form_vs_season'},
-                                 'backgroundColor': '#E7ECFB'},
+                                 'backgroundColor': '#e8f5e9'},
                                 {'if': {'filter_query': '{form_vs_season} < -1', 'column_id': 'form_vs_season'},
-                                 'backgroundColor': '#FBEADB'}
+                                 'backgroundColor': '#ffebee'}
                             ]
                         )
                     ], style=CARD_STYLE)
@@ -6737,7 +6756,7 @@ app.layout = html.Div([
                             "number cannot say that. Totals sum across the window, so a blank "
                             "contributes nothing and a double contributes an extra fixture.",
                         ], style={'color': COLORS['text_light'], 'fontSize': '14px', 'marginBottom': '0'}),
-                    ], style={**CARD_STYLE, 'backgroundColor': '#FBFAF7'}),
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
                     html.Div([
                         html.Div([
@@ -6799,11 +6818,11 @@ app.layout = html.Div([
                         html.P([
                             "Every team's remaining fixtures at a glance. ",
                             html.Strong("Blanks"), " (grey) = no fixture that gameweek. ",
-                            html.Strong("Doubles"), " (blue) = two fixtures in one gameweek. ",
+                            html.Strong("Doubles"), " (cyan) = two fixtures in one gameweek. ",
                             "Single fixtures are colour-coded by FDR: ",
-                            html.Strong("deeper green = easier"), ", ",
-                            html.Strong("grey = medium"), ", ",
-                            html.Strong("orange = hard"), "."
+                            html.Strong("Green = Easy"), ", ",
+                            html.Strong("Amber = Medium"), ", ",
+                            html.Strong("Red = Hard"), "."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '16px'}),
                         html.Div([
                             html.Span("■", style={'color': EASE_SCALE[0], 'fontSize': '20px', 'marginRight': '4px'}),
@@ -6816,12 +6835,12 @@ app.layout = html.Div([
                             html.Span("FDR 4", style={'fontSize': '13px', 'marginRight': '14px', 'color': COLORS['text_dark']}),
                             html.Span("■", style={'color': EASE_SCALE[4], 'fontSize': '20px', 'marginRight': '4px'}),
                             html.Span("FDR 5", style={'fontSize': '13px', 'marginRight': '14px', 'color': COLORS['text_dark']}),
-                            html.Span("■", style={'color': '#AFC2F2', 'fontSize': '20px', 'marginRight': '4px'}),
+                            html.Span("■", style={'color': '#00bcd4', 'fontSize': '20px', 'marginRight': '4px'}),
                             html.Span("Double GW", style={'fontSize': '13px', 'marginRight': '14px', 'color': COLORS['text_dark']}),
                             html.Span("■", style={'color': '#d0d0d0', 'fontSize': '20px', 'marginRight': '4px'}),
                             html.Span("Blank GW", style={'fontSize': '13px', 'color': COLORS['text_dark']}),
                         ])
-                    ], style={**CARD_STYLE, 'backgroundColor': '#FBFAF7'}),
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
                     html.Div([
                         html.Div([
@@ -6891,7 +6910,7 @@ app.layout = html.Div([
                                                                  'color': COLORS['primary'], 'padding': '8px 16px',
                                                                  'borderRadius': '20px', 'fontWeight': '600'})
                         ])
-                    ], style={**CARD_STYLE, 'backgroundColor': '#FBFAF7'}),
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
                     # Filters
                     html.Div([
@@ -6956,13 +6975,13 @@ app.layout = html.Div([
                             style_data_conditional=[
                                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                                 {'if': {'filter_query': '{att_swing} <= -0.4', 'column_id': 'att_swing'},
-                                 'backgroundColor': '#E7ECFB', 'fontWeight': '600'},
+                                 'backgroundColor': '#e8f5e9', 'fontWeight': '600'},
                                 {'if': {'filter_query': '{att_swing} >= 0.4', 'column_id': 'att_swing'},
-                                 'backgroundColor': '#FBEADB'},
+                                 'backgroundColor': '#ffebee'},
                                 {'if': {'filter_query': '{def_swing} <= -0.4', 'column_id': 'def_swing'},
-                                 'backgroundColor': '#E7ECFB', 'fontWeight': '600'},
+                                 'backgroundColor': '#e8f5e9', 'fontWeight': '600'},
                                 {'if': {'filter_query': '{def_swing} >= 0.4', 'column_id': 'def_swing'},
-                                 'backgroundColor': '#FBEADB'},
+                                 'backgroundColor': '#ffebee'},
                             ]
                         ),
                         html.P("Negative swing (green) = later fixtures are EASIER than the current window — buy window. "
@@ -7016,11 +7035,11 @@ app.layout = html.Div([
                             style_data_conditional=[
                                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                                 {'if': {'filter_query': '{avg_fdr_5} <= 2.5', 'column_id': 'avg_fdr_5'},
-                                 'backgroundColor': '#E7ECFB'},
+                                 'backgroundColor': '#e8f5e9'},
                                 {'if': {'filter_query': '{avg_fdr_5} > 2.5 && {avg_fdr_5} <= 3.5',
                                         'column_id': 'avg_fdr_5'}, 'backgroundColor': '#fff8e1'},
                                 {'if': {'filter_query': '{avg_fdr_5} > 3.5', 'column_id': 'avg_fdr_5'},
-                                 'backgroundColor': '#FBEADB'}
+                                 'backgroundColor': '#ffebee'}
                             ]
                         )
                     ], style=CARD_STYLE)
@@ -7046,7 +7065,7 @@ app.layout = html.Div([
                                       style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
                                              'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
                         ])
-                    ], style={**CARD_STYLE, 'backgroundColor': '#FBFAF7'}),
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
                     html.Div([
                         html.Div([
@@ -7148,7 +7167,7 @@ app.layout = html.Div([
                             style_data_conditional=[
                                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                                 {'if': {'filter_query': '{ownership} <= 5', 'column_id': 'ownership'},
-                                 'backgroundColor': '#E7ECFB'},
+                                 'backgroundColor': '#e8f5e9'},
                                 {'if': {'filter_query': '{ownership} > 5 && {ownership} <= 10',
                                         'column_id': 'ownership'}, 'backgroundColor': '#fff8e1'},
                             ]
@@ -7178,7 +7197,7 @@ app.layout = html.Div([
                                       style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
                                              'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
                         ])
-                    ], style={**CARD_STYLE, 'backgroundColor': '#FBFAF7'}),
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
                     html.Div([
                         html.Div([
@@ -7299,15 +7318,15 @@ app.layout = html.Div([
                             style_data_conditional=[
                                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                                 {'if': {'filter_query': '{next_att_fdr} <= 2.3', 'column_id': 'next_att_fdr'},
-                                 'backgroundColor': '#E7ECFB'},
+                                 'backgroundColor': '#e8f5e9'},
                                 {'if': {'filter_query': '{next_att_fdr} >= 3.7', 'column_id': 'next_att_fdr'},
-                                 'backgroundColor': '#FBEADB'},
+                                 'backgroundColor': '#ffebee'},
                                 {'if': {'filter_query': '{next_venue} = H', 'column_id': 'next_venue'},
                                  'color': COLORS['success'], 'fontWeight': '600'},
                                 {'if': {'filter_query': '{next_venue} = A', 'column_id': 'next_venue'},
                                  'color': COLORS['danger'], 'fontWeight': '600'},
                                 {'if': {'filter_query': '{avail_pct} < 100', 'column_id': 'avail_pct'},
-                                 'backgroundColor': '#FBEADB', 'fontWeight': '600'},
+                                 'backgroundColor': '#ffebee', 'fontWeight': '600'},
                                 {'if': {'filter_query': '{start_rate} < 70', 'column_id': 'start_rate'},
                                  'backgroundColor': '#fff8e1'},
                             ]
@@ -7336,7 +7355,7 @@ app.layout = html.Div([
                                       style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
                                              'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
                         ])
-                    ], style={**CARD_STYLE, 'backgroundColor': '#FBFAF7'}),
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
                     html.Div([
                         html.Div([
@@ -7456,13 +7475,13 @@ app.layout = html.Div([
                             style_data_conditional=[
                                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                                 {'if': {'filter_query': '{net_transfers_gw} > 0', 'column_id': 'net_transfers_gw'},
-                                 'backgroundColor': '#E7ECFB'},
+                                 'backgroundColor': '#e8f5e9'},
                                 {'if': {'filter_query': '{net_transfers_gw} < 0', 'column_id': 'net_transfers_gw'},
-                                 'backgroundColor': '#FBEADB'},
+                                 'backgroundColor': '#ffebee'},
                                 {'if': {'filter_query': '{price_change_likelihood} >= 50',
-                                        'column_id': 'price_change_likelihood'}, 'backgroundColor': '#E7ECFB'},
+                                        'column_id': 'price_change_likelihood'}, 'backgroundColor': '#e8f5e9'},
                                 {'if': {'filter_query': '{price_change_likelihood} <= -50',
-                                        'column_id': 'price_change_likelihood'}, 'backgroundColor': '#FBEADB'},
+                                        'column_id': 'price_change_likelihood'}, 'backgroundColor': '#ffebee'},
                             ]
                         )
                     ], style=CARD_STYLE)
@@ -7485,7 +7504,7 @@ app.layout = html.Div([
                                 "different constants"), " to find the settings that would have predicted best, "
                                 "converting judgement calls into measured ones."],
                                style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
-                    ], style={**CARD_STYLE, 'backgroundColor': '#FBFAF7'}),
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
                     html.Div([
                         html.H4("Backtest \u2014 Projected vs Actual",
@@ -7599,7 +7618,7 @@ app.layout = html.Div([
                             " per fixture; the horizon total simply sums them, so doubles count twice and blanks count zero."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div(id='xcs-form-note')
-                    ], style={**CARD_STYLE, 'backgroundColor': '#FBFAF7'}),
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
                     html.Div([
                         html.Div([
@@ -7643,9 +7662,9 @@ app.layout = html.Div([
                             style_data_conditional=[
                                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                                 {'if': {'filter_query': '{avg_cs_prob} >= 40', 'column_id': 'avg_cs_prob'},
-                                 'backgroundColor': '#E7ECFB'},
+                                 'backgroundColor': '#e8f5e9'},
                                 {'if': {'filter_query': '{avg_cs_prob} < 25', 'column_id': 'avg_cs_prob'},
-                                 'backgroundColor': '#FBEADB'},
+                                 'backgroundColor': '#ffebee'},
                             ]
                         )
                     ], style=CARD_STYLE),
@@ -7690,7 +7709,7 @@ app.layout = html.Div([
                             "This compares any two players on ", html.Strong("projected points over your chosen horizon"),
                             " and tells you the net gain of the move — including the hit, if you're taking one."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
-                    ], style={**CARD_STYLE, 'backgroundColor': '#FBFAF7'}),
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
                     html.Div([
                         html.Div([
@@ -7779,7 +7798,7 @@ app.layout = html.Div([
                         ]),
                         html.P("Your team ID is in the URL on the FPL Points page: fantasy.premierleague.com/entry/XXXXXXX/…",
                                style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginTop': '10px'})
-                    ], style={**CARD_STYLE, 'backgroundColor': '#FBFAF7'}),
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
                     dcc.Loading(html.Div(id='cp-content'), type='circle', color=COLORS['primary'])
                 ], style={'padding': '20px 0'})
@@ -7804,7 +7823,7 @@ app.layout = html.Div([
                                                'border': 'none', 'padding': '10px 28px', 'borderRadius': '6px',
                                                'fontSize': '15px', 'fontWeight': '700', 'cursor': 'pointer'}),
                         ], style={'display': 'flex', 'alignItems': 'center', 'flexWrap': 'wrap', 'gap': '8px'}),
-                    ], style={**CARD_STYLE, 'backgroundColor': '#FBFAF7'}),
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
                     dcc.Loading(html.Div(id='dd-content'), type='circle', color=COLORS['primary'])
                 ], style={'padding': '20px 0'})
             ]),
@@ -7855,7 +7874,7 @@ app.layout = html.Div([
                                 "Works for any classic league. Leagues bigger than 20 are capped at the top 20 by rank. ",
                                 "Add your team ID to unlock the you-vs-them views."],
                                style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginTop': '10px'})
-                    ], style={**CARD_STYLE, 'backgroundColor': '#FBFAF7'}),
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
                     dcc.Loading(html.Div(id='rv-content'), type='circle', color=COLORS['primary'])
                 ], style={'padding': '20px 0'})
@@ -7915,7 +7934,7 @@ app.layout = html.Div([
                             )
                         ], style={'color': COLORS['text_light'], 'fontSize': '13px',
                                   'marginTop': '12px', 'marginBottom': '0'}),
-                    ], style={**CARD_STYLE, 'backgroundColor': '#FBFAF7'}),
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
                     dcc.Loading(
                         id='my-squad-loading',
@@ -7950,7 +7969,7 @@ app.layout = html.Div([
                                       style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
                                              'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
                         ])
-                    ], style={**CARD_STYLE, 'backgroundColor': '#FBFAF7'}),
+                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
                     # Controls
                     html.Div([
@@ -9257,18 +9276,18 @@ def update_fixture_ticker(sort_by, num_gws, n):
     colorscale = [
         [0/6,    '#d0d0d0'],  # 0 BGW  (grey)
         [0.5/6,  '#d0d0d0'],
-        [0.5/6,  EASE_SCALE[0]],  # 1 FDR1 (easiest: deepest green)
+        [0.5/6,  EASE_SCALE[0]],  # 1 FDR1 (bright green)
         [1.5/6,  EASE_SCALE[0]],
         [1.5/6,  EASE_SCALE[1]],  # 2 FDR2
         [2.5/6,  EASE_SCALE[1]],
-        [2.5/6,  EASE_SCALE[2]],  # 3 FDR3 (neutral)
+        [2.5/6,  EASE_SCALE[2]],  # 3 FDR3 (amber)
         [3.5/6,  EASE_SCALE[2]],
         [3.5/6,  EASE_SCALE[3]],  # 4 FDR4
         [4.5/6,  EASE_SCALE[3]],
-        [4.5/6,  EASE_SCALE[4]],  # 5 FDR5 (hardest: orange)
+        [4.5/6,  EASE_SCALE[4]],  # 5 FDR5 (red)
         [5.5/6,  EASE_SCALE[4]],
-        [5.5/6,  '#AFC2F2'],      # 6 DGW (blue: a good thing, readable with dark text)
-        [1.0,    '#AFC2F2'],
+        [5.5/6,  '#00bcd4'],      # 6 DGW (cyan — distinct from FDR scale, readable with dark text)
+        [1.0,    '#00bcd4'],
     ]
 
     # Adaptive sizing: fewer columns = bigger, clearer cells. Past 15 columns
@@ -9300,7 +9319,7 @@ def update_fixture_ticker(sort_by, num_gws, n):
         hovertemplate='<b>%{y}</b>  %{x}<br>%{customdata}<extra></extra>',
         xgap=2,
         ygap=2,
-        textfont=dict(size=cell_font, color='#15171C'),
+        textfont=dict(size=cell_font, color='#333333'),
     ))
 
     # Fixed cell width rather than fitting the viewport. A 380px phone
@@ -9864,7 +9883,7 @@ def render_backtest(n_clicks):
                                               'fontWeight': '600', 'marginBottom': '6px'}),
             html.Pre(f"{type(e).__name__}: {e}",
                      style={'color': COLORS['text_light'], 'fontSize': '13px',
-                            'whiteSpace': 'pre-wrap', 'backgroundColor': '#FBFAF7',
+                            'whiteSpace': 'pre-wrap', 'backgroundColor': '#f8f9fa',
                             'padding': '10px', 'borderRadius': '6px'}),
             html.P("Full traceback is in the server logs.",
                    style={'color': COLORS['text_light'], 'fontSize': '13px'}),
@@ -10045,9 +10064,9 @@ def _render_backtest_inner():
             style_data_conditional=[
                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                 {'if': {'filter_query': '{diff} >= 4', 'column_id': 'diff'},
-                 'backgroundColor': '#E7ECFB', 'fontWeight': '600'},
+                 'backgroundColor': '#e8f5e9', 'fontWeight': '600'},
                 {'if': {'filter_query': '{diff} <= -4', 'column_id': 'diff'},
-                 'backgroundColor': '#FBEADB', 'fontWeight': '600'},
+                 'backgroundColor': '#ffebee', 'fontWeight': '600'},
                 {'if': {'filter_query': '{minutes_played} = 0'},
                  'color': COLORS['text_light'], 'fontStyle': 'italic'},
             ])
@@ -10169,9 +10188,9 @@ def render_projection_breakdown(page, position, team, search):
         style_data_conditional=[
             {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
             {'if': {'filter_query': '{fix_effect} > 1', 'column_id': 'fix_effect'},
-             'backgroundColor': '#E7ECFB'},
+             'backgroundColor': '#e8f5e9'},
             {'if': {'filter_query': '{fix_effect} < -1', 'column_id': 'fix_effect'},
-             'backgroundColor': '#FBEADB'},
+             'backgroundColor': '#ffebee'},
         ])
     return fig, table
 
@@ -10213,9 +10232,9 @@ def render_lab_calibration(page):
             style_data_conditional=[
                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                 {'if': {'filter_query': '{edge} > 0', 'column_id': 'edge'},
-                 'backgroundColor': '#E7ECFB'},
+                 'backgroundColor': '#e8f5e9'},
                 {'if': {'filter_query': '{edge} < 0', 'column_id': 'edge'},
-                 'backgroundColor': '#FBEADB'},
+                 'backgroundColor': '#ffebee'},
             ]),
         html.P([html.Strong(f"Overall: model {cal['mae_model']:.3f} vs FPL "
                             f"{cal['mae_fpl']:.3f} MAE over {cal['gws']} GW(s). "), verdict],
@@ -10277,7 +10296,7 @@ def run_lab_sweep(n_clicks):
             style_data_conditional=[
                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                 {'if': {'filter_query': '{tag} contains "BEST"'},
-                 'backgroundColor': '#E7ECFB', 'fontWeight': '600'},
+                 'backgroundColor': '#e8f5e9', 'fontWeight': '600'},
             ]),
         *advice
     ])
@@ -11619,7 +11638,7 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
         html.Div([
             html.H3("Chip Windows \u2014 Recommendations", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
             *rec_lines
-        ], style={**CARD_STYLE, 'backgroundColor': '#FBFAF7'}),
+        ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
         html.Div([
             html.H3("Who Can Answer You", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
@@ -11647,7 +11666,7 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
                      'backgroundColor': '#fff8e1', 'fontWeight': '700'},
                 ] + [
                     {'if': {'filter_query': '{%s} = held' % c, 'column_id': c},
-                     'backgroundColor': '#E7ECFB', 'fontWeight': '600'}
+                     'backgroundColor': '#e8f5e9', 'fontWeight': '600'}
                     for c in ('wildcard', 'freehit', 'bboost', '3xc')
                 ] + [
                     {'if': {'filter_query': '{%s} != held' % c, 'column_id': c},
@@ -11681,7 +11700,7 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
                 style_data=TABLE_STYLE_DATA,
                 style_data_conditional=[
                     {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
-                    {'if': {'filter_query': '{owned} = yes'}, 'backgroundColor': '#E7ECFB'},
+                    {'if': {'filter_query': '{owned} = yes'}, 'backgroundColor': '#e8f5e9'},
                 ]),
         ], style=CARD_STYLE) if best_fh.get('fh_detail') else html.Div(),
 
@@ -11713,7 +11732,7 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
                 style_data=TABLE_STYLE_DATA,
                 style_data_conditional=[
                     {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
-                    {'if': {'row_index': 0}, 'backgroundColor': '#E7ECFB', 'fontWeight': '600'},
+                    {'if': {'row_index': 0}, 'backgroundColor': '#e8f5e9', 'fontWeight': '600'},
                 ]),
         ], style=CARD_STYLE) if best_fh.get('fh_formation_table') else html.Div(),
 
@@ -11746,7 +11765,7 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
                 style_data_conditional=[
                     {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                     {'if': {'filter_query': '{blanks} > 0', 'column_id': 'blanks'},
-                     'backgroundColor': '#FBEADB', 'fontWeight': '600'},
+                     'backgroundColor': '#ffebee', 'fontWeight': '600'},
                 ]
             ),
             html.P("Projections assume your current fifteen held over the horizon; DGWs count both fixtures, blanks count zero.",
@@ -11893,7 +11912,7 @@ def load_rivals(n_clicks, league_id, my_id):
         style_data_conditional=[
             {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
             {'if': {'filter_query': '{player_name} contains "(you)"'},
-             'backgroundColor': '#E7ECFB', 'fontWeight': '600'},
+             'backgroundColor': '#e8f5e9', 'fontWeight': '600'},
         ],
     )
 
@@ -11964,7 +11983,7 @@ def load_rivals(n_clicks, league_id, my_id):
         style_data_conditional=[
             {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
             {'if': {'filter_query': '{league_eo} >= 100', 'column_id': 'league_eo'},
-             'backgroundColor': '#FBEADB', 'fontWeight': '600'},
+             'backgroundColor': '#ffebee', 'fontWeight': '600'},
         ],
     )
 
@@ -12021,7 +12040,7 @@ def load_rivals(n_clicks, league_id, my_id):
                     {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                 ] + [
                     {'if': {'filter_query': '{%s} = held' % c, 'column_id': c},
-                     'backgroundColor': '#E7ECFB', 'fontWeight': '600'}
+                     'backgroundColor': '#e8f5e9', 'fontWeight': '600'}
                     for c in ('wildcard', 'freehit', 'bboost', '3xc')
                 ] + [
                     {'if': {'filter_query': '{%s} != held' % c, 'column_id': c},
@@ -12296,7 +12315,7 @@ def _half_pitch_heat(grid, zmax, left_label, right_label):
     z = np.where(grid > 0, grid, np.nan)
     fig.add_trace(go.Heatmap(
         x=xc, y=yc, z=z, zmin=0, zmax=max(zmax, 0.05),
-        colorscale=[[0, 'rgba(21,23,28,0.08)'], [1, 'rgba(21,23,28,0.95)']],
+        colorscale=[[0, 'rgba(55,0,60,0.08)'], [1, 'rgba(55,0,60,0.95)']],
         colorbar=dict(title=dict(text='xG/match', side='right'), thickness=10, len=0.6),
         hovertemplate='%{z:.2f} xG per match<extra></extra>', xgap=1, ygap=1))
     _pitch_arcs(fig)
@@ -12702,7 +12721,7 @@ def _tw_rank_spark(rank_hist):
         return None
     gws, ranks = zip(*rank_hist)
     fig = go.Figure(go.Scatter(x=list(gws), y=list(ranks), mode='lines',
-                               line=dict(color='#7FA7FF', width=2.5),
+                               line=dict(color=COLORS['secondary'], width=2.5),
                                hovertemplate='GW%{x}: %{y:,}<extra></extra>'))
     fig.update_layout(height=46, margin=dict(l=0, r=0, t=2, b=2),
                       paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
@@ -12723,17 +12742,17 @@ def _tw_standings(b, players):
     if len(hist) >= 2 and hist[-1][1] and hist[-2][1]:
         moved = hist[-2][1] - hist[-1][1]
         delta = html.Span(f"{'up' if moved >= 0 else 'down'} {abs(moved):,}",
-                          style={'color': '#9DBBFF' if moved >= 0 else '#F2B48A', 'fontWeight': '700'})
+                          style={'color': COLORS['secondary'] if moved >= 0 else '#ff8fab', 'fontWeight': '700'})
     rank_card = html.Div([
-        html.Div("Overall rank", style={'fontSize': '13px', 'color': '#B9BCC4', 'fontWeight': '600'}),
+        html.Div("Overall rank", style={'fontSize': '13px', 'color': 'rgba(255,255,255,0.75)', 'fontWeight': '600'}),
         html.Div([
             html.Div(f"{b['overall_rank']:,}" if b.get('overall_rank') else '—',
-                     style={'fontFamily': FONT_DISPLAY, 'fontWeight': '800', 'fontSize': '36px',
+                     style={'fontWeight': '800', 'fontSize': '36px',
                             'lineHeight': '1', 'color': '#FFFFFF'}),
             _tw_rank_spark(hist),
         ], style={'display': 'flex', 'justifyContent': 'space-between', 'alignItems': 'flex-end', 'gap': '8px'}),
         html.Div([f"After GW{b['gw']} · ", delta] if delta else f"After GW{b['gw']}",
-                 style={'fontSize': '13px', 'color': '#C9CBD1'}),
+                 style={'fontSize': '13px', 'color': 'rgba(255,255,255,0.8)'}),
     ], style={'background': COLORS['primary'], 'borderRadius': '16px', 'padding': '20px',
               'display': 'flex', 'flexDirection': 'column', 'gap': '8px', 'flex': '1 1 240px'}, className='tw-col')
 
@@ -12747,7 +12766,7 @@ def _tw_standings(b, players):
             html.Div([html.Strong(_ordinal(g['rank'])),
                       html.Span(f" / {g['size']:,}" if g.get('size') else '', style={'color': COLORS['text_light']})],
                      style={'flex': '0 0 90px'}),
-            html.Div(g['gap_text'], style={'flex': '1 1 35%', 'fontSize': '13px', 'color': '#3D4048'}),
+            html.Div(g['gap_text'], style={'flex': '1 1 35%', 'fontSize': '13px', 'color': '#555555'}),
             html.Span(g['mode'].upper(), className=f'tag {tag}'),
         ], className='tw-row', style={'minHeight': '40px', 'fontSize': '14px'}))
     if not league_rows:
@@ -12761,11 +12780,11 @@ def _tw_standings(b, players):
 
     week_card = html.Div([
         html.Div("This week", style={**_TW_MUTED, 'fontWeight': '600'}),
-        html.Div([html.Span(f"{proj:.1f}", style={'fontFamily': FONT_DISPLAY, 'fontWeight': '800',
+        html.Div([html.Span(f"{proj:.1f}", style={'fontWeight': '800',
                                                   'fontSize': '36px', 'lineHeight': '1'}),
                   html.Span(" projected", style=_TW_MUTED)]),
         html.Div([html.Strong(f"{b['ft']} free transfer{'s' if b['ft'] != 1 else ''}"),
-                  html.Span(f" (est.) · £{b['bank']:.1f}m in the bank", style={'color': '#3D4048'})],
+                  html.Span(f" (est.) · £{b['bank']:.1f}m in the bank", style={'color': '#555555'})],
                  style={'fontSize': '13px'}),
     ], style={**_TW_CARD, 'gap': '8px', 'padding': '20px', 'flex': '1 1 220px'}, className='tw-col')
 
@@ -12806,7 +12825,7 @@ def _tw_captain_card(b, g, players, shorts, data):
     head = html.Div([html.Div("PLAYER"), html.Div("PROJ", style={'textAlign': 'right'}),
                      html.Div("HAUL", style={'textAlign': 'right'}),
                      html.Div("THEY (C)", style={'textAlign': 'right'})],
-                    className='mono',
+                    className='small-label',
                     style={'display': 'grid', 'gridTemplateColumns': 'minmax(0,2.4fr) repeat(3, minmax(0,1fr))',
                            'fontSize': '11px', 'letterSpacing': '0.08em', 'color': COLORS['text_light'],
                            'padding': '0 12px'})
@@ -12814,7 +12833,7 @@ def _tw_captain_card(b, g, players, shorts, data):
     for pid, x, haul in cands:
         p = players.loc[pid]
         is_pick = pid == pick
-        badge = (html.Span('PICK', className='tag', style={'background': COLORS['success'], 'color': '#FFFFFF'})
+        badge = (html.Span('PICK', className='tag', style={'background': COLORS['secondary'], 'color': COLORS['primary']})
                  if is_pick else html.Span('VC', className='tag tag-neutral') if pid == vice else None)
         if cap is None:
             they = '—'
@@ -12825,7 +12844,7 @@ def _tw_captain_card(b, g, players, shorts, data):
                 html.Div([html.Span(p['web_name'], style={'fontWeight': '700', 'fontSize': '15px'}), badge],
                          style={'display': 'flex', 'gap': '8px', 'alignItems': 'center'}),
                 html.Div(f"{shorts.get(p['team'], '')} · v {_tw_fixture_label(p['team'], next_gw, data.get('fixtures_data'), shorts)}",
-                         style={'fontSize': '13px', 'color': '#3D4048'}),
+                         style={'fontSize': '13px', 'color': '#555555'}),
             ]),
             html.Div(f"{x:.1f}", style={'textAlign': 'right', 'fontWeight': '600'}),
             html.Div(f"{haul:.0f}%", style={'textAlign': 'right'}),
@@ -12833,7 +12852,7 @@ def _tw_captain_card(b, g, players, shorts, data):
         ], style={'display': 'grid', 'gridTemplateColumns': 'minmax(0,2.4fr) repeat(3, minmax(0,1fr))',
                   'alignItems': 'center', 'padding': '12px', 'borderRadius': '12px',
                   'background': TINT_GOOD if is_pick else '#FFFFFF',
-                  'border': f"1px solid {'#C3CFF5' if is_pick else '#ECE9E1'}"}))
+                  'border': f"1px solid {'#a5d6a7' if is_pick else '#eeeeee'}"}))
 
     # Where objectives disagree, say so.
     per_group = []
@@ -12842,15 +12861,15 @@ def _tw_captain_card(b, g, players, shorts, data):
         pk = pick_captain(cands, cc, gg['mode'])
         if pk is not None:
             per_group.append(html.Span([f"{gg['label']}: ", html.Strong(players.at[pk, 'web_name'])],
-                                       style={'background': '#FFFFFF', 'border': '1px solid #E3DFD6',
+                                       style={'background': '#FFFFFF', 'border': '1px solid #e0e0e0',
                                               'borderRadius': '8px', 'padding': '5px 10px', 'fontSize': '13px'}))
     return html.Div([
         html.H2("Captain", style=_TW_H2),
-        html.P(why, style={'margin': '0', 'fontSize': '14px', 'color': '#3D4048'}),
+        html.P(why, style={'margin': '0', 'fontSize': '14px', 'color': '#555555'}),
         head, *rows,
         html.Div([html.Div("Pick by objective", style={'fontSize': '13px', 'fontWeight': '700'}),
                   html.Div(per_group, style={'display': 'flex', 'gap': '8px', 'flexWrap': 'wrap'})],
-                 style={'background': '#F4F2EC', 'borderRadius': '12px', 'padding': '12px',
+                 style={'background': COLORS['background'], 'borderRadius': '12px', 'padding': '12px',
                         'display': 'flex', 'flexDirection': 'column', 'gap': '8px'})
         if len(b['groups']) > 1 else None,
         html.Div("Rivals' captains are from their last gameweek. Haul = chance of 2+ goal involvements.",
@@ -12897,9 +12916,9 @@ def _tw_threats_card(b, g, players, shorts):
         html.P([lead,
                 html.Strong(f"{'gain' if net >= 0 else 'lose'} {abs(net):.1f} pts"),
                 " on them this week, before captaincy."],
-               style={'margin': '0', 'fontSize': '14px', 'color': '#3D4048'}),
+               style={'margin': '0', 'fontSize': '14px', 'color': '#555555'}),
         html.Div(t_rows),
-        html.Div("YOUR LEVERAGE", className='mono',
+        html.Div("YOUR LEVERAGE", className='small-label',
                  style={'fontSize': '11px', 'letterSpacing': '0.08em', 'color': COLORS['text_light']}) if lev else None,
         html.Div(lev, style={'display': 'flex', 'gap': '8px', 'flexWrap': 'wrap'}) if lev else None,
     ], style={**_TW_CARD, 'flex': '1 1 320px'}, className='tw-col')
@@ -12917,11 +12936,11 @@ def _tw_transfers_card(b, g, players, shorts):
     def box(label, pid, colour):
         p = players.loc[pid]
         return html.Div([
-            html.Div(label, className='mono', style={'fontSize': '11px', 'letterSpacing': '0.08em', 'color': colour}),
+            html.Div(label, className='small-label', style={'fontSize': '11px', 'letterSpacing': '0.08em', 'color': colour}),
             html.Div(p['web_name'], style={'fontWeight': '700', 'fontSize': '16px'}),
             html.Div(f"{shorts.get(p['team'], '')} {p['position']} · £{p['price']:.1f}m",
                      style={'fontSize': '13px', 'color': COLORS['text_light']}),
-        ], style={'flex': '1 1 0', 'background': '#FFFFFF', 'border': '1px solid #E3DFD6',
+        ], style={'flex': '1 1 0', 'background': '#FFFFFF', 'border': '1px solid #e0e0e0',
                   'borderRadius': '10px', 'padding': '10px 12px', 'overflow': 'hidden'})
 
     gain, o, i = moves[0]
@@ -12933,13 +12952,13 @@ def _tw_transfers_card(b, g, players, shorts):
     ctx_tag = (html.Span('COVERS A THREAT', className='tag tag-good') if share >= 0.5
                else html.Span('DIFFERENTIAL', className='tag tag-neutral') if share <= 0.2 else None)
     top = html.Div([
-        html.Div([box('OUT', o, '#8A3D05'), html.Div('→', style={'fontSize': '22px', 'alignSelf': 'center'}),
-                  box('IN', i, '#1A3690')], style={'display': 'flex', 'gap': '12px', 'alignItems': 'stretch'}),
+        html.Div([box('OUT', o, '#b71c1c'), html.Div('→', style={'fontSize': '22px', 'alignSelf': 'center'}),
+                  box('IN', i, '#1b5e20')], style={'display': 'flex', 'gap': '12px', 'alignItems': 'stretch'}),
         html.Div([html.Span(f"{gain:+.1f} pts", style={'fontWeight': '700', 'color': COLORS['success']}),
                   html.Span(" over the next 5 GWs · ", style={'color': COLORS['text_light']}),
-                  html.Span(ctx_txt, style={'color': '#3D4048'}), ' ', ctx_tag],
+                  html.Span(ctx_txt, style={'color': '#555555'}), ' ', ctx_tag],
                  style={'fontSize': '14px', 'display': 'flex', 'gap': '4px', 'flexWrap': 'wrap', 'alignItems': 'center'}),
-    ], style={'background': '#F5F7FE', 'border': '1px solid #C3CFF5', 'borderRadius': '12px', 'padding': '14px',
+    ], style={'background': '#f1f8f2', 'border': '1px solid #a5d6a7', 'borderRadius': '12px', 'padding': '14px',
               'display': 'flex', 'flexDirection': 'column', 'gap': '12px'})
 
     ft = b['ft']
@@ -12948,7 +12967,7 @@ def _tw_transfers_card(b, g, players, shorts):
         return html.Div([
             html.Div([html.Strong(label), html.Span(detail, style={'color': COLORS['text_light']})],
                      style={'fontSize': '14px'}),
-            html.Div(value, className='mono', style={'color': colour or COLORS['text_light']}) if value else None,
+            html.Div(value, className='small-label', style={'color': colour or COLORS['text_light']}) if value else None,
         ], className='tw-row', style={'minHeight': '44px'})
 
     alt_rows = []
@@ -12959,7 +12978,7 @@ def _tw_transfers_card(b, g, players, shorts):
             alt_rows.append(row("Use a second free transfer", pair, f"{g2:+.1f}", COLORS['success']))
         else:
             alt_rows.append(row("Take a −4", pair + f" ({g2:+.1f} over 5 GWs)", f"{g2 - 4:+.1f}",
-                                COLORS['success'] if g2 > 4 else '#8A3D05'))
+                                COLORS['success'] if g2 > 4 else COLORS['danger']))
     if ft < 5:
         alt_rows.append(row("Roll it", f" · {ft + 1} free next week", "+0.0 now"))
     else:
@@ -13002,7 +13021,7 @@ def _tw_alerts_card(b, g, players, shorts):
         items.append(('neutral', html.Span(chip_txt)))
     if not items:
         items = [('neutral', html.Span("Nothing flagged in your squad."))]
-    bg = {'bad': TINT_BAD, 'neutral': '#F4F2EC'}
+    bg = {'bad': TINT_BAD, 'neutral': COLORS['background']}
     return html.Div([
         html.H2("Before the deadline", style=_TW_H2),
         html.Div([html.Div(t, style={'background': bg[k], 'borderRadius': '10px', 'padding': '12px',
@@ -13038,7 +13057,7 @@ def _tw_fixture_card(b, players, data):
     gws = [anchor + k for k in (1, 2, 3) if anchor + k <= 38]
     counts = Counter(players.at[pid, 'team'] for pid, _p, _m in b['picks'] if pid in players.index)
     names = dict(zip(teams_df['id'], teams_df['name']))
-    cells = [html.Div()] + [html.Div(f"GW{gw}", className='mono',
+    cells = [html.Div()] + [html.Div(f"GW{gw}", className='small-label',
                                      style={'fontSize': '12px', 'color': COLORS['text_light'],
                                             'textAlign': 'center'}) for gw in gws]
     for tid, n in counts.most_common():
@@ -13057,13 +13076,15 @@ def _tw_fixture_card(b, players, data):
             env = float(np.mean([f[3] for f in fx]))
             label = ' + '.join(f"{f[1]} {f[2]}" for f in fx)
             xg = sum(f[3] for f in fx) * avg
+            bg = _tw_ease_colour(env)
             cells.append(html.Div([html.Strong(label), html.Span(f" · {xg:.2f}")],
-                                  style={'background': _tw_ease_colour(env), 'color': COLORS['primary'],
+                                  style={'background': bg,
+                                         'color': '#FFFFFF' if bg == EASE_SCALE[4] else COLORS['primary'],
                                          'borderRadius': '8px', 'padding': '9px 4px',
                                          'textAlign': 'center', 'fontSize': '13px'}))
     return html.Div([
         html.Div([html.H2("Your fixture run", style=_TW_H2),
-                  html.Span("Expected goals for each club · deeper green = easier", style=_TW_MUTED)],
+                  html.Span("Expected goals for each club · greener = easier", style=_TW_MUTED)],
                  style={'display': 'flex', 'justifyContent': 'space-between', 'alignItems': 'baseline',
                         'flexWrap': 'wrap', 'gap': '8px'}),
         html.Div(cells, style={'display': 'grid',
