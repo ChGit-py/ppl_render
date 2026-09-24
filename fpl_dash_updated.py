@@ -4641,11 +4641,14 @@ app.index_string = '''
             }
             /* Sub-group inside Research */
             .nav-subgroup-label {
-                font-size: 12px;
-                font-weight: 600;
-                color: rgba(255,255,255,0.55);
-                padding: 10px 22px 2px 22px;
-                margin: 0;
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 0.1em;
+                text-transform: uppercase;
+                color: #aebdca;
+                margin: 18px 14px 7px 14px;
+                padding-bottom: 4px;
+                border-bottom: 1px solid rgba(174, 189, 202, 0.15);
             }
 
             /* Nav item button */
