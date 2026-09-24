@@ -5418,7 +5418,7 @@ app.layout = html.Div([
                     html.Div([
                         html.H3("Quality vs Volume", style={'color': COLORS['primary'], 'marginBottom': '4px'}),
                         html.P("Top right = shoots often AND from good positions. Bottom right = volume shooter "
-                               "from distance. Top left = few but excellent chances. Bubble size = npxG per 90.",
+                               "from positions that produce low quality chances. Top left = few but excellent chances. Bubble size = npxG per 90.",
                                style={'color': COLORS['text_light'], 'fontSize': '13px'}),
                         dcc.Graph(id='cq-scatter', config={'displayModeBar': False}),
                     ], style=CARD_STYLE),
