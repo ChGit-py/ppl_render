@@ -580,6 +580,45 @@ def build_rank_card(history, overall_rank):
                   'linear-gradient(135deg, #37003c 60%, #4a0a52 100%)'})
 
 
+def fetch_entry_transfers(entry_id):
+    """Every transfer a manager has made this season (public endpoint)."""
+    try:
+        r = requests.get(f"{FPL_BASE_URL}/entry/{int(entry_id)}/transfers/", timeout=10)
+        r.raise_for_status()
+        return r.json() or []
+    except Exception as e:
+        print(f"Error fetching transfers for entry {entry_id}: {e}")
+        return []
+
+
+def estimate_selling_prices(squad_df, transfers, chips_used):
+    """
+    Selling price for each player, rebuilt from public data.
+
+    The public picks endpoint has no prices at all (they only come from the
+    logged-in /my-team/ endpoint), which is why this column read £0.0m. FPL's
+    rule: you keep half of any rise, rounded DOWN to the nearest £0.1m; a
+    fall comes off in full. The purchase price is the cost on your last
+    transfer in for that player; players you've had since your first squad
+    were bought at their season-start price. Free Hit transfers are skipped
+    because those squads revert. Returns {player_id: (selling, purchase)}.
+    """
+    fh_gws = {c.get('event') for c in (chips_used or []) if c.get('name') == 'freehit'}
+    bought = {}
+    for t in sorted(transfers or [], key=lambda t: t.get('time') or ''):
+        if t.get('event') in fh_gws:
+            continue
+        bought[t['element_in']] = int(t['element_in_cost'])          # tenths of £1m
+    out = {}
+    for _, r in squad_df.iterrows():
+        now = int(round(float(r['price']) * 10))
+        start = now - int(round(float(r.get('cost_change_start', 0) or 0) * 10))
+        buy = bought.get(int(r['id']), start)
+        sell = buy + (now - buy) // 2 if now > buy else now
+        out[int(r['id'])] = (sell / 10, buy / 10)
+    return out
+
+
 def fetch_entry_chips(entry_id):
     """Chips a manager has already played: list of {name, event}."""
     try:
@@ -10462,9 +10501,17 @@ def load_my_squad(n_clicks, team_id):
     squad_df['pick_position'] = squad_df['id'].map(lambda x: pick_map[x]['position'])
     squad_df['is_captain']    = squad_df['id'].map(lambda x: pick_map[x].get('is_captain', False))
     squad_df['is_vice']       = squad_df['id'].map(lambda x: pick_map[x].get('is_vice_captain', False))
+    try:
+        _prices = estimate_selling_prices(squad_df, fetch_entry_transfers(team_id),
+                                          fetch_entry_chips(team_id))
+    except Exception as _e:
+        print(f"  Selling price calculation failed (non-fatal): {_e}")
+        _prices = {}
     squad_df['selling_price'] = squad_df['id'].map(
-        lambda x: pick_map[x].get('selling_price', pick_map[x].get('now_cost', 0))
-    ) / 10
+        lambda x: _prices.get(int(x), (None, None))[0])
+    squad_df['purchase_price'] = squad_df['id'].map(
+        lambda x: _prices.get(int(x), (None, None))[1])
+    squad_df['selling_price'] = squad_df['selling_price'].fillna(squad_df['price'])
     squad_df['form'] = pd.to_numeric(squad_df['form'], errors='coerce').fillna(0)
     squad_df['avg_fdr_5'] = squad_df['team'].map(
         lambda x: fixture_difficulty.get(x, {}).get('avg_fdr', 3.0)
@@ -10577,8 +10624,13 @@ def load_my_squad(n_clicks, team_id):
                 ),
                 html.Td(r.get('team_name', ''),
                         style={'padding': '10px 12px', 'color': COLORS['text_light'], 'fontSize': '13px'}),
-                html.Td(f"£{r.get('selling_price', r.get('price', 0)):.1f}m",
-                        style={'padding': '10px 12px'}),
+                html.Td([
+                    html.Div(f"£{r.get('selling_price', r.get('price', 0)):.1f}m"),
+                    html.Div(f"bought £{r['purchase_price']:.1f}m",
+                             style={'fontSize': '11px', 'color': COLORS['text_light']})
+                    if pd.notna(r.get('purchase_price')) and
+                    abs(r['purchase_price'] - r.get('selling_price', 0)) >= 0.05 else None,
+                ], style={'padding': '10px 12px'}),
                 html.Td(f"{r.get('form', 0):.1f}", style={'padding': '10px 12px'}),
                 html.Td(
                     html.Span(f"{fdr:.2f}" if fdr else 'N/A',
