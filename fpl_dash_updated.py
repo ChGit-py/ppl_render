@@ -3894,25 +3894,6 @@ def _member_snapshot(entry_id, gw):
     return _tw_cached(('snap', int(entry_id), int(gw)), _load)
 
 
-def estimate_free_transfers(history_rows, chips_used):
-    """
-    Free transfers for the next deadline, rebuilt from the public history
-    (the exact figure sits behind the FPL login). One per gameweek, banking
-    up to five; Wildcard and Free Hit weeks don't use any up; a hit leaves
-    none over. Treat as an estimate.
-    """
-    rows = sorted(history_rows or [], key=lambda r: r.get('event') or 0)
-    if not rows:
-        return 1
-    chip_gw = {c.get('event'): c.get('name') for c in chips_used or []}
-    ft = 1
-    for r in rows[1:]:
-        if chip_gw.get(r.get('event')) not in ('wildcard', 'freehit'):
-            ft = max(0, ft - int(r.get('event_transfers') or 0))
-        ft = min(5, ft + 1)
-    return ft
-
-
 def _chips_held(chips_used, windows):
     held = []
     for c in ('wildcard', 'freehit', 'bboost', '3xc'):
@@ -4027,7 +4008,6 @@ def build_this_week_bundle(team_id, data):
         'total_points': entry.get('summary_overall_points'),
         'rank_hist': [[r['event'], r['overall_rank']] for r in rows if r.get('overall_rank')],
         'bank': (eh.get('bank', entry.get('last_deadline_bank', 0)) or 0) / 10,
-        'ft': estimate_free_transfers(rows, chips_used),
         'chips_held': _chips_held(chips_used, windows),
         'picks': [[int(p['element']), int(p.get('position', 0)), int(p.get('multiplier', 1))]
                   for p in picks['picks']],
@@ -4873,13 +4853,24 @@ app.index_string = '''
                 background: #00ff87; color: #37003c; font-size: 13px; font-weight: 700;
                 padding: 4px 10px; border-radius: 6px; white-space: nowrap;
             }
+            /* flex: 1 so the row spans the bar; otherwise it shrinks to its
+               content and space-between leaves the two groups touching. */
+            .header-row {
+                display: flex; justify-content: space-between; align-items: center;
+                gap: 24px; flex: 1; min-width: 0; padding: 0 20px;
+            }
             .header-status {
                 display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end;
                 column-gap: 10px; row-gap: 2px; text-align: right;
             }
             .header-divider { color: rgba(255,255,255,0.4); font-size: 13px; }
+            /* Phones: the status line doesn't fit beside the brand, so it
+               gets its own line underneath rather than being squeezed out. */
             @media (max-width: 600px) {
-                .header-divider, #last-updated-text { display: none; }
+                .header-row { flex-wrap: wrap; row-gap: 0; padding: 0 16px; }
+                .header-status { flex: 1 1 100%; justify-content: flex-start; text-align: left;
+                                 padding-bottom: 2px; }
+                #app-body { height: calc(100vh - 86px) !important; }
             }
             /* Segmented control built from dcc.RadioItems (className='seg') */
             .seg { display: inline-flex; flex-wrap: wrap; gap: 4px; background: #f0e6f6;
@@ -5483,10 +5474,7 @@ app.layout = html.Div([
                 html.Span(id='last-updated-text',
                           style={'color': 'rgba(255,255,255,0.65)', 'fontSize': '12px'})
             ], className='header-status', style={'minWidth': '0'})
-        # flex: 1 so the row spans the bar; otherwise it shrinks to its content
-        # and space-between leaves the two groups touching.
-        ], style={'display': 'flex', 'justifyContent': 'space-between', 'alignItems': 'center',
-                  'gap': '24px', 'flex': '1', 'minWidth': '0', 'padding': '0 20px'})
+        ], className='header-row')
     ], style={'backgroundColor': COLORS['primary'], 'padding': '10px 0', 'position': 'sticky',
               'top': '0', 'zIndex': '1000', 'boxShadow': '0 2px 8px rgba(0,0,0,0.15)',
               'minHeight': '44px', 'display': 'flex', 'alignItems': 'center'}),
@@ -12783,8 +12771,7 @@ def _tw_standings(b, players):
         html.Div([html.Span(f"{proj:.1f}", style={'fontWeight': '800',
                                                   'fontSize': '36px', 'lineHeight': '1'}),
                   html.Span(" projected", style=_TW_MUTED)]),
-        html.Div([html.Strong(f"{b['ft']} free transfer{'s' if b['ft'] != 1 else ''}"),
-                  html.Span(f" (est.) · £{b['bank']:.1f}m in the bank", style={'color': '#555555'})],
+        html.Div([html.Strong(f"£{b['bank']:.1f}m"), html.Span(" in the bank", style={'color': '#555555'})],
                  style={'fontSize': '13px'}),
     ], style={**_TW_CARD, 'gap': '8px', 'padding': '20px', 'flex': '1 1 220px'}, className='tw-col')
 
@@ -12961,8 +12948,6 @@ def _tw_transfers_card(b, g, players, shorts):
     ], style={'background': '#f1f8f2', 'border': '1px solid #a5d6a7', 'borderRadius': '12px', 'padding': '14px',
               'display': 'flex', 'flexDirection': 'column', 'gap': '12px'})
 
-    ft = b['ft']
-
     def row(label, detail, value=None, colour=None):
         return html.Div([
             html.Div([html.Strong(label), html.Span(detail, style={'color': COLORS['text_light']})],
@@ -12974,21 +12959,16 @@ def _tw_transfers_card(b, g, players, shorts):
     if len(moves) > 1:
         g2, o2, i2 = moves[1]
         pair = f" · {players.at[o2, 'web_name']} → {players.at[i2, 'web_name']}"
-        if ft >= 2:
-            alt_rows.append(row("Use a second free transfer", pair, f"{g2:+.1f}", COLORS['success']))
-        else:
-            alt_rows.append(row("Take a −4", pair + f" ({g2:+.1f} over 5 GWs)", f"{g2 - 4:+.1f}",
-                                COLORS['success'] if g2 > 4 else COLORS['danger']))
-    if ft < 5:
-        alt_rows.append(row("Roll it", f" · {ft + 1} free next week", "+0.0 now"))
-    else:
-        alt_rows.append(row("Don't roll", " · you're at the 5 free-transfer cap, so an unused one is lost"))
+        hit = (f" · worth a −4 if you're out of free transfers (net {g2 - 4:+.1f})" if g2 > 4
+               else f" · only with a free transfer: as a −4 it nets {g2 - 4:+.1f}")
+        alt_rows.append(row("Second move", pair + hit, f"{g2:+.1f}", COLORS['success']))
+    alt_rows.append(row("Roll it", " · save the transfer for next week (you can bank up to 5)", "+0.0 now"))
     for gg, oo, ii in moves[2:]:
         alt_rows.append(row("Also good", f" · {players.at[oo, 'web_name']} → {players.at[ii, 'web_name']}",
                             f"{gg:+.1f}"))
     return html.Div([
         html.Div([html.H2("Transfers", style=_TW_H2),
-                  html.Span(f"{ft} free (est.) · £{b['bank']:.1f}m", style=_TW_MUTED)],
+                  html.Span(f"£{b['bank']:.1f}m in the bank", style=_TW_MUTED)],
                  style={'display': 'flex', 'justifyContent': 'space-between', 'alignItems': 'center'}),
         top, html.Div(alt_rows),
         html.Div("Gains are your own projected points, which is also your gain on any group you're up "
