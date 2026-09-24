@@ -567,7 +567,7 @@ def build_rank_card(history, overall_rank):
             html.Div(f"{overall_rank:,}" if overall_rank else '\u2014',
                      style={'fontSize': '44px', 'fontWeight': '800', 'lineHeight': '1.05',
                             'color': '#ffffff', 'letterSpacing': '-0.02em'}),
-            html.Div([f"After GW{last_gw}" if last_gw else '', ' \u00b7 ' if delta is not None else '',
+            html.Div([f"After GW{last_gw}" if last_gw else ' ', ' | ' if delta is not None else '',
                       delta if delta is not None else ''],
                      style={'fontSize': '14px', 'color': 'rgba(255,255,255,0.85)'}),
             html.Div(f"Season best {best['overall_rank']:,} (GW{best['event']})" if best else '',
