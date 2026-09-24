@@ -6290,7 +6290,7 @@ app.layout = html.Div([
                     html.Div([
                         html.H3("Fixture Outlook", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
                         html.P([
-                            "FDR asks ", html.Strong("how hard is this opponent"), ". This looks ",
+                            "FDR asks ", html.Strong("how difficult is this opponent"), ". This looks ",
                             html.Strong("at what this team could actually produce in this fixture"),
                             " \u2014 which for a weak side is a very different question. A "
                             "promoted team at home to a poor defence is a green cell on FDR and "
