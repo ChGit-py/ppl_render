@@ -570,7 +570,7 @@ def build_rank_card(history, overall_rank):
             html.Div([f"After GW{last_gw}" if last_gw else '', ' | ' if delta is not None else '',
                       delta if delta is not None else ''],
                      style={'fontSize': '14px', 'color': 'rgba(255,255,255,0.85)'}),
-            html.Div(f"Season best {best['overall_rank']:,} (GW{best['event']})" if best else '',
+            html.Div(f"Season best:  {best['overall_rank']:,} (GW{best['event']})" if best else '',
                      style={'fontSize': '13px', 'color': 'rgba(255,255,255,0.6)', 'marginTop': '2px'}),
         ], style={'display': 'flex', 'flexDirection': 'column', 'gap': '4px', 'flex': '0 1 auto'}),
         html.Div(spark, style={'flex': '1 1 220px', 'minWidth': '180px', 'alignSelf': 'center'}),
