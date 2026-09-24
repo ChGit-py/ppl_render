@@ -3780,8 +3780,9 @@ def build_shot_intel(shots, rosters, matches, teams_df, fixtures, df_active):
     players = _player_shot_table(s, rosters, team_map, df_active)
     validation = _validate_matchups(np_s, matches, team_map, fixtures)
     last_kick = str(matches['kickoff'].dropna().max() or '')[:10]
+    s = s.merge(matches[['match_id', 'kickoff']], on='match_id', how='left')
     return {
-        'shots': s[['match_id', 'team_id', 'opp_id', 'player', 'player_id', 'minute', 'x', 'hx',
+        'shots': s[['match_id', 'kickoff', 'team_id', 'opp_id', 'player', 'player_id', 'minute', 'x', 'hx',
                     'xg', 'result', 'is_goal', 'situation', 'shot_type', 'last_action',
                     'zone', 'channel', 'component']].reset_index(drop=True),
         'profiles': profiles, 'league': league, 'team_table': pd.DataFrame(team_rows),
@@ -5169,11 +5170,50 @@ app.layout = html.Div([
                     html.Div(id='sp-status'),
                     html.Div([
                         html.Div([
-                            html.Label("Team", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                            dcc.Dropdown(id='sp-team', options=[{'label': t, 'value': t} for t in sorted_teams],
-                                         value=sorted_teams[0] if sorted_teams else None, clearable=False),
-                        ], style={'flex': '0 1 320px', 'minWidth': '220px', 'padding': '0 10px'}),
-                    ], style={**CARD_STYLE, 'display': 'flex', 'flexWrap': 'wrap'}),
+                            html.Div([
+                                html.Label("Team", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Dropdown(id='sp-team', options=[{'label': t, 'value': t} for t in sorted_teams],
+                                             value=sorted_teams[0] if sorted_teams else None, clearable=False),
+                            ], style={'flex': '1 1 200px', 'minWidth': '180px', 'padding': '0 10px 12px'}),
+                            html.Div([
+                                html.Label("Show", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Dropdown(id='sp-show', clearable=False, value='all', options=[
+                                    {'label': 'All shots', 'value': 'all'},
+                                    {'label': 'On target', 'value': 'on_target'},
+                                    {'label': 'Goals only', 'value': 'goals'},
+                                    {'label': 'Big chances (xG 0.30+)', 'value': 'big'},
+                                ]),
+                            ], style={'flex': '1 1 180px', 'minWidth': '160px', 'padding': '0 10px 12px'}),
+                            html.Div([
+                                html.Label("Matches", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Dropdown(id='sp-recent', clearable=False, value=0, options=[
+                                    {'label': 'Whole season', 'value': 0},
+                                    {'label': 'Last 10', 'value': 10},
+                                    {'label': 'Last 5', 'value': 5},
+                                    {'label': 'Last 3', 'value': 3},
+                                ]),
+                            ], style={'flex': '1 1 150px', 'minWidth': '140px', 'padding': '0 10px 12px'}),
+                        ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-end'}),
+                        html.Div([
+                            html.Div([
+                                html.Label("Routes", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Checklist(id='sp-routes', value=['open', 'cross', 'sp'], inline=True,
+                                              options=[{'label': ' Open play', 'value': 'open'},
+                                                       {'label': ' Crosses', 'value': 'cross'},
+                                                       {'label': ' Set pieces', 'value': 'sp'}],
+                                              labelStyle={'marginRight': '16px'}),
+                            ], style={'flex': '1 1 260px', 'padding': '0 10px 8px'}),
+                            html.Div([
+                                html.Label("Display", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.RadioItems(id='sp-display', value='shots', inline=True,
+                                               options=[{'label': ' Individual shots', 'value': 'shots'},
+                                                        {'label': ' Heatmap (xG per match)', 'value': 'heat'}],
+                                               labelStyle={'marginRight': '16px'}),
+                            ], style={'flex': '1 1 260px', 'padding': '0 10px 8px'}),
+                        ], style={'display': 'flex', 'flexWrap': 'wrap'}),
+                        html.P(id='sp-map-count', style={'color': COLORS['text_light'], 'fontSize': '13px',
+                                                        'margin': '4px 10px 0'}),
+                    ], style=CARD_STYLE),
                     html.Div([
                         html.Div([
                             html.H3("Where they create", style={'color': COLORS['primary'], 'marginBottom': '4px'}),
@@ -11726,8 +11766,8 @@ def _blank_fig(msg='', height=300):
     return fig
 
 
-def _half_pitch_fig(shots, left_label, right_label):
-    """Vertical half pitch, attacked goal at the top, shots sized by xG."""
+def _pitch_base(left_label, right_label):
+    """Empty vertical half pitch, attacked goal at the top."""
     line = dict(color='#bdbdbd', width=1.5)
     fig = go.Figure()
     shapes = [
@@ -11737,33 +11777,6 @@ def _half_pitch_fig(shots, left_label, right_label):
         dict(type='rect', x0=0.446, y0=1, x1=0.554, y1=1.015,
              line=dict(color='#9e9e9e', width=2)),
     ]
-    # Penalty arc (outside the box only) and centre-circle arc, 9.15m radius
-    t = np.linspace(0, np.pi, 60)
-    rx, ry = 9.15 / 68, 9.15 / 105
-    arc_x, arc_y = 0.5 + rx * np.cos(t), 0.885 - ry * np.sin(t)
-    keep = arc_y < SHOT_BOX_X
-    fig.add_trace(go.Scatter(x=arc_x[keep], y=arc_y[keep], mode='lines', line=line,
-                             hoverinfo='skip', showlegend=False))
-    fig.add_trace(go.Scatter(x=0.5 + rx * np.cos(t), y=0.5 + ry * np.sin(t), mode='lines',
-                             line=line, hoverinfo='skip', showlegend=False))
-    fig.add_trace(go.Scatter(x=[0.5], y=[0.885], mode='markers', marker=dict(size=4, color='#bdbdbd'),
-                             hoverinfo='skip', showlegend=False))
-    groups = [('Open play', shots['component'].isin(['op_centre', 'op_left', 'op_right']), COLORS['primary']),
-              ('Crosses', shots['component'] == 'cross', COLORS['info']),
-              ('Set pieces', shots['component'] == 'set_piece', COLORS['accent'])]
-    for name, mask, colour in groups:
-        d = shots[mask & (shots['x'] >= 0.5)]
-        if d.empty:
-            continue
-        fig.add_trace(go.Scatter(
-            x=d['hx'], y=d['x'], mode='markers', name=name,
-            marker=dict(size=5 + 28 * np.sqrt(d['xg'].clip(lower=0)), color=colour,
-                        symbol=np.where(d['is_goal'], 'star', 'circle'),
-                        opacity=0.72, line=dict(width=0.5, color='white')),
-            customdata=np.stack([d['player'].fillna(''), d['xg'], d['result'].fillna(''),
-                                 d['last_action'].fillna('')], axis=-1),
-            hovertemplate='%{customdata[0]}<br>xG %{customdata[1]:.2f} · %{customdata[2]}'
-                          '<br>Set up by: %{customdata[3]}<extra></extra>'))
     fig.add_annotation(x=0.02, y=0.505, xanchor='left', yanchor='bottom', showarrow=False,
                        text=left_label, font=dict(size=11, color=COLORS['text_light']))
     fig.add_annotation(x=0.98, y=0.505, xanchor='right', yanchor='bottom', showarrow=False,
@@ -11775,6 +11788,76 @@ def _half_pitch_fig(shots, left_label, right_label):
                    scaleanchor='x', scaleratio=105 / 68),
         legend=dict(orientation='h', y=-0.02, x=0.5, xanchor='center'),
         margin=dict(l=4, r=4, t=4, b=4), plot_bgcolor='#fbfdf9')
+    return fig
+
+
+def _pitch_arcs(fig):
+    """Penalty arc (outside the box only) and centre-circle arc, 9.15m radius.
+    Added after any heatmap so the markings sit on top of it."""
+    line = dict(color='#bdbdbd', width=1.5)
+    t = np.linspace(0, np.pi, 60)
+    rx, ry = 9.15 / 68, 9.15 / 105
+    arc_x, arc_y = 0.5 + rx * np.cos(t), 0.885 - ry * np.sin(t)
+    keep = arc_y < SHOT_BOX_X
+    fig.add_trace(go.Scatter(x=arc_x[keep], y=arc_y[keep], mode='lines', line=line,
+                             hoverinfo='skip', showlegend=False))
+    fig.add_trace(go.Scatter(x=0.5 + rx * np.cos(t), y=0.5 + ry * np.sin(t), mode='lines',
+                             line=line, hoverinfo='skip', showlegend=False))
+    fig.add_trace(go.Scatter(x=[0.5], y=[0.885], mode='markers', marker=dict(size=4, color='#bdbdbd'),
+                             hoverinfo='skip', showlegend=False))
+
+
+def _half_pitch_fig(shots, left_label, right_label):
+    """Vertical half pitch with every shot, sized by xG; goals are stars."""
+    fig = _pitch_base(left_label, right_label)
+    _pitch_arcs(fig)
+    groups = [('Open play', shots['component'].isin(['op_centre', 'op_left', 'op_right']), COLORS['primary']),
+              ('Crosses', shots['component'] == 'cross', COLORS['info']),
+              ('Set pieces', shots['component'] == 'set_piece', COLORS['accent'])]
+    for name, mask, colour in groups:
+        d = shots[mask & (shots['x'] >= 0.5)]
+        if d.empty:
+            continue
+        # Misses first, goals last: goals draw on top of the pile, and the
+        # legend (which copies the first point's symbol) shows a circle.
+        d = d.sort_values('is_goal', kind='stable')
+        fig.add_trace(go.Scatter(
+            x=d['hx'], y=d['x'], mode='markers', name=name,
+            marker=dict(size=5 + 28 * np.sqrt(d['xg'].clip(lower=0)), color=colour,
+                        symbol=np.where(d['is_goal'], 'star', 'circle'),
+                        opacity=0.72, line=dict(width=0.5, color='white')),
+            customdata=np.stack([d['player'].fillna(''), d['xg'], d['result'].fillna(''),
+                                 d['last_action'].fillna('')], axis=-1),
+            hovertemplate='%{customdata[0]}<br>xG %{customdata[1]:.2f} · %{customdata[2]}'
+                          '<br>Set up by: %{customdata[3]}<extra></extra>'))
+    return fig
+
+
+_HEAT_XEDGES = np.linspace(0, 1, 11)        # ~6.8m wide cells
+_HEAT_YEDGES = np.linspace(0.5, 1, 9)       # ~6.6m deep cells
+
+
+def _heat_grid(shots, n_matches):
+    d = shots[shots['x'] >= 0.5]
+    grid, _, _ = np.histogram2d(d['hx'], d['x'], bins=[_HEAT_XEDGES, _HEAT_YEDGES],
+                                weights=d['xg'])
+    return grid.T / max(n_matches, 1)        # rows = depth, cols = width
+
+
+def _half_pitch_heat(grid, zmax, left_label, right_label):
+    """Where the xG comes from, per match, on a coarse grid. Stays readable
+    however many shots pile up."""
+    fig = _pitch_base(left_label, right_label)
+    xc = (_HEAT_XEDGES[:-1] + _HEAT_XEDGES[1:]) / 2
+    yc = (_HEAT_YEDGES[:-1] + _HEAT_YEDGES[1:]) / 2
+    z = np.where(grid > 0, grid, np.nan)
+    fig.add_trace(go.Heatmap(
+        x=xc, y=yc, z=z, zmin=0, zmax=max(zmax, 0.05),
+        colorscale=[[0, 'rgba(55,0,60,0.08)'], [1, 'rgba(55,0,60,0.95)']],
+        colorbar=dict(title=dict(text='xG/match', side='right'), thickness=10, len=0.6),
+        hovertemplate='%{z:.2f} xG per match<extra></extra>', xgap=1, ygap=1))
+    _pitch_arcs(fig)
+    fig.update_layout(showlegend=False)
     return fig
 
 
@@ -11797,20 +11880,45 @@ def _profile_bars(profile, league, which, labels, high_is_good):
     return fig
 
 
+_SHOW_LABEL = {'all': 'shots', 'on_target': 'shots on target', 'goals': 'goals',
+               'big': 'big chances'}
+
+
+def _filter_map_shots(s, show, routes):
+    comp_ok = []
+    if 'open' in routes:
+        comp_ok += ['op_centre', 'op_left', 'op_right']
+    if 'cross' in routes:
+        comp_ok.append('cross')
+    if 'sp' in routes:
+        comp_ok.append('set_piece')
+    s = s[s['component'].isin(comp_ok)]
+    if show == 'goals':
+        s = s[s['is_goal']]
+    elif show == 'on_target':
+        s = s[s['result'].isin(['Goal', 'SavedShot'])]
+    elif show == 'big':
+        s = s[s['xg'] >= SHOT_BIG_CHANCE_XG]
+    return s
+
+
 @callback(
     [Output('sp-status', 'children'), Output('sp-map-created', 'figure'),
      Output('sp-map-conceded', 'figure'), Output('sp-bars-att', 'figure'),
-     Output('sp-bars-def', 'figure'), Output('sp-team-table', 'data')],
-    [Input('visit-shot-profiles', 'data'), Input('sp-team', 'value')],
+     Output('sp-bars-def', 'figure'), Output('sp-team-table', 'data'),
+     Output('sp-map-count', 'children')],
+    [Input('visit-shot-profiles', 'data'), Input('sp-team', 'value'),
+     Input('sp-show', 'value'), Input('sp-routes', 'value'),
+     Input('sp-recent', 'value'), Input('sp-display', 'value')],
     prevent_initial_call=True
 )
-def update_shot_profiles(visit, team_name):
+def update_shot_profiles(visit, team_name, show, routes, recent, display):
     _need_visit(visit)
     data = get_data()
     intel, note = _shot_intel_status(data)
     if intel is None:
         b = _blank_fig('Waiting for shot data')
-        return note, b, b, b, b, []
+        return note, b, b, b, b, [], ''
     teams_df = data.get('teams_df')
     tid = None
     if teams_df is not None and team_name:
@@ -11820,16 +11928,50 @@ def update_shot_profiles(visit, team_name):
     table = prepare_table_data(intel['team_table'], list(intel['team_table'].columns))
     if prof is None:
         b = _blank_fig('No shot data for this team yet')
-        return note, b, b, b, b, table
+        return note, b, b, b, b, table, ''
+
     s = intel['shots']
-    np_s = s[s['component'] != 'penalty']
-    created = _half_pitch_fig(np_s[np_s['team_id'] == tid], 'Their left', 'Their right')
+    s = s[s['component'] != 'penalty']
+    team_s = s[(s['team_id'] == tid) | (s['opp_id'] == tid)]
+    # Recency: this team's last N matches (maps only; the profile bars stay
+    # season-long and shrunk, so a hot or cold patch can't swing them)
+    order = (team_s[['match_id', 'kickoff']].drop_duplicates()
+             .sort_values(['kickoff', 'match_id']))
+    try:
+        recent = int(recent or 0)
+    except (TypeError, ValueError):
+        recent = 0
+    match_ids = order['match_id'].tolist()
+    if recent > 0:
+        match_ids = match_ids[-recent:]
+    # Matches with zero shots on one side still count as matches played
+    n_matches = len(match_ids) if recent > 0 else max(prof['n'], len(match_ids))
+    team_s = team_s[team_s['match_id'].isin(match_ids)]
+    team_s = _filter_map_shots(team_s, show or 'all', routes or [])
+    made = team_s[team_s['team_id'] == tid]
+    conc = team_s[team_s['opp_id'] == tid]
+
     # Opponents attack the top goal; the attacker's right (picture right) is
     # the defending team's left.
-    conceded = _half_pitch_fig(np_s[np_s['opp_id'] == tid], 'Their right', 'Their left')
+    if display == 'heat':
+        g_made, g_conc = _heat_grid(made, n_matches), _heat_grid(conc, n_matches)
+        zmax = float(max(g_made.max(initial=0), g_conc.max(initial=0)))
+        created = _half_pitch_heat(g_made, zmax, 'Their left', 'Their right')
+        conceded = _half_pitch_heat(g_conc, zmax, 'Their right', 'Their left')
+    else:
+        created = _half_pitch_fig(made, 'Their left', 'Their right')
+        conceded = _half_pitch_fig(conc, 'Their right', 'Their left')
+
+    def _summ(d):
+        return (f"{len(d)} {_SHOW_LABEL.get(show, 'shots')}, "
+                f"{int(d['is_goal'].sum())} goals, {d['xg'].sum():.1f} xG")
+    scope = f"last {n_matches} matches" if recent > 0 else f"{n_matches} matches this season"
+    count = (f"Showing {scope}. Created: {_summ(made)}. Conceded: {_summ(conc)}. "
+             "Filters change the pitch maps only; the profile bars below always use the "
+             "whole season.")
     att = _profile_bars(prof, intel['league'], 'created', COMP_LABEL_ATT, high_is_good=True)
     dfn = _profile_bars(prof, intel['league'], 'conceded', COMP_LABEL_DEF, high_is_good=False)
-    return note, created, conceded, att, dfn, table
+    return note, created, conceded, att, dfn, table, count
 
 
 def _upcoming_by_team(data, n_gws):
