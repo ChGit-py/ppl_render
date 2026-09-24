@@ -567,10 +567,10 @@ def build_rank_card(history, overall_rank):
             html.Div(f"{overall_rank:,}" if overall_rank else '\u2014',
                      style={'fontSize': '44px', 'fontWeight': '800', 'lineHeight': '1.05',
                             'color': '#ffffff', 'letterSpacing': '-0.02em'}),
-            html.Div([f"After GW{last_gw}" if last_gw else '', ' | ' if delta is not None else '',
+            html.Div([f"After GW{last_gw}" if last_gw else '', ' \u00b7 ' if delta is not None else '',
                       delta if delta is not None else ''],
                      style={'fontSize': '14px', 'color': 'rgba(255,255,255,0.85)'}),
-            html.Div(f"Season best:  {best['overall_rank']:,} (GW{best['event']})" if best else '',
+            html.Div(f"Season best {best['overall_rank']:,} (GW{best['event']})" if best else '',
                      style={'fontSize': '13px', 'color': 'rgba(255,255,255,0.6)', 'marginTop': '2px'}),
         ], style={'display': 'flex', 'flexDirection': 'column', 'gap': '4px', 'flex': '0 1 auto'}),
         html.Div(spark, style={'flex': '1 1 220px', 'minWidth': '180px', 'alignSelf': 'center'}),
@@ -4581,8 +4581,17 @@ app.index_string = '''
 <html>
     <head>
         {%metas%}
-        <title>FPL Analytics Hub</title>
+        <title>FPL Room</title>
         {%favicon%}
+        <!-- Home-screen app: icon, name and full-screen mode (files in /assets) -->
+        <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
+        <link rel="manifest" href="/assets/manifest.webmanifest">
+        <meta name="apple-mobile-web-app-title" content="FPL Room">
+        <meta name="application-name" content="FPL Room">
+        <meta name="apple-mobile-web-app-capable" content="yes">
+        <meta name="mobile-web-app-capable" content="yes">
+        <meta name="apple-mobile-web-app-status-bar-style" content="black">
+        <meta name="theme-color" content="#37003c">
         {%css%}
         <link rel="preconnect" href="https://fonts.googleapis.com">
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -4641,14 +4650,11 @@ app.index_string = '''
             }
             /* Sub-group inside Research */
             .nav-subgroup-label {
-                font-size: 11px;
-                font-weight: 700;
-                letter-spacing: 0.1em;
-                text-transform: uppercase;
-                color: #aebdca;
-                margin: 18px 14px 7px 14px;
-                padding-bottom: 4px;
-                border-bottom: 1px solid rgba(174, 189, 202, 0.15);
+                font-size: 12px;
+                font-weight: 600;
+                color: rgba(255,255,255,0.55);
+                padding: 10px 22px 2px 22px;
+                margin: 0;
             }
 
             /* Nav item button */
