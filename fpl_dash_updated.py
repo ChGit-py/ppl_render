@@ -567,7 +567,7 @@ def build_rank_card(history, overall_rank):
             html.Div(f"{overall_rank:,}" if overall_rank else '\u2014',
                      style={'fontSize': '44px', 'fontWeight': '800', 'lineHeight': '1.05',
                             'color': '#ffffff', 'letterSpacing': '-0.02em'}),
-            html.Div([f"After GW{last_gw}" if last_gw else ' ', ' | ' if delta is not None else '',
+            html.Div([f"After GW{last_gw}" if last_gw else '', ' \u00b7 ' if delta is not None else '',
                       delta if delta is not None else ''],
                      style={'fontSize': '14px', 'color': 'rgba(255,255,255,0.85)'}),
             html.Div(f"Season best {best['overall_rank']:,} (GW{best['event']})" if best else '',
@@ -4791,6 +4791,13 @@ app.index_string = '''
                     padding-right: 0 !important;
                     margin-bottom: 10px;
                 }
+                /* The rule above is meant for filter columns, but it also caught the
+                   Home spotlight cards and stripped their side padding, leaving the
+                   text and photo pressed against the card edges on phones. */
+                #content-area .spotlight-card {
+                    padding-left: 14px !important;
+                    padding-right: 14px !important;
+                }
 
                 [style*="margin: 0 -10px"] > div {
                     flex: 1 1 45% !important;
@@ -5012,7 +5019,7 @@ def build_player_spotlight(player, title, metric_label, metric_value,
         'borderRadius': '8px', 'alignSelf': 'center'
     })
 
-    return html.Div([text_section, image_section], style={
+    return html.Div([text_section, image_section], className='spotlight-card', style={
         **CARD_STYLE, 'flex': '1', 'minWidth': '220px',
         'display': 'flex', 'justifyContent': 'space-between'
     })
