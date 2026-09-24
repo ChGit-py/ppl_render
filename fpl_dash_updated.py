@@ -4754,6 +4754,27 @@ app.index_string = '''
             }
 
             /* --- Hamburger button (hidden on desktop) --- */
+            /* Refresh button: only when opened from the home screen, where
+               iOS gives you no reload button and no pull-to-refresh. */
+            #app-refresh-btn {
+                display: none;
+                background: none;
+                border: none;
+                color: #ffffff;
+                font-size: 24px;
+                line-height: 1;
+                min-width: 44px;
+                min-height: 44px;
+                cursor: pointer;
+                -webkit-tap-highlight-color: transparent;
+            }
+            @media (display-mode: standalone) {
+                #app-refresh-btn { display: inline-flex; align-items: center; justify-content: center; }
+            }
+            html.ios-standalone #app-refresh-btn {
+                display: inline-flex; align-items: center; justify-content: center;
+            }
+
             #hamburger-btn {
                 display: none;
                 background: none;
@@ -4921,6 +4942,12 @@ app.index_string = '''
             {%config%}
             {%scripts%}
             {%renderer%}
+            <script>
+                // Older iOS versions only expose navigator.standalone, not the media query
+                if (window.navigator.standalone) {
+                    document.documentElement.classList.add('ios-standalone');
+                }
+            </script>
             <script>
                 // Player headshots: advance through data-fallbacks on 404.
                 // 'error' does not bubble, so we listen in the capture phase.
@@ -5207,8 +5234,11 @@ app.layout = html.Div([
                           style={'color': 'rgba(255,255,255,0.8)', 'fontSize': '13px'}),
                 html.Span(" | ", style={'color': 'rgba(255,255,255,0.5)', 'fontSize': '13px'}),
                 html.Span(id='last-updated-text',
-                          style={'color': 'rgba(255,255,255,0.6)', 'fontSize': '12px'})
-            ])
+                          style={'color': 'rgba(255,255,255,0.6)', 'fontSize': '12px'}),
+                # Home-screen app only (no Safari reload button there); CSS shows it
+                html.Button('\u21bb', id='app-refresh-btn', n_clicks=0,
+                            title='Refresh', **{'aria-label': 'Refresh'}),
+            ], style={'display': 'flex', 'alignItems': 'center', 'gap': '4px'})
         ], style={'display': 'flex', 'justifyContent': 'space-between', 'alignItems': 'center',
                   'maxWidth': '100%', 'margin': '0 auto', 'padding': '0 20px'})
     ], style={'backgroundColor': COLORS['primary'], 'padding': '12px 0', 'position': 'sticky',
@@ -7983,6 +8013,20 @@ clientside_callback(
     [Output(f'visit-{p}', 'data') for p in LAZY_PAGES] + [Output('page-rendered', 'data')],
     [Input('active-page', 'data'), Input('data-version', 'data')],
     State('page-rendered', 'data'),
+)
+
+
+# --- Home-screen app: full reload (fresh data and any newly deployed code) ---
+clientside_callback(
+    """
+    function(n) {
+        if (n) { window.location.reload(); }
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output('app-refresh-btn', 'title'),
+    Input('app-refresh-btn', 'n_clicks'),
+    prevent_initial_call=True
 )
 
 
