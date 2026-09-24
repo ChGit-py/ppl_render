@@ -515,6 +515,71 @@ def fetch_league_standings(league_id, max_entries=RIVALS_MAX_ENTRIES):
     return name, entries
 
 
+def fetch_entry_history(entry_id):
+    """Season history: per-gameweek points, overall rank, transfers, chips."""
+    try:
+        r = requests.get(f"{FPL_BASE_URL}/entry/{int(entry_id)}/history/", timeout=10)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        print(f"Error fetching history for entry {entry_id}: {e}")
+        return None
+
+
+def build_rank_card(history, overall_rank):
+    """
+    Overall rank with an interactive sparkline of every gameweek so far.
+    Better ranks plot higher, so the line rises when you climb. Hover a
+    point for that week's rank and points.
+    """
+    rows = [r for r in ((history or {}).get('current') or []) if r.get('overall_rank')]
+    last_gw = rows[-1]['event'] if rows else None
+    delta = None
+    if len(rows) >= 2:
+        moved = rows[-2]['overall_rank'] - rows[-1]['overall_rank']
+        delta = html.Span(f"{'up' if moved >= 0 else 'down'} {abs(moved):,}",
+                          style={'color': '#00ff87' if moved >= 0 else '#ff5c93', 'fontWeight': '700'})
+    best = min(rows, key=lambda r: r['overall_rank']) if rows else None
+
+    spark = None
+    if len(rows) >= 2:
+        fig = go.Figure(go.Scatter(
+            x=[r['event'] for r in rows], y=[r['overall_rank'] for r in rows],
+            mode='lines+markers',
+            line=dict(color='#00ff87', width=3, shape='spline', smoothing=0.6),
+            marker=dict(size=7, color='#04f5ff', line=dict(width=0)),
+            customdata=[[r.get('points', 0), r.get('rank') or 0] for r in rows],
+            hovertemplate=('GW%{x}<br>Overall rank %{y:,}<br>%{customdata[0]} pts '
+                           '(GW rank %{customdata[1]:,})<extra></extra>')))
+        fig.update_layout(
+            height=90, margin=dict(l=4, r=4, t=6, b=4),
+            paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', showlegend=False,
+            xaxis=dict(visible=False, fixedrange=True),
+            yaxis=dict(visible=False, fixedrange=True, autorange='reversed'),
+            hoverlabel=dict(bgcolor='#ffffff', font=dict(color='#37003c', family=FONT_FAMILY)))
+        spark = dcc.Graph(figure=fig, config={'displayModeBar': False},
+                          style={'height': '90px', 'width': '100%'})
+
+    return html.Div([
+        html.Div([
+            html.Div("Overall rank", style={'fontSize': '14px', 'color': 'rgba(255,255,255,0.75)',
+                                            'fontWeight': '600'}),
+            html.Div(f"{overall_rank:,}" if overall_rank else '\u2014',
+                     style={'fontSize': '44px', 'fontWeight': '800', 'lineHeight': '1.05',
+                            'color': '#ffffff', 'letterSpacing': '-0.02em'}),
+            html.Div([f"After GW{last_gw}" if last_gw else '', ' \u00b7 ' if delta is not None else '',
+                      delta if delta is not None else ''],
+                     style={'fontSize': '14px', 'color': 'rgba(255,255,255,0.85)'}),
+            html.Div(f"Season best {best['overall_rank']:,} (GW{best['event']})" if best else '',
+                     style={'fontSize': '13px', 'color': 'rgba(255,255,255,0.6)', 'marginTop': '2px'}),
+        ], style={'display': 'flex', 'flexDirection': 'column', 'gap': '4px', 'flex': '0 1 auto'}),
+        html.Div(spark, style={'flex': '1 1 220px', 'minWidth': '180px', 'alignSelf': 'center'}),
+    ], style={'background': COLORS['primary'], 'borderRadius': '12px', 'padding': '22px 24px',
+              'marginBottom': '20px', 'display': 'flex', 'gap': '24px', 'flexWrap': 'wrap',
+              'alignItems': 'center', 'backgroundImage':
+                  'linear-gradient(135deg, #37003c 60%, #4a0a52 100%)'})
+
+
 def fetch_entry_chips(entry_id):
     """Chips a manager has already played: list of {name, event}."""
     try:
@@ -3122,19 +3187,36 @@ def get_target_gw_num(data):
 # STYLING
 # =============================================================================
 
+# Fantasy Premier League's own palette: deep purple, electric green, cyan
+# and their magenta-red. The bright colours are for fills (bars, pills,
+# markers); the *_text variants are darker versions that stay readable as
+# text on white, since #00ff87 or #04f5ff text on white is almost invisible.
 COLORS = {
-    'primary': '#37003c',
-    'secondary': '#00ff87',
-    'accent': '#e90052',
+    'primary': '#37003c',       # FPL purple
+    'secondary': '#00ff87',     # FPL green
+    'accent': '#e90052',        # FPL magenta-red
+    'cyan': '#04f5ff',          # FPL cyan
     'background': '#f5f5f5',
     'card_bg': '#ffffff',
-    'text_dark': '#333333',
-    'text_light': '#666666',
-    'success': '#28a745',
-    'warning': '#ffc107',
-    'danger': '#dc3545',
-    'info': '#17a2b8'
+    'text_dark': '#37003c',
+    'text_light': '#6b5c70',
+    'success': '#00ff87',
+    'warning': '#ffab1b',
+    'danger': '#e90052',
+    'info': '#04f5ff',
+    'success_text': '#00813f',
+    'warning_text': '#8a5300',
+    'danger_text': '#c4003f',
+    'info_text': '#00717f',
 }
+import plotly.io as pio
+_tpl = pio.templates['plotly_white']
+_tpl.layout.font = dict(family="Outfit, Arial, sans-serif", color='#37003c')
+pio.templates['plotly_white'] = _tpl
+
+# FPL's typeface, Premier Sans, is a bespoke licensed font that can't be
+# served from here; Outfit is the closest free geometric match.
+FONT_FAMILY = "Outfit, Arial, sans-serif"
 
 CARD_STYLE = {
     'backgroundColor': COLORS['card_bg'],
@@ -3158,7 +3240,7 @@ STAT_CARD_STYLE = {
 TABLE_STYLE_CELL = {
     'textAlign': 'left',
     'padding': '12px 16px',
-    'fontFamily': 'Arial, sans-serif',
+    'fontFamily': FONT_FAMILY,
     'fontSize': '14px',
 }
 
@@ -4502,7 +4584,12 @@ app.index_string = '''
         <title>FPL Analytics Hub</title>
         {%favicon%}
         {%css%}
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
         <style>
+            body { font-family: 'Outfit', Arial, sans-serif; color: #37003c; }
+            button, input, select, textarea { font-family: inherit; }
             /* ================================================================
                BASE — all screen sizes
             ================================================================ */
@@ -4521,17 +4608,17 @@ app.index_string = '''
 
             #app-body {
                 display: flex;
-                height: calc(100vh - 64px);
+                height: calc(100vh - 68px);   /* header + 4px FPL stripe */
                 position: relative;
                 overflow: hidden;
             }
 
             /* --- Sidebar --- */
             #sidebar {
-                width: 230px;
-                min-width: 230px;
-                background: #ffffff;
-                border-right: 1px solid #e0e0e0;
+                width: 240px;
+                min-width: 240px;
+                background: #37003c;
+                border-right: 0;
                 height: 100%;
                 overflow-y: auto;
                 overflow-x: hidden;
@@ -4542,14 +4629,22 @@ app.index_string = '''
                 padding-bottom: 24px;
             }
 
-            /* Group label */
+            /* Section label: This Week, My Team, Leagues, Planner, Research */
             .nav-group-label {
-                font-size: 13px;
+                font-size: 12px;
                 font-weight: 700;
                 text-transform: uppercase;
-                letter-spacing: 1px;
-                color: #37003c;
-                padding: 18px 20px 6px 20px;
+                letter-spacing: 0.12em;
+                color: #00ff87;
+                padding: 20px 22px 6px 22px;
+                margin: 0;
+            }
+            /* Sub-group inside Research */
+            .nav-subgroup-label {
+                font-size: 12px;
+                font-weight: 600;
+                color: rgba(255,255,255,0.55);
+                padding: 10px 22px 2px 22px;
                 margin: 0;
             }
 
@@ -4558,32 +4653,38 @@ app.index_string = '''
                 display: flex;
                 align-items: center;
                 gap: 10px;
-                width: 100%;
+                width: calc(100% - 20px);
+                margin: 1px 10px;
+                min-height: 38px;
                 background: none;
                 border: none;
-                border-left: 3px solid transparent;
-                padding: 9px 16px 9px 17px;
-                font-size: 13.5px;
-                font-family: Arial, sans-serif;
+                border-radius: 8px;
+                padding: 8px 12px 8px 14px;
+                font-size: 14px;
+                font-family: inherit;
                 font-weight: 500;
-                color: #444;
+                color: rgba(255,255,255,0.82);
                 cursor: pointer;
                 text-align: left;
-                transition: background 0.15s, color 0.15s, border-color 0.15s;
+                transition: background 0.15s, color 0.15s;
                 line-height: 1.3;
+                position: relative;
             }
 
             .nav-item:hover {
-                background: #f5f5f5;
-                color: #37003c;
+                background: rgba(255,255,255,0.08);
+                color: #ffffff;
             }
 
             .nav-item.active {
-                background: #f0e6f6;
-                color: #37003c;
-                border-left-color: #37003c;
+                background: rgba(255,255,255,0.12);
+                color: #ffffff;
                 font-weight: 700;
+                box-shadow: inset 3px 0 0 #00ff87;
             }
+
+            /* FPL's green-to-cyan stripe under the header */
+            .fpl-stripe { height: 4px; background: linear-gradient(90deg, #00ff87, #04f5ff); }
 
             /* --- Content area --- */
             #content-area {
@@ -5057,6 +5158,7 @@ app.layout = html.Div([
                   'maxWidth': '100%', 'margin': '0 auto', 'padding': '0 20px'})
     ], style={'backgroundColor': COLORS['primary'], 'padding': '12px 0', 'position': 'sticky',
               'top': '0', 'zIndex': '1000', 'boxShadow': '0 2px 8px rgba(0,0,0,0.15)'}),
+    html.Div(className='fpl-stripe'),
 
     # Body: sidebar + content
     html.Div([
@@ -5069,75 +5171,44 @@ app.layout = html.Div([
             id='sidebar',
             className='sidebar',
             children=[
-                # OVERVIEW
-                html.P('Overview', className='nav-group-label'),
-                html.Button('Home',
-                            id='nav-home', className='nav-item active', n_clicks=0),
-                html.Button('Model Lab',
-                            id='nav-model-lab', className='nav-item', n_clicks=0),
-
-                # DEFENSIVE
-                html.P('Defensive', className='nav-group-label'),
-                html.Button('DEFCON Bonus',
-                            id='nav-defcon-bonus', className='nav-item', n_clicks=0),
-                html.Button('DEFCON: Consistency',
-                            id='nav-bonus-consistency', className='nav-item', n_clicks=0),
-                html.Button('DEFCONS',
-                            id='nav-defcon', className='nav-item', n_clicks=0),
-                html.Button('Clean Sheets',
-                            id='nav-cs', className='nav-item', n_clicks=0),
-
-                # ATTACKING
-                html.P('Attacking', className='nav-group-label'),
-                html.Button('Expected Goals & Assists',
-                            id='nav-xg', className='nav-item', n_clicks=0),
-                html.Button('Underlying Numbers',
-                            id='nav-underlying', className='nav-item', n_clicks=0),
-
-                # SHOT INTELLIGENCE
-                html.P('Shot Intelligence', className='nav-group-label'),
-                html.Button('Team Shot Profiles',
-                            id='nav-shot-profiles', className='nav-item', n_clicks=0),
-                html.Button('Matchup Finder',
-                            id='nav-matchups', className='nav-item', n_clicks=0),
-                html.Button('Chance Quality',
-                            id='nav-chance-quality', className='nav-item', n_clicks=0),
-
-                # VALUE & FORM
-                html.P('Value & Form', className='nav-group-label'),
-                html.Button('Value Analysis',
-                            id='nav-value', className='nav-item', n_clicks=0),
-                html.Button('Form Tracker',
-                            id='nav-form', className='nav-item', n_clicks=0),
-
-                # PLANNING
-                html.P('Squad Planning', className='nav-group-label'),
-                html.Button('Fixture Ticker',
-                            id='nav-fixture-ticker', className='nav-item', n_clicks=0),
-                html.Button('Fixture Outlook',
-                            id='nav-fixture-outlook', className='nav-item', n_clicks=0),
-                html.Button('Fixture Difficulty',
-                            id='nav-fixtures', className='nav-item', n_clicks=0),
-                html.Button('Expected Clean Sheets',
-                            id='nav-xcs', className='nav-item', n_clicks=0),
-                html.Button('Differentials',
-                            id='nav-differentials', className='nav-item', n_clicks=0),
-                html.Button('Captain Optimiser',
-                            id='nav-captain', className='nav-item', n_clicks=0),
-                html.Button('Transfer Trends',
-                            id='nav-transfers', className='nav-item', n_clicks=0),
-                html.Button('Transfer Planner',
-                            id='nav-transfer-planner', className='nav-item', n_clicks=0),
-                html.Button('Chip Planner',
-                            id='nav-chip-planner', className='nav-item', n_clicks=0),
-                html.Button('Mini-League Rivals',
-                            id='nav-rivals', className='nav-item', n_clicks=0),
-                html.Button('Deadline Dashboard',
-                            id='nav-deadline', className='nav-item', n_clicks=0),
-                html.Button('My Squad',
-                            id='nav-my-squad', className='nav-item', n_clicks=0),
-                html.Button('Squad Builder',
-                            id='nav-squad-builder', className='nav-item', n_clicks=0),
+                html.Div(style={'height': '12px'}),
+                html.Button('Home', id='nav-home', className='nav-item active', n_clicks=0),
+                html.P('This Week', className='nav-group-label'),
+                html.Button('Deadline Dashboard', id='nav-deadline', className='nav-item', n_clicks=0),
+                html.P('My Team', className='nav-group-label'),
+                html.Button('My Squad', id='nav-my-squad', className='nav-item', n_clicks=0),
+                html.P('Leagues', className='nav-group-label'),
+                html.Button('Mini-League Rivals', id='nav-rivals', className='nav-item', n_clicks=0),
+                html.P('Planner', className='nav-group-label'),
+                html.Button('Transfer Planner', id='nav-transfer-planner', className='nav-item', n_clicks=0),
+                html.Button('Chip Planner', id='nav-chip-planner', className='nav-item', n_clicks=0),
+                html.Button('Squad Builder', id='nav-squad-builder', className='nav-item', n_clicks=0),
+                html.Button('Fixture Ticker', id='nav-fixture-ticker', className='nav-item', n_clicks=0),
+                html.Button('Fixture Outlook', id='nav-fixture-outlook', className='nav-item', n_clicks=0),
+                html.P('Research', className='nav-group-label'),
+                html.P('Players & form', className='nav-subgroup-label'),
+                html.Button('Captain Optimiser', id='nav-captain', className='nav-item', n_clicks=0),
+                html.Button('Differentials', id='nav-differentials', className='nav-item', n_clicks=0),
+                html.Button('Value Analysis', id='nav-value', className='nav-item', n_clicks=0),
+                html.Button('Form Tracker', id='nav-form', className='nav-item', n_clicks=0),
+                html.Button('Transfer Trends', id='nav-transfers', className='nav-item', n_clicks=0),
+                html.P('Attacking', className='nav-subgroup-label'),
+                html.Button('Expected Goals & Assists', id='nav-xg', className='nav-item', n_clicks=0),
+                html.Button('Underlying Numbers', id='nav-underlying', className='nav-item', n_clicks=0),
+                html.P('Defensive', className='nav-subgroup-label'),
+                html.Button('DEFCON Bonus', id='nav-defcon-bonus', className='nav-item', n_clicks=0),
+                html.Button('DEFCON: Consistency', id='nav-bonus-consistency', className='nav-item', n_clicks=0),
+                html.Button('DEFCONS', id='nav-defcon', className='nav-item', n_clicks=0),
+                html.Button('Clean Sheets', id='nav-cs', className='nav-item', n_clicks=0),
+                html.Button('Expected Clean Sheets', id='nav-xcs', className='nav-item', n_clicks=0),
+                html.P('Fixtures', className='nav-subgroup-label'),
+                html.Button('Fixture Difficulty', id='nav-fixtures', className='nav-item', n_clicks=0),
+                html.P('Shot Intelligence', className='nav-subgroup-label'),
+                html.Button('Team Shot Profiles', id='nav-shot-profiles', className='nav-item', n_clicks=0),
+                html.Button('Matchup Finder', id='nav-matchups', className='nav-item', n_clicks=0),
+                html.Button('Chance Quality', id='nav-chance-quality', className='nav-item', n_clicks=0),
+                html.P('Model', className='nav-subgroup-label'),
+                html.Button('Model Lab', id='nav-model-lab', className='nav-item', n_clicks=0),
             ]
         ),
 
@@ -5373,9 +5444,9 @@ app.layout = html.Div([
                             style_data_conditional=[
                                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                                 {'if': {'filter_query': '{edge_pct} >= 10', 'column_id': 'edge_pct'},
-                                 'backgroundColor': '#e8f5e9', 'fontWeight': '600'},
+                                 'backgroundColor': '#e6fff2', 'fontWeight': '600'},
                                 {'if': {'filter_query': '{edge_pct} <= -10', 'column_id': 'edge_pct'},
-                                 'backgroundColor': '#ffebee'},
+                                 'backgroundColor': '#fde8ef'},
                             ],
                         ),
                     ], style=CARD_STYLE),
@@ -5599,9 +5670,9 @@ app.layout = html.Div([
                             style_data_conditional=[
                                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                                 {'if': {'filter_query': '{defcon_vs_bonus} >= 0', 'column_id': 'defcon_vs_bonus'},
-                                 'backgroundColor': '#e8f5e9'},
+                                 'backgroundColor': '#e6fff2'},
                                 {'if': {'filter_query': '{defcon_vs_bonus} < 0', 'column_id': 'defcon_vs_bonus'},
-                                 'backgroundColor': '#ffebee'}
+                                 'backgroundColor': '#fde8ef'}
                             ]
                         )
                     ], style=CARD_STYLE)
@@ -5728,11 +5799,11 @@ app.layout = html.Div([
                             style_data_conditional=[
                                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                                 {'if': {'filter_query': '{hit_rate} >= 50', 'column_id': 'hit_rate'},
-                                 'backgroundColor': '#e8f5e9'},
+                                 'backgroundColor': '#e6fff2'},
                                 {'if': {'filter_query': '{hit_rate} >= 25 && {hit_rate} < 50', 'column_id': 'hit_rate'},
                                  'backgroundColor': '#fff8e1'},
                                 {'if': {'filter_query': '{hit_rate} < 25', 'column_id': 'hit_rate'},
-                                 'backgroundColor': '#ffebee'}
+                                 'backgroundColor': '#fde8ef'}
                             ]
                         )
                     ], style=CARD_STYLE)
@@ -5816,9 +5887,9 @@ app.layout = html.Div([
                             style_data_conditional=[
                                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                                 {'if': {'filter_query': '{defcon_diff} > 0', 'column_id': 'defcon_diff'},
-                                 'backgroundColor': '#e8f5e9'},
+                                 'backgroundColor': '#e6fff2'},
                                 {'if': {'filter_query': '{defcon_diff} < 0', 'column_id': 'defcon_diff'},
-                                 'backgroundColor': '#ffebee'}
+                                 'backgroundColor': '#fde8ef'}
                             ]
                         )
                     ], style=CARD_STYLE)
@@ -5905,7 +5976,7 @@ app.layout = html.Div([
                                 {'if': {'filter_query': '{xg_diff} >= -1 && {xg_diff} <= 1', 'column_id': 'xg_diff'},
                                  'backgroundColor': '#FFB938'},
                                 {'if': {'filter_query': '{xg_diff} > 1', 'column_id': 'xg_diff'},
-                                 'backgroundColor': '#e8f5e9'}
+                                 'backgroundColor': '#e6fff2'}
                             ]
                         )
                     ], style=CARD_STYLE)
@@ -5999,8 +6070,8 @@ app.layout = html.Div([
                             style_data=TABLE_STYLE_DATA,
                             style_data_conditional=[
                                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
-                                {'if': {'filter_query': '{xgi_diff_per_90} < 0.00', 'column_id': 'xgi_diff_per_90'}, 'backgroundColor': '#ffebee'},
-                                {'if': {'filter_query': '{xgi_diff_per_90} > 0.00', 'column_id': 'xgi_diff_per_90'}, 'backgroundColor': '#e8f5e9'},
+                                {'if': {'filter_query': '{xgi_diff_per_90} < 0.00', 'column_id': 'xgi_diff_per_90'}, 'backgroundColor': '#fde8ef'},
+                                {'if': {'filter_query': '{xgi_diff_per_90} > 0.00', 'column_id': 'xgi_diff_per_90'}, 'backgroundColor': '#e6fff2'},
                             ]
                         )
                     ], style=CARD_STYLE)
@@ -6129,7 +6200,7 @@ app.layout = html.Div([
                                style={'color': COLORS['text_light']}),
                         html.Div([
                             html.Div([
-                                html.H4("Sell-High Candidates", style={'color': COLORS['danger'], 'marginBottom': '10px'}),
+                                html.H4("Sell-High Candidates", style={'color': COLORS['danger_text'], 'marginBottom': '10px'}),
                                 dash_table.DataTable(
                                     id='regress-sell-table', data=[],
                                     columns=[
@@ -6145,7 +6216,7 @@ app.layout = html.Div([
                                 )
                             ], style={'flex': '1', 'minWidth': '320px', 'paddingRight': '10px'}),
                             html.Div([
-                                html.H4("Buy-Early Candidates", style={'color': COLORS['success'], 'marginBottom': '10px'}),
+                                html.H4("Buy-Early Candidates", style={'color': COLORS['success_text'], 'marginBottom': '10px'}),
                                 dash_table.DataTable(
                                     id='regress-buy-table', data=[],
                                     columns=[
@@ -6198,9 +6269,9 @@ app.layout = html.Div([
                             style_data_conditional=[
                                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                                 {'if': {'filter_query': '{form_vs_season} > 1', 'column_id': 'form_vs_season'},
-                                 'backgroundColor': '#e8f5e9'},
+                                 'backgroundColor': '#e6fff2'},
                                 {'if': {'filter_query': '{form_vs_season} < -1', 'column_id': 'form_vs_season'},
-                                 'backgroundColor': '#ffebee'}
+                                 'backgroundColor': '#fde8ef'}
                             ]
                         )
                     ], style=CARD_STYLE)
@@ -6524,13 +6595,13 @@ app.layout = html.Div([
                             style_data_conditional=[
                                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                                 {'if': {'filter_query': '{att_swing} <= -0.4', 'column_id': 'att_swing'},
-                                 'backgroundColor': '#e8f5e9', 'fontWeight': '600'},
+                                 'backgroundColor': '#e6fff2', 'fontWeight': '600'},
                                 {'if': {'filter_query': '{att_swing} >= 0.4', 'column_id': 'att_swing'},
-                                 'backgroundColor': '#ffebee'},
+                                 'backgroundColor': '#fde8ef'},
                                 {'if': {'filter_query': '{def_swing} <= -0.4', 'column_id': 'def_swing'},
-                                 'backgroundColor': '#e8f5e9', 'fontWeight': '600'},
+                                 'backgroundColor': '#e6fff2', 'fontWeight': '600'},
                                 {'if': {'filter_query': '{def_swing} >= 0.4', 'column_id': 'def_swing'},
-                                 'backgroundColor': '#ffebee'},
+                                 'backgroundColor': '#fde8ef'},
                             ]
                         ),
                         html.P("Negative swing (green) = later fixtures are EASIER than the current window — buy window. "
@@ -6584,11 +6655,11 @@ app.layout = html.Div([
                             style_data_conditional=[
                                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                                 {'if': {'filter_query': '{avg_fdr_5} <= 2.5', 'column_id': 'avg_fdr_5'},
-                                 'backgroundColor': '#e8f5e9'},
+                                 'backgroundColor': '#e6fff2'},
                                 {'if': {'filter_query': '{avg_fdr_5} > 2.5 && {avg_fdr_5} <= 3.5',
                                         'column_id': 'avg_fdr_5'}, 'backgroundColor': '#fff8e1'},
                                 {'if': {'filter_query': '{avg_fdr_5} > 3.5', 'column_id': 'avg_fdr_5'},
-                                 'backgroundColor': '#ffebee'}
+                                 'backgroundColor': '#fde8ef'}
                             ]
                         )
                     ], style=CARD_STYLE)
@@ -6716,7 +6787,7 @@ app.layout = html.Div([
                             style_data_conditional=[
                                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                                 {'if': {'filter_query': '{ownership} <= 5', 'column_id': 'ownership'},
-                                 'backgroundColor': '#e8f5e9'},
+                                 'backgroundColor': '#e6fff2'},
                                 {'if': {'filter_query': '{ownership} > 5 && {ownership} <= 10',
                                         'column_id': 'ownership'}, 'backgroundColor': '#fff8e1'},
                             ]
@@ -6867,15 +6938,15 @@ app.layout = html.Div([
                             style_data_conditional=[
                                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                                 {'if': {'filter_query': '{next_att_fdr} <= 2.3', 'column_id': 'next_att_fdr'},
-                                 'backgroundColor': '#e8f5e9'},
+                                 'backgroundColor': '#e6fff2'},
                                 {'if': {'filter_query': '{next_att_fdr} >= 3.7', 'column_id': 'next_att_fdr'},
-                                 'backgroundColor': '#ffebee'},
+                                 'backgroundColor': '#fde8ef'},
                                 {'if': {'filter_query': '{next_venue} = H', 'column_id': 'next_venue'},
-                                 'color': COLORS['success'], 'fontWeight': '600'},
+                                 'color': COLORS['success_text'], 'fontWeight': '600'},
                                 {'if': {'filter_query': '{next_venue} = A', 'column_id': 'next_venue'},
-                                 'color': COLORS['danger'], 'fontWeight': '600'},
+                                 'color': COLORS['danger_text'], 'fontWeight': '600'},
                                 {'if': {'filter_query': '{avail_pct} < 100', 'column_id': 'avail_pct'},
-                                 'backgroundColor': '#ffebee', 'fontWeight': '600'},
+                                 'backgroundColor': '#fde8ef', 'fontWeight': '600'},
                                 {'if': {'filter_query': '{start_rate} < 70', 'column_id': 'start_rate'},
                                  'backgroundColor': '#fff8e1'},
                             ]
@@ -7024,13 +7095,13 @@ app.layout = html.Div([
                             style_data_conditional=[
                                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                                 {'if': {'filter_query': '{net_transfers_gw} > 0', 'column_id': 'net_transfers_gw'},
-                                 'backgroundColor': '#e8f5e9'},
+                                 'backgroundColor': '#e6fff2'},
                                 {'if': {'filter_query': '{net_transfers_gw} < 0', 'column_id': 'net_transfers_gw'},
-                                 'backgroundColor': '#ffebee'},
+                                 'backgroundColor': '#fde8ef'},
                                 {'if': {'filter_query': '{price_change_likelihood} >= 50',
-                                        'column_id': 'price_change_likelihood'}, 'backgroundColor': '#e8f5e9'},
+                                        'column_id': 'price_change_likelihood'}, 'backgroundColor': '#e6fff2'},
                                 {'if': {'filter_query': '{price_change_likelihood} <= -50',
-                                        'column_id': 'price_change_likelihood'}, 'backgroundColor': '#ffebee'},
+                                        'column_id': 'price_change_likelihood'}, 'backgroundColor': '#fde8ef'},
                             ]
                         )
                     ], style=CARD_STYLE)
@@ -7211,9 +7282,9 @@ app.layout = html.Div([
                             style_data_conditional=[
                                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                                 {'if': {'filter_query': '{avg_cs_prob} >= 40', 'column_id': 'avg_cs_prob'},
-                                 'backgroundColor': '#e8f5e9'},
+                                 'backgroundColor': '#e6fff2'},
                                 {'if': {'filter_query': '{avg_cs_prob} < 25', 'column_id': 'avg_cs_prob'},
-                                 'backgroundColor': '#ffebee'},
+                                 'backgroundColor': '#fde8ef'},
                             ]
                         )
                     ], style=CARD_STYLE),
@@ -7642,7 +7713,7 @@ app.layout = html.Div([
                style={'color': 'rgba(255,255,255,0.7)', 'fontSize': '13px', 'margin': '0'})
     ], style={'backgroundColor': COLORS['primary'], 'padding': '20px', 'textAlign': 'center'})
 
-], style={'fontFamily': 'Arial, sans-serif', 'backgroundColor': COLORS['background'], 'margin': '0', 'padding': '0'})
+], style={'fontFamily': FONT_FAMILY, 'backgroundColor': COLORS['background'], 'margin': '0', 'padding': '0'})
 
 
 # =============================================================================
@@ -8015,7 +8086,7 @@ def update_home_tab(n):
         chip_fig.update_layout(template='plotly_white', height=300,
                                margin=dict(t=40, b=40, l=40, r=40),
                                yaxis_title='Managers', showlegend=False,
-                               font=dict(family='Arial, sans-serif'),
+                               font=dict(family=FONT_FAMILY),
                                yaxis=dict(range=[0, max(c_counts) * 1.15]))
     else:
         chip_fig = go.Figure()
@@ -8043,7 +8114,7 @@ def update_home_tab(n):
         pos_fig.update_layout(barmode='group', template='plotly_white', height=350,
                               margin=dict(t=60, b=40, l=40, r=40),
                               legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5),
-                              yaxis_title='Value', xaxis_title='Position', font=dict(family='Arial, sans-serif'),
+                              yaxis_title='Value', xaxis_title='Position', font=dict(family=FONT_FAMILY),
                               yaxis=dict(range=[0, position_stats['points_per_million'].max() * 10 * 1.2]))
     else:
         pos_fig = go.Figure()
@@ -8082,7 +8153,7 @@ def update_home_tab(n):
                                       current_gw_now['name'].replace('Gameweek ', 'GW') if current_gw_now else "N/A",
                                       f"Average: {avg_gw} pts")],
                      style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
-            html.Div([build_stat_card("Highest GW Score", f"{highest_gw}", "This gameweek", color=COLORS['success'])],
+            html.Div([build_stat_card("Highest GW Score", f"{highest_gw}", "This gameweek", color=COLORS['success_text'])],
                      style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
             html.Div([
                 build_stat_card(
@@ -8121,7 +8192,7 @@ def update_home_tab(n):
                 "Chips Used This GW",
                 f"{total_chips:,}" if total_chips > 0 else "N/A",
                 chip_sum,
-                color=COLORS['info']
+                color=COLORS['info_text']
             ,
                 link_page='chip-planner', link_label='Chip planner')], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
         ], style={'display': 'flex', 'flexWrap': 'wrap', 'margin': '0 -10px 40px -10px'}),
@@ -8203,7 +8274,7 @@ def get_congestion_divisor(rank_gap: int) -> int:
 )
 def check_rank_gap(n_clicks, your_rank, rival_rank):
     if not your_rank or not rival_rank:
-        return html.P("Please enter both ranks.", style={'color': COLORS['danger']})
+        return html.P("Please enter both ranks.", style={'color': COLORS['danger_text']})
 
     def fetch_rank_points(rank):
         try:
@@ -8229,7 +8300,7 @@ def check_rank_gap(n_clicks, your_rank, rival_rank):
 
     if your_points is None or rival_points is None:
         return html.P("Could not fetch rank data. Please try again.",
-                      style={'color': COLORS['danger'], 'marginTop': '12px'})
+                      style={'color': COLORS['danger_text'], 'marginTop': '12px'})
 
     gap = abs(rival_points - your_points)
     rank_gap = abs(your_rank - rival_rank)
@@ -8270,7 +8341,7 @@ def check_rank_gap(n_clicks, your_rank, rival_rank):
                 html.P("Congestion", style={'color': COLORS['text_light'], 'fontSize': '13px',
                                             'marginBottom': '4px', 'textTransform': 'uppercase',
                                             'letterSpacing': '0.5px', 'fontWeight': '600'}),
-                html.H3(f"{pts_per_x_ranks} pts", style={'color': COLORS['success'], 'margin': '0',
+                html.H3(f"{pts_per_x_ranks} pts", style={'color': COLORS['success_text'], 'margin': '0',
                                                           'fontSize': '28px', 'fontWeight': '700'}),
                 html.P(f"per {congestion_divisor:,} rank places", style={'color': COLORS['text_light'],
                                                                           'fontSize': '13px', 'margin': '4px 0 0 0'}),
@@ -8311,7 +8382,7 @@ def update_bonus(position, team, max_price, min_minutes, _visit=None):
                           annotation_text="MID/FWD Threshold (12)", annotation_position="bottom right")
     scatter_fig.update_layout(template='plotly_white', height=400, xaxis_title='Price (£m)',
                               yaxis_title='Defcon per 90',
-                              font=dict(family='Arial, sans-serif'))
+                              font=dict(family=FONT_FAMILY))
 
     top_25 = filtered.nlargest(25, 'defcon_vs_bonus')
     bar_fig = go.Figure()
@@ -8324,7 +8395,7 @@ def update_bonus(position, team, max_price, min_minutes, _visit=None):
     bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
                           yaxis_title='Distance from Threshold', showlegend=False,
                           yaxis=dict(range=[top_25['defcon_vs_bonus'].min() * 1.2, top_25['defcon_vs_bonus'].max() * 1.2]),
-                          font=dict(family='Arial, sans-serif'))
+                          font=dict(family=FONT_FAMILY))
 
     cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'defcon', 'defcon_per_90', 'defcon_vs_bonus',
             'bonus_rate', 'ownership']
@@ -8415,7 +8486,7 @@ def update_consistency(position, team, max_price, min_games, min_minutes, _n):
     bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
                           yaxis_title='Bonus Hit Rate (%)', showlegend=False,
                           yaxis=dict(range=[0, max(top_25['hit_rate'].max() * 1.15, 55) if len(top_25) > 0 else 100]),
-                          font=dict(family='Arial, sans-serif'))
+                          font=dict(family=FONT_FAMILY))
 
     # Scatter - Hit Rate vs Avg Defcon
     scatter_fig = px.scatter(
@@ -8440,7 +8511,7 @@ def update_consistency(position, team, max_price, min_games, min_minutes, _n):
         height=400,
         xaxis_title='Avg Defcon (in 60+ Min. games)',
         yaxis_title='Bonus Hit Rate (%)',
-        font=dict(family='Arial, sans-serif')
+        font=dict(family=FONT_FAMILY)
     )
 
     # Table data
@@ -8471,7 +8542,7 @@ def update_defcon(position, team, max_price, min_minutes, _visit=None):
         max_val = max(filtered['defcon'].max(), filtered['expected_defcon'].max())
         fig.add_trace(go.Scatter(x=[0, max_val], y=[0, max_val], mode='lines', line=dict(dash='dash', color='#999'),
                                  name='Expected'))
-    fig.update_layout(template='plotly_white', height=400, font=dict(family='Arial, sans-serif'))
+    fig.update_layout(template='plotly_white', height=400, font=dict(family=FONT_FAMILY))
 
     cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'defcon', 'defcon_per_90', 'expected_defcon',
             'defcon_diff', 'ownership']
@@ -8500,7 +8571,7 @@ def update_xg(position, team, max_price, min_minutes, _visit=None):
         max_val = max(filtered['goals_scored'].max(), filtered['expected_goals'].max())
         fig.add_trace(go.Scatter(x=[0, max_val], y=[0, max_val], mode='lines', line=dict(dash='dash', color='#999'),
                                  name='Expected'))
-    fig.update_layout(template='plotly_white', height=400, font=dict(family='Arial, sans-serif'))
+    fig.update_layout(template='plotly_white', height=400, font=dict(family=FONT_FAMILY))
 
     cols = ['web_name', 'team_name', 'position', 'price', 'goals_scored', 'expected_goals', 'xg_diff', 'assists',
             'expected_assists', 'xa_diff', 'ownership']
@@ -8531,7 +8602,7 @@ def update_underlying(position, team, max_price, min_minutes, _visit=None):
         max_val = max(filtered['xgi_per_90'].max(), filtered['gi_per_90'].max(), 0.5)
         fig.add_trace(go.Scatter(x=[0, max_val], y=[0, max_val], mode='lines',
                                  line=dict(dash='dash', color='#999'), name='Expected'))
-    fig.update_layout(template='plotly_white', height=400, font=dict(family='Arial, sans-serif'))
+    fig.update_layout(template='plotly_white', height=400, font=dict(family=FONT_FAMILY))
 
     # Table — sorted by xGI/90 descending
     cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'xgi_per_90', 'gi_per_90',
@@ -8559,7 +8630,7 @@ def update_value(position, team, max_price, min_minutes, _visit=None):
                      labels={'price': 'Price', 'total_points': 'Total Points'},
                      color_discrete_map={'GKP': '#666', 'DEF': COLORS['primary'], 'MID': COLORS['accent'],
                                          'FWD': COLORS['info']})
-    fig.update_layout(template='plotly_white', height=400, font=dict(family='Arial, sans-serif'))
+    fig.update_layout(template='plotly_white', height=400, font=dict(family=FONT_FAMILY))
 
     cols = ['web_name', 'team_name', 'position', 'price', 'total_points', 'points_per_million', 'form', 'ownership']
     table_data = prepare_table_data(filtered.nlargest(50, 'points_per_million'), cols)
@@ -8587,7 +8658,7 @@ def update_form(position, team, max_price, min_minutes, _visit=None):
     fig.update_traces(marker_color=[COLORS['success'] if x > 0 else COLORS['warning'] for x in top_form['form_vs_season']],
                       textposition='outside')
     fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
-                      font=dict(family='Arial, sans-serif'))
+                      font=dict(family=FONT_FAMILY))
 
     cols = ['web_name', 'team_name', 'position', 'price', 'form', 'ppg', 'form_vs_season',
             'adj_xgi90', 'sched_factor', 'ownership']
@@ -8611,7 +8682,7 @@ def update_cs(position, team, max_price, min_minutes, _visit=None):
                      hover_name='web_name', hover_data=['price', 'clean_sheets', 'goals_conceded'],
                      labels={'team_name': 'Club', 'gc_per_90': 'Goals Conceded per 90',
                              'cs_per_90': 'Clean Sheet per 90'})
-    fig.update_layout(template='plotly_white', height=400, font=dict(family='Arial, sans-serif'))
+    fig.update_layout(template='plotly_white', height=400, font=dict(family=FONT_FAMILY))
 
     cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'clean_sheets', 'cs_per_90', 'goals_conceded',
             'gc_per_90', 'ownership']
@@ -8661,7 +8732,7 @@ def update_fdr(position, team, max_price, min_minutes, _visit=None):
     bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
                           yaxis_title='Average FDR (Next 5 GWs)', showlegend=False,
                           yaxis=dict(range=[0, 5.5]),
-                          font=dict(family='Arial, sans-serif'))
+                          font=dict(family=FONT_FAMILY))
 
     # Player scatter and table use full filters
     filtered = filter_data(position, team, max_price, min_minutes)
@@ -8693,7 +8764,7 @@ def update_fdr(position, team, max_price, min_minutes, _visit=None):
         height=400,
         xaxis_title='Avg Fixture Difficulty (lower = easier)',
         yaxis_title='Total Points',
-        font=dict(family='Arial, sans-serif')
+        font=dict(family=FONT_FAMILY)
     )
 
     # Table - sorted by FDR (ascending = easiest first)
@@ -8868,7 +8939,7 @@ def update_fixture_ticker(sort_by, num_gws, n):
         template='plotly_white',
         height=height,
         width=118 + _cell_w * max(n_cols, 1) + 28,
-        font=dict(family='Arial, sans-serif', size=12),
+        font=dict(family=FONT_FAMILY, size=12),
         xaxis=dict(side='top', tickangle=0 if n_cols <= 15 else -45,
                    fixedrange=True, tickfont=dict(size=tick_font)),
         yaxis=dict(autorange='reversed', fixedrange=True, tickfont=dict(size=12)),
@@ -8923,7 +8994,7 @@ def update_differentials(position, team, max_price, max_own, min_minutes, _visit
                               annotation_text=f'Median PPG ({median_ppg:.1f})', annotation_position='top right')
     scatter_fig.update_layout(template='plotly_white', height=400, xaxis_title='Ownership %',
                               yaxis_title='Points per Game',
-                              font=dict(family='Arial, sans-serif'))
+                              font=dict(family=FONT_FAMILY))
 
     top_25 = filtered.nlargest(25, 'differential_score')
     bar_fig = go.Figure()
@@ -8938,7 +9009,7 @@ def update_differentials(position, team, max_price, max_own, min_minutes, _visit
     bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
                           yaxis_title='Differential Score', showlegend=False,
                           yaxis=dict(range=[0, top_25['differential_score'].max() * 1.1]),
-                          font=dict(family='Arial, sans-serif'))
+                          font=dict(family=FONT_FAMILY))
 
     cols = ['web_name', 'team_name', 'position', 'price', 'total_points', 'form', 'ppg',
             'expected_goal_involvements', 'ownership', 'top_eo', 'own_delta_7d',
@@ -9103,7 +9174,7 @@ def update_captain(position, team, max_price, min_minutes, mode, _n):
         bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
                               yaxis_title=rank_label, showlegend=False,
                               yaxis=dict(range=[0, float(top_20[rank_col].max()) * 1.15]),
-                              font=dict(family='Arial, sans-serif'))
+                              font=dict(family=FONT_FAMILY))
 
         ha_filtered = filtered.dropna(subset=['home_ppg', 'away_ppg'])
         ha_scatter = px.scatter(
@@ -9142,7 +9213,7 @@ def update_captain(position, team, max_price, min_minutes, mode, _n):
         err_fig = go.Figure()
         err_fig.add_annotation(text=f"Captain page error: {e}", xref="paper", yref="paper",
                                x=0.5, y=0.5, showarrow=False,
-                               font=dict(size=13, color=COLORS['danger']))
+                               font=dict(size=13, color=COLORS['danger_text']))
         err_fig.update_layout(template='plotly_white', height=400)
         return err_fig, err_fig, []
 
@@ -9174,7 +9245,7 @@ def update_transfers(position, team, max_price, min_minutes, _visit=None):
     risers_fig.update_layout(template='plotly_white', height=380, xaxis_tickangle=-45,
                              yaxis_title='Net Transfers In', showlegend=False,
                              yaxis=dict(range=[0, risers['net_transfers_gw'].max() * 1.1]),
-                             font=dict(family='Arial, sans-serif'))
+                             font=dict(family=FONT_FAMILY))
 
     fallers = filtered.nsmallest(20, 'net_transfers_gw')
     fallers_fig = go.Figure()
@@ -9189,7 +9260,7 @@ def update_transfers(position, team, max_price, min_minutes, _visit=None):
     fallers_fig.update_layout(template='plotly_white', height=380, xaxis_tickangle=-45,
                               yaxis_title='Net Transfers Out', showlegend=False,
                               yaxis=dict(range=[fallers['net_transfers_gw'].min() * 1.1, 0]),
-                              font=dict(family='Arial, sans-serif'))
+                              font=dict(family=FONT_FAMILY))
 
     scatter_fig = px.scatter(
         filtered[filtered['ownership'] >= 1],
@@ -9203,7 +9274,7 @@ def update_transfers(position, team, max_price, min_minutes, _visit=None):
     scatter_fig.add_vline(x=0, line_dash='dash', line_color='#999')
     scatter_fig.update_layout(template='plotly_white', height=400,
                               xaxis_title='Net Transfers This GW', yaxis_title='Season Price Change (m)',
-                              font=dict(family='Arial, sans-serif'))
+                              font=dict(family=FONT_FAMILY))
 
     sorted_by_activity = filtered.copy()
     sorted_by_activity['abs_net'] = sorted_by_activity['net_transfers_gw'].abs()
@@ -9332,7 +9403,7 @@ def update_fixture_outlook(page, n_gws, view, sort_by):
     fig = go.Figure(go.Heatmap(
         z=z, x=[f"GW{g}" for g in gws], y=[r['name'] for r in rows],
         text=text, texttemplate='%{text}',
-        textfont={'size': 9 if compact else 11, 'family': 'Arial, sans-serif'},
+        textfont={'size': 9 if compact else 11, 'family': FONT_FAMILY},
         hovertext=hover, hoverinfo='text',
         colorscale=[[0, '#dc3545'], [0.35, '#ff7043'], [0.55, '#ffc107'],
                     [0.75, '#7dde9e'], [1, '#00ff87']],
@@ -9348,7 +9419,7 @@ def update_fixture_outlook(page, n_gws, view, sort_by):
                                  tickfont={'size': 11}),
                       yaxis=dict(autorange='reversed', fixedrange=True,
                                  tickfont={'size': 11}),
-                      font=dict(family='Arial, sans-serif'))
+                      font=dict(family=FONT_FAMILY))
 
     table = dash_table.DataTable(
         data=[{'team': r['name'], 'total': round(r['total'], 2),
@@ -9417,7 +9488,7 @@ def render_backtest(n_clicks):
         import traceback
         traceback.print_exc()
         return html.Div([
-            html.P("Backtest failed.", style={'color': COLORS['danger'],
+            html.P("Backtest failed.", style={'color': COLORS['danger_text'],
                                               'fontWeight': '600', 'marginBottom': '6px'}),
             html.Pre(f"{type(e).__name__}: {e}",
                      style={'color': COLORS['text_light'], 'fontSize': '13px',
@@ -9602,9 +9673,9 @@ def _render_backtest_inner():
             style_data_conditional=[
                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                 {'if': {'filter_query': '{diff} >= 4', 'column_id': 'diff'},
-                 'backgroundColor': '#e8f5e9', 'fontWeight': '600'},
+                 'backgroundColor': '#e6fff2', 'fontWeight': '600'},
                 {'if': {'filter_query': '{diff} <= -4', 'column_id': 'diff'},
-                 'backgroundColor': '#ffebee', 'fontWeight': '600'},
+                 'backgroundColor': '#fde8ef', 'fontWeight': '600'},
                 {'if': {'filter_query': '{minutes_played} = 0'},
                  'color': COLORS['text_light'], 'fontStyle': 'italic'},
             ])
@@ -9689,7 +9760,7 @@ def render_projection_breakdown(page, position, team, search):
                       legend=dict(orientation='h', yanchor='bottom', y=1.02,
                                   xanchor='center', x=0.5),
                       margin=dict(t=60, b=40, l=110, r=20),
-                      font=dict(family='Arial, sans-serif'))
+                      font=dict(family=FONT_FAMILY))
 
     d = d.copy()
     d['fix_effect'] = (pd.to_numeric(d['proj_pts_next'], errors='coerce')
@@ -9726,9 +9797,9 @@ def render_projection_breakdown(page, position, team, search):
         style_data_conditional=[
             {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
             {'if': {'filter_query': '{fix_effect} > 1', 'column_id': 'fix_effect'},
-             'backgroundColor': '#e8f5e9'},
+             'backgroundColor': '#e6fff2'},
             {'if': {'filter_query': '{fix_effect} < -1', 'column_id': 'fix_effect'},
-             'backgroundColor': '#ffebee'},
+             'backgroundColor': '#fde8ef'},
         ])
     return fig, table
 
@@ -9770,9 +9841,9 @@ def render_lab_calibration(page):
             style_data_conditional=[
                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                 {'if': {'filter_query': '{edge} > 0', 'column_id': 'edge'},
-                 'backgroundColor': '#e8f5e9'},
+                 'backgroundColor': '#e6fff2'},
                 {'if': {'filter_query': '{edge} < 0', 'column_id': 'edge'},
-                 'backgroundColor': '#ffebee'},
+                 'backgroundColor': '#fde8ef'},
             ]),
         html.P([html.Strong(f"Overall: model {cal['mae_model']:.3f} vs FPL "
                             f"{cal['mae_fpl']:.3f} MAE over {cal['gws']} GW(s). "), verdict],
@@ -9813,13 +9884,13 @@ def run_lab_sweep(n_clicks):
     else:
         advice.append(html.P("Your live constants are already at (or within noise of) the "
                              "best tested combination — no change recommended.",
-                             style={'color': COLORS['success'], 'fontWeight': '600',
+                             style={'color': COLORS['success_text'], 'fontWeight': '600',
                                     'marginTop': '12px'}))
     if sweep['gws'] < 4:
         advice.append(html.P(f"Caution: only {sweep['gws']} gameweek(s) scored — treat this as "
                              f"directional until ~6 GWs are in. Early-season parameter fitting "
                              f"can chase noise.",
-                             style={'color': COLORS['warning'], 'fontSize': '13px'}))
+                             style={'color': COLORS['warning_text'], 'fontSize': '13px'}))
     return html.Div([
         dash_table.DataTable(
             data=rows,
@@ -9834,7 +9905,7 @@ def run_lab_sweep(n_clicks):
             style_data_conditional=[
                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                 {'if': {'filter_query': '{tag} contains "BEST"'},
-                 'backgroundColor': '#e8f5e9', 'fontWeight': '600'},
+                 'backgroundColor': '#e6fff2', 'fontWeight': '600'},
             ]),
         *advice
     ])
@@ -9861,7 +9932,7 @@ def run_deadline_check(n_clicks, team_id):
     picks_data = fetch_team_picks(int(team_id), cur['id'])
     if not picks_data or 'picks' not in picks_data:
         return html.Div([html.P("Could not load your squad — check the team ID.",
-                                style={'color': COLORS['danger']})], style=CARD_STYLE)
+                                style={'color': COLORS['danger_text']})], style=CARD_STYLE)
     dfa = data.get('df_active', pd.DataFrame())
     squad_ids = [pk['element'] for pk in picks_data['picks']]
     squad = dfa[dfa['id'].isin(squad_ids)].copy()
@@ -9882,13 +9953,13 @@ def run_deadline_check(n_clicks, team_id):
         items = [html.Li(f"{r.web_name} — {r.avail_pct:.0f}% ({r.news or 'no detail'})",
                          style={'marginBottom': '4px'}) for r in flagged.itertuples()]
         cards.append(html.Div([
-            html.H4(f"\u26a0 Flagged players ({len(flagged)})", style={'color': COLORS['danger'],
+            html.H4(f"\u26a0 Flagged players ({len(flagged)})", style={'color': COLORS['danger_text'],
                     'marginBottom': '8px'}),
             html.Ul(items, style={'paddingLeft': '18px', 'margin': 0})
         ], style=CARD_STYLE))
     else:
         cards.append(html.Div([html.P("\u2713 No availability flags in your squad.",
-                              style={'color': COLORS['success'], 'fontWeight': '600', 'margin': 0})],
+                              style={'color': COLORS['success_text'], 'fontWeight': '600', 'margin': 0})],
                               style=CARD_STYLE))
 
     # 3. Captain EV + ceiling from YOUR squad
@@ -9939,7 +10010,7 @@ def run_deadline_check(n_clicks, team_id):
         risk = squad[squad['price_change_likelihood'] <= -40]
         if len(risk) > 0:
             cards.append(html.Div([
-                html.H4("Price-fall risk in your squad", style={'color': COLORS['warning'],
+                html.H4("Price-fall risk in your squad", style={'color': COLORS['warning_text'],
                         'marginBottom': '8px'}),
                 html.P(', '.join(f"{r.web_name} ({r.price_change_likelihood:.0f})"
                                  for r in risk.itertuples()), style={'margin': 0})
@@ -9966,7 +10037,7 @@ def check_price_alerts(n_clicks, team_id):
     picks_data = fetch_team_picks(int(team_id), cur['id'])
     if not picks_data or 'picks' not in picks_data:
         return html.P("Could not load that squad — check the team ID.",
-                      style={'color': COLORS['danger'], 'marginTop': '10px'})
+                      style={'color': COLORS['danger_text'], 'marginTop': '10px'})
     squad_ids = {pk['element'] for pk in picks_data['picks']}
     dfa = data.get('df_active', pd.DataFrame())
     if dfa.empty or 'price_change_likelihood' not in dfa.columns:
@@ -9997,14 +10068,14 @@ def check_price_alerts(n_clicks, team_id):
     blocks = []
     if len(fall_risk) > 0:
         blocks.append(html.H4(f"\u26a0 Fall risk in YOUR squad ({len(fall_risk)})",
-                              style={'color': COLORS['danger'], 'margin': '16px 0 8px 0'}))
+                              style={'color': COLORS['danger_text'], 'margin': '16px 0 8px 0'}))
         blocks.append(_mini_table(fall_risk, 'price_change_likelihood', 'Fall Risk'))
     else:
         blocks.append(html.P("\u2713 No imminent fall risk in your squad.",
-                             style={'color': COLORS['success'], 'fontWeight': '600', 'marginTop': '12px'}))
+                             style={'color': COLORS['success_text'], 'fontWeight': '600', 'marginTop': '12px'}))
     if len(rise_soon) > 0:
         blocks.append(html.H4("Rising soon (you don't own — buy before the price does)",
-                              style={'color': COLORS['success'], 'margin': '16px 0 8px 0'}))
+                              style={'color': COLORS['success_text'], 'margin': '16px 0 8px 0'}))
         blocks.append(_mini_table(rise_soon, 'price_change_likelihood', 'Rise Score'))
     return html.Div(blocks)
 
@@ -10090,7 +10161,7 @@ def build_squad(n_clicks, budget, objective, must_include, must_exclude, chip_gw
                 html.Div([
                     html.P(
                         "⚠️ No feasible squad found. Try raising the budget or removing pinned players.",
-                        style={'color': COLORS['danger'], 'fontSize': '15px', 'textAlign': 'center', 'margin': '0'}
+                        style={'color': COLORS['danger_text'], 'fontSize': '15px', 'textAlign': 'center', 'margin': '0'}
                     )
                 ], style=CARD_STYLE)
             ])
@@ -10203,7 +10274,7 @@ def build_squad(n_clicks, budget, objective, must_include, must_exclude, chip_gw
             xaxis_tickangle=-45, xaxis_title='',
             yaxis_title=obj_label,
             yaxis=dict(range=[0, result_plot[obj_col].max() * 1.22]),
-            font=dict(family='Arial, sans-serif'),
+            font=dict(family=FONT_FAMILY),
             legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5)
         )
 
@@ -10221,7 +10292,7 @@ def build_squad(n_clicks, budget, objective, must_include, must_exclude, chip_gw
             xaxis_tickangle=-45, xaxis_title='', yaxis_title='Players Selected',
             yaxis=dict(range=[0, club_counts['count'].max() + 0.8]),
             coloraxis_showscale=False, showlegend=False,
-            font=dict(family='Arial, sans-serif')
+            font=dict(family=FONT_FAMILY)
         )
 
         # Full table
@@ -10266,7 +10337,7 @@ def build_squad(n_clicks, budget, objective, must_include, must_exclude, chip_gw
                      'fontWeight': '600'},
                     {'if': {'filter_query': '{position} = "MID"', 'column_id': 'position'}, 'color': COLORS['accent'],
                      'fontWeight': '600'},
-                    {'if': {'filter_query': '{position} = "FWD"', 'column_id': 'position'}, 'color': COLORS['info'],
+                    {'if': {'filter_query': '{position} = "FWD"', 'column_id': 'position'}, 'color': COLORS['info_text'],
                      'fontWeight': '600'},
                 ]
             )
@@ -10292,7 +10363,7 @@ def build_squad(n_clicks, budget, objective, must_include, must_exclude, chip_gw
     except Exception as e:
         return html.Div([
             html.Div([
-                html.P(f"Error: {str(e)}", style={'color': COLORS['danger'], 'fontWeight': '600'}),
+                html.P(f"Error: {str(e)}", style={'color': COLORS['danger_text'], 'fontWeight': '600'}),
                 html.Pre(traceback.format_exc(),
                          style={'fontSize': '12px', 'color': COLORS['text_light'], 'whiteSpace': 'pre-wrap'})
             ], style=CARD_STYLE)
@@ -10304,12 +10375,12 @@ def build_squad(n_clicks, budget, objective, must_include, must_exclude, chip_gw
 # =============================================================================
 
 STATUS_LABELS = {
-    'a': ('✓ Fit',        COLORS['success']),
-    'd': ('⚠ Doubt',      COLORS['warning']),
-    'i': ('✗ Injured',    COLORS['danger']),
-    's': ('✗ Suspended',  COLORS['danger']),
-    'n': ('✗ N/A',        COLORS['danger']),
-    'u': ('✗ N/A',        COLORS['danger']),
+    'a': ('✓ Fit',        COLORS['success_text']),
+    'd': ('⚠ Doubt',      COLORS['warning_text']),
+    'i': ('✗ Injured',    COLORS['danger_text']),
+    's': ('✗ Suspended',  COLORS['danger_text']),
+    'n': ('✗ N/A',        COLORS['danger_text']),
+    'u': ('✗ N/A',        COLORS['danger_text']),
 }
 
 
@@ -10330,7 +10401,7 @@ def load_my_squad(n_clicks, team_id):
     if not entry:
         return html.Div([html.Div([
             html.P(f"Could not load team ID {team_id}. Please check the ID and try again.",
-                   style={'color': COLORS['danger'], 'fontWeight': '600'})
+                   style={'color': COLORS['danger_text'], 'fontWeight': '600'})
         ], style=CARD_STYLE)])
 
     data = get_data()
@@ -10355,7 +10426,7 @@ def load_my_squad(n_clicks, team_id):
         return html.Div([html.Div([
             html.P("Could not load squad picks. The gameweek may not have started yet, "
                    "or the team ID is incorrect.",
-                   style={'color': COLORS['danger'], 'fontWeight': '600'})
+                   style={'color': COLORS['danger_text'], 'fontWeight': '600'})
         ], style=CARD_STYLE)])
 
     picks = picks_data.get('picks', [])
@@ -10369,7 +10440,7 @@ def load_my_squad(n_clicks, team_id):
     if squad_df.empty:
         return html.Div([html.Div([
             html.P("No player data found for this squad. Try refreshing.",
-                   style={'color': COLORS['danger']})
+                   style={'color': COLORS['danger_text']})
         ], style=CARD_STYLE)])
 
     squad_df['pick_position'] = squad_df['id'].map(lambda x: pick_map[x]['position'])
@@ -10423,7 +10494,7 @@ def load_my_squad(n_clicks, team_id):
                     ("GW Points",    f"{gw_pts}" + (f" (-{transfer_cost})" if transfer_cost else ''), COLORS['primary']),
                     ("Overall Rank", rank_str,                 COLORS['primary']),
                     ("Team Value",   f"£{team_value_m:.1f}m", COLORS['primary']),
-                    ("In the Bank",  f"£{bank_m:.1f}m",       COLORS['success']),
+                    ("In the Bank",  f"£{bank_m:.1f}m",       COLORS['success_text']),
                     ("Total Points", f"{total_pts}",           COLORS['primary']),
                 ]
             ]
@@ -10438,9 +10509,9 @@ def load_my_squad(n_clicks, team_id):
         for _, r in rows_df.iterrows():
             status_text, status_color = STATUS_LABELS.get(r.get('status', 'a'), ('? Unknown', COLORS['text_light']))
             fdr = r.get('avg_fdr_5')
-            fdr_color = (COLORS['success'] if fdr and fdr <= 2.5
-                         else COLORS['warning'] if fdr and fdr <= 3.5
-                         else COLORS['danger'])
+            fdr_color = (COLORS['success_text'] if fdr and fdr <= 2.5
+                         else COLORS['warning_text'] if fdr and fdr <= 3.5
+                         else COLORS['danger_text'])
 
             cap_badge = None
             if r.get('is_captain'):
@@ -10558,7 +10629,7 @@ def load_my_squad(n_clicks, team_id):
 
         injury_section = html.Div([
             html.H4("Fitness Concerns",
-                    style={'color': COLORS['danger'], 'marginBottom': '12px'}),
+                    style={'color': COLORS['danger_text'], 'marginBottom': '12px'}),
             html.Div(items)
         ], style={**CARD_STYLE, 'borderLeft': f'4px solid {COLORS["danger"]}'})
 
@@ -10598,7 +10669,7 @@ def load_my_squad(n_clicks, team_id):
                         style={'color': COLORS['text_dark'], 'marginBottom': '6px'}))
             else:
                 advice.append(html.P("\u2713 Your XI already matches the projected-optimal lineup.",
-                                     style={'color': COLORS['success'], 'fontWeight': '600',
+                                     style={'color': COLORS['success_text'], 'fontWeight': '600',
                                             'marginBottom': '6px'}))
             advice.append(html.P([html.Strong("Recommended bench order: "),
                                   '  \u2192  '.join(
@@ -10614,7 +10685,14 @@ def load_my_squad(n_clicks, team_id):
     except Exception as _e:
         print(f"  Lineup advisor failed (non-fatal): {_e}")
 
+    try:
+        rank_card = build_rank_card(fetch_entry_history(team_id), overall_rank)
+    except Exception as _e:
+        print(f"  Rank card failed (non-fatal): {_e}")
+        rank_card = html.Div()
+
     return html.Div([
+        rank_card,
         manager_card,
         lineup_section,
         starters_section,
@@ -10687,7 +10765,7 @@ def update_transfer_gain(out_id, in_id, horizon, hit):
     in_rows = dfa[dfa['id'] == in_id]
     if out_rows.empty or in_rows.empty:
         return html.Div([html.P("Player data not found \u2014 try reloading the page.",
-                                style={'color': COLORS['danger']})], style=CARD_STYLE)
+                                style={'color': COLORS['danger_text']})], style=CARD_STYLE)
     p_out, p_in = out_rows.iloc[0], in_rows.iloc[0]
 
     proj_col = 'proj_pts_next' if horizon == 'next' else 'proj_pts_5'
@@ -10714,7 +10792,7 @@ def update_transfer_gain(out_id, in_id, horizon, hit):
         position_warning = html.P(
             f"\u26a0 Position mismatch: {p_out['web_name']} is a {p_out['position']}, "
             f"{p_in['web_name']} is a {p_in['position']} \u2014 this can't be a direct one-for-one swap.",
-            style={'color': COLORS['danger'], 'fontWeight': '600', 'marginTop': '10px'})
+            style={'color': COLORS['danger_text'], 'fontWeight': '600', 'marginTop': '10px'})
 
     price_delta = p_in['price'] - p_out['price']
 
@@ -10729,7 +10807,10 @@ def update_transfer_gain(out_id, in_id, horizon, hit):
     return html.Div([
         html.Div([
             html.Div(verdict, style={
-                'backgroundColor': colour, 'color': 'white', 'padding': '14px 24px',
+                'backgroundColor': colour,
+                # FPL green/amber are light fills: purple text on them, white on red
+                'color': 'white' if colour == COLORS['danger'] else COLORS['primary'],
+                'padding': '14px 24px',
                 'borderRadius': '8px', 'fontSize': '18px', 'fontWeight': '700',
                 'textAlign': 'center', 'marginBottom': '6px'
             }),
@@ -10742,9 +10823,9 @@ def update_transfer_gain(out_id, in_id, horizon, hit):
                 html.Thead(html.Tr([
                     html.Th("", style={'padding': '8px 12px'}),
                     html.Th(f"OUT: {p_out['web_name']}",
-                            style={'padding': '8px 12px', 'color': COLORS['danger'], 'textAlign': 'center'}),
+                            style={'padding': '8px 12px', 'color': COLORS['danger_text'], 'textAlign': 'center'}),
                     html.Th(f"IN: {p_in['web_name']}",
-                            style={'padding': '8px 12px', 'color': COLORS['success'], 'textAlign': 'center'}),
+                            style={'padding': '8px 12px', 'color': COLORS['success_text'], 'textAlign': 'center'}),
                 ])),
                 html.Tbody([
                     _tp_stat_row("Team", p_out['team_name'], p_in['team_name']),
@@ -10804,7 +10885,7 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
     if not picks_data or 'picks' not in picks_data:
         return html.Div([html.Div([
             html.P("Could not load your squad \u2014 check the team ID.",
-                   style={'color': COLORS['danger'], 'fontWeight': '600'})
+                   style={'color': COLORS['danger_text'], 'fontWeight': '600'})
         ], style=CARD_STYLE)])
 
     squad_ids = [pk['element'] for pk in picks_data['picks']]
@@ -10814,7 +10895,7 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
 
     if squad.empty:
         return html.Div([html.P("No projection data found for this squad.",
-                                style={'color': COLORS['danger']})], style=CARD_STYLE)
+                                style={'color': COLORS['danger_text']})], style=CARD_STYLE)
 
     # Neutral per-GW base: precomputed in the refresh (falls back to a
     # fresh engine run if the column predates this feature)
@@ -11103,7 +11184,7 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
                 f"Note: {' and '.join(_names)} both point at GW{_g}, and FPL allows "
                 f"only one chip per gameweek. Play the higher-value one there and "
                 f"take the next-best window for the other.",
-                style={'color': COLORS['warning'], 'fontSize': '13px',
+                style={'color': COLORS['warning_text'], 'fontSize': '13px',
                        'fontWeight': '600', 'marginBottom': '8px'}))
 
     if missing:
@@ -11161,7 +11242,7 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
                             legend=dict(orientation='h', yanchor='bottom', y=1.02,
                                         xanchor='center', x=0.5),
                             margin=dict(t=50, b=30, l=50, r=20),
-                            font=dict(family='Arial, sans-serif'))
+                            font=dict(family=FONT_FAMILY))
 
     table_rows = [{
         'gw': f"GW{r['gw']}", 'xi': r['xi'], 'bench': r['bb_value'],
@@ -11204,7 +11285,7 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
                      'backgroundColor': '#fff8e1', 'fontWeight': '700'},
                 ] + [
                     {'if': {'filter_query': '{%s} = held' % c, 'column_id': c},
-                     'backgroundColor': '#e8f5e9', 'fontWeight': '600'}
+                     'backgroundColor': '#e6fff2', 'fontWeight': '600'}
                     for c in ('wildcard', 'freehit', 'bboost', '3xc')
                 ] + [
                     {'if': {'filter_query': '{%s} != held' % c, 'column_id': c},
@@ -11238,7 +11319,7 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
                 style_data=TABLE_STYLE_DATA,
                 style_data_conditional=[
                     {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
-                    {'if': {'filter_query': '{owned} = yes'}, 'backgroundColor': '#e8f5e9'},
+                    {'if': {'filter_query': '{owned} = yes'}, 'backgroundColor': '#e6fff2'},
                 ]),
         ], style=CARD_STYLE) if best_fh.get('fh_detail') else html.Div(),
 
@@ -11270,7 +11351,7 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
                 style_data=TABLE_STYLE_DATA,
                 style_data_conditional=[
                     {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
-                    {'if': {'row_index': 0}, 'backgroundColor': '#e8f5e9', 'fontWeight': '600'},
+                    {'if': {'row_index': 0}, 'backgroundColor': '#e6fff2', 'fontWeight': '600'},
                 ]),
         ], style=CARD_STYLE) if best_fh.get('fh_formation_table') else html.Div(),
 
@@ -11303,7 +11384,7 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
                 style_data_conditional=[
                     {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                     {'if': {'filter_query': '{blanks} > 0', 'column_id': 'blanks'},
-                     'backgroundColor': '#ffebee', 'fontWeight': '600'},
+                     'backgroundColor': '#fde8ef', 'fontWeight': '600'},
                 ]
             ),
             html.P("Projections assume your current fifteen held over the horizon; DGWs count both fixtures, blanks count zero.",
@@ -11318,7 +11399,8 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
 
 def _rv_list_card(title, subtitle, items, accent):
     return html.Div([
-        html.H4(title, style={'color': accent, 'marginBottom': '4px'}),
+        html.H4(title, style={'color': COLORS['primary'], 'marginBottom': '4px',
+                              'borderLeft': f'4px solid {accent}', 'paddingLeft': '10px'}),
         html.P(subtitle, style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginBottom': '12px'}),
         html.Ul([
             html.Li(item, style={'marginBottom': '6px', 'fontSize': '14px', 'color': COLORS['text_dark']})
@@ -11345,7 +11427,7 @@ def load_rivals(n_clicks, league_id, my_id):
         return html.Div([html.Div([
             html.P(f"Could not load league {league_id}. Check the ID \u2014 it must be a classic "
                    f"(not head-to-head) league.",
-                   style={'color': COLORS['danger'], 'fontWeight': '600'})
+                   style={'color': COLORS['danger_text'], 'fontWeight': '600'})
         ], style=CARD_STYLE)])
 
     data = get_data()
@@ -11450,7 +11532,7 @@ def load_rivals(n_clicks, league_id, my_id):
         style_data_conditional=[
             {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
             {'if': {'filter_query': '{player_name} contains "(you)"'},
-             'backgroundColor': '#e8f5e9', 'fontWeight': '600'},
+             'backgroundColor': '#e6fff2', 'fontWeight': '600'},
         ],
     )
 
@@ -11521,7 +11603,7 @@ def load_rivals(n_clicks, league_id, my_id):
         style_data_conditional=[
             {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
             {'if': {'filter_query': '{league_eo} >= 100', 'column_id': 'league_eo'},
-             'backgroundColor': '#ffebee', 'fontWeight': '600'},
+             'backgroundColor': '#fde8ef', 'fontWeight': '600'},
         ],
     )
 
@@ -11578,7 +11660,7 @@ def load_rivals(n_clicks, league_id, my_id):
                     {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
                 ] + [
                     {'if': {'filter_query': '{%s} = held' % c, 'column_id': c},
-                     'backgroundColor': '#e8f5e9', 'fontWeight': '600'}
+                     'backgroundColor': '#e6fff2', 'fontWeight': '600'}
                     for c in ('wildcard', 'freehit', 'bboost', '3xc')
                 ] + [
                     {'if': {'filter_query': '{%s} != held' % c, 'column_id': c},
@@ -11672,7 +11754,7 @@ def update_expected_clean_sheets(horizon, n):
     ))
     bar_fig.update_layout(template='plotly_white', height=420, xaxis_tickangle=-45,
                           yaxis_title=f'Expected clean sheets (next {horizon} GW{"s" if horizon > 1 else ""})',
-                          showlegend=False, font=dict(family='Arial, sans-serif'),
+                          showlegend=False, font=dict(family=FONT_FAMILY),
                           margin=dict(t=30, b=80, l=50, r=20))
 
     # Defender/keeper picks joined to team xCS
@@ -12049,7 +12131,7 @@ def _matchup_heatmap(intel, data, gws, fixtures_by_team):
         template='plotly_white', height=40 * len(rows) + 70,
         width=118 + cell_w * max(len(gws), 1) + 28,
         xaxis=dict(side='top', fixedrange=True), yaxis=dict(autorange='reversed', fixedrange=True),
-        font=dict(family='Arial, sans-serif', size=12), margin=dict(l=110, r=18, t=40, b=10))
+        font=dict(family=FONT_FAMILY, size=12), margin=dict(l=110, r=18, t=40, b=10))
     return fig
 
 
@@ -12211,7 +12293,7 @@ def update_chance_quality(visit, position, team, min_minutes):
                                              'FWD': COLORS['info']})
         fig.add_hline(y=float(sc['xg_per_shot'].median()), line_dash='dash', line_color='#999')
         fig.add_vline(x=float(sc['shots_90'].median()), line_dash='dash', line_color='#999')
-        fig.update_layout(template='plotly_white', height=420, font=dict(family='Arial, sans-serif'),
+        fig.update_layout(template='plotly_white', height=420, font=dict(family=FONT_FAMILY),
                           legend=dict(orientation='h', y=1.02, yanchor='bottom', x=0.5, xanchor='center'))
     cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'shots_90', 'npxg_90',
             'xg_per_shot', 'box_pct', 'big_90', 'head_pct', 'chances_90', 'xa_90', 'cross_pct',
