@@ -10292,11 +10292,16 @@ def run_deadline_check(n_clicks, team_id):
 
     # 1. Deadline
     if nxt and nxt.get('deadline_time'):
-        dl = datetime.fromisoformat(nxt['deadline_time'].replace('Z', '+00:00'))
+        dl = datetime.fromisoformat(
+            nxt['deadline_time'].replace('Z', '+00:00')
+        ).astimezone(ZoneInfo('Europe/London'))
+
         cards.append(html.Div([
-            html.H4(f"Next deadline: {nxt['name'].replace('Gameweek ', 'GW')} — "
-                    f"{dl.strftime('%a %d %b, %H:%M')} UTC",
-                    style={'color': COLORS['primary'], 'margin': 0})
+            html.H4(
+                f"Next deadline: {nxt['name'].replace('Gameweek ', 'GW')} — "
+                f"{dl.strftime('%a %d %b, %H:%M')} UK",
+                style={'color': COLORS['primary'], 'margin': 0}
+            )
         ], style={**CARD_STYLE, 'backgroundColor': '#f0e6f5'}))
 
     # 2. Availability flags in squad
