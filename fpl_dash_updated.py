@@ -4819,20 +4819,32 @@ app.index_string = '''
                HEADER — compact single row on phones and narrow tablets
             ================================================================ */
             .hdr-short { display: none; }
+            /* min-width lives here, not inline: an inline min-width on the header's
+               left group matched the mobile filter-row rule, which stretched it to
+               100% width and pushed the GW / Updated text off the right edge. */
+            .hdr .hdr-row > .hdr-left { min-width: 0; flex: 1 1 auto; }
+            .hdr .hdr-row > .hdr-status { flex: 0 0 auto; }
             @media (max-width: 700px) {
                 .hdr { padding: 8px 0 !important; }
                 .hdr-row { padding: 0 8px 0 4px !important; }
                 .hdr-logo { height: 28px !important; margin-right: 8px !important; }
                 .hdr-pill { font-size: 14px !important; padding: 4px 8px !important;
                             margin-right: 0 !important; }
-                .hdr-long, .hdr-sub, .hdr-gw { display: none !important; }
+                .hdr-long, .hdr-sub, .hdr-sep { display: none !important; }
                 .hdr-short { display: inline; }
-                .hdr-updated { font-size: 11px !important; white-space: nowrap; }
+                /* GW and "Updated" stack as two small right-aligned lines */
+                .hdr-texts { flex-direction: column !important; align-items: flex-end !important;
+                             gap: 1px !important; text-align: right; line-height: 1.25; }
+                .hdr-gw { font-size: 12px !important; white-space: nowrap; }
+                .hdr-updated { font-size: 11px !important; max-width: 150px; }
                 #hamburger-btn { min-width: 40px; padding: 0 !important; }
                 #app-body { height: calc(100vh - 64px); }   /* 60px compact header + 4px stripe */
             }
-            @media (max-width: 360px) {
-                .hdr-updated { display: none; }
+            @media (max-width: 380px) {
+                .hdr-pill { font-size: 13px !important; padding: 3px 6px !important; }
+                .hdr-logo { height: 24px !important; margin-right: 6px !important; }
+                .hdr-gw { font-size: 11px !important; }
+                .hdr-updated { font-size: 10px !important; max-width: 128px; }
             }
 
             @media (max-width: 900px) {
@@ -5262,14 +5274,16 @@ app.layout = html.Div([
                           'fontSize': '18px', 'marginRight': '12px', 'whiteSpace': 'nowrap'}),
                 html.Span("Analytics Hub", className='hdr-sub',
                           style={'color': 'white', 'fontSize': '20px', 'fontWeight': '600'})
-            ], style={'display': 'flex', 'alignItems': 'center', 'minWidth': '0'}),
+            ], className='hdr-left', style={'display': 'flex', 'alignItems': 'center'}),
             html.Div([
-                html.Span(id='gw-status-text', className='hdr-gw',
-                          style={'color': 'rgba(255,255,255,0.8)', 'fontSize': '13px'}),
-                html.Span(" | ", className='hdr-gw',
-                          style={'color': 'rgba(255,255,255,0.5)', 'fontSize': '13px'}),
-                html.Span(id='last-updated-text', className='hdr-updated',
-                          style={'color': 'rgba(255,255,255,0.6)', 'fontSize': '12px'}),
+                html.Div([
+                    html.Span(id='gw-status-text', className='hdr-gw',
+                              style={'color': 'rgba(255,255,255,0.8)', 'fontSize': '13px'}),
+                    html.Span(" | ", className='hdr-sep',
+                              style={'color': 'rgba(255,255,255,0.5)', 'fontSize': '13px'}),
+                    html.Span(id='last-updated-text', className='hdr-updated',
+                              style={'color': 'rgba(255,255,255,0.6)', 'fontSize': '12px'}),
+                ], className='hdr-texts', style={'display': 'flex', 'alignItems': 'center', 'gap': '4px'}),
                 # Home-screen app only (no Safari reload button there); CSS shows it
                 html.Button('\u21bb', id='app-refresh-btn', n_clicks=0,
                             title='Refresh', **{'aria-label': 'Refresh'}),
@@ -8110,7 +8124,11 @@ def _refresh_status_text(n):
     """Check data freshness every 2 minutes. Trigger background refresh if stale."""
     check_and_refresh()
     current_gw_now = DATA.get('current_gw')
-    gw_text = f"Data as of {current_gw_now['name']}" if current_gw_now else "N/A"
+    if current_gw_now:
+        gw_text = [html.Span(f"Data as of {current_gw_now['name']}", className='hdr-long'),
+                   html.Span(f"Data as of GW{current_gw_now['id']}", className='hdr-short')]
+    else:
+        gw_text = "N/A"
     last = DATA.get('last_refresh', 0)
     if last > 0:
         refresh_time = datetime.fromtimestamp(last, tz=ZoneInfo('Europe/London')).strftime('%H:%M')
