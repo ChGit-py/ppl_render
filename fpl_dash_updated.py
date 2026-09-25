@@ -3085,31 +3085,38 @@ def _tonight_projection(proj):
     return None, None
 
 
+# Status thresholds on FPL's predicted progress, matched to FPL's own Price
+# Changes page: +97.8% and +96.6% show "Likely to rise", while +88.6%,
+# +87.9%, +83.7% and +5.0% show "Unlikely to change". So "Likely" starts
+# somewhere between 88.6 and 96.6; 95 is used. At 100 the change is due.
+PRICE_LIKELY_PCT = float(os.environ.get('FPL_PRICE_LIKELY_PCT', '95'))
+PRICE_VERY_LIKELY_PCT = 100.0
+
+
 def _price_status(predicted, progress, likelihood, locked, calibrating):
-    """FPL-style status label. FPL's own likelihood signal wins when present;
-    its scale is inferred (small signed integers), so which magnitudes mean
-    'Very likely' is a best reading, not documented."""
+    """
+    FPL-style status label from FPL's predicted progress.
+
+    The feed's 'likelihood' field is NOT FPL's status: it tracks the size of
+    the projection in bands (+5% came through as 'likely', -19% as 'likely
+    to drop', -33% as 'very likely'), so using it labelled Gakpo at +5% as
+    'Likely to rise' while FPL's page said 'Unlikely to change'. It's kept
+    in the data but no longer drives the label.
+    """
     if locked:
         return 'Locked'
-    if likelihood is not None:
-        l = max(-5, min(5, likelihood))
-        if l >= 2:
-            return 'Very likely to rise'
-        if l >= 1:
-            return 'Likely to rise'
-        if l <= -2:
-            return 'Very likely to drop'
-        if l <= -1:
-            return 'Likely to drop'
-        return 'Unlikely to change'
-    if calibrating:
+    if calibrating and predicted is None:
         return 'Calibrating'
     ref = predicted if predicted is not None else progress
     if ref is None:
         return ''
-    if ref >= 100:
+    if ref >= PRICE_VERY_LIKELY_PCT:
+        return 'Very likely to rise'
+    if ref >= PRICE_LIKELY_PCT:
         return 'Likely to rise'
-    if ref <= -100:
+    if ref <= -PRICE_VERY_LIKELY_PCT:
+        return 'Very likely to drop'
+    if ref <= -PRICE_LIKELY_PCT:
         return 'Likely to drop'
     return 'Unlikely to change'
 
