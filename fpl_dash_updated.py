@@ -3042,6 +3042,148 @@ def estimate_price_change_likelihood(row, total_managers):
     return round(score, 1)
 
 
+PRICE_TRACKER_INTERVAL = int(os.environ.get('FPL_PRICE_TRACKER_MINUTES', '20')) * 60
+PRICE_TRACKER_COLS = ['price_progress', 'price_predicted', 'price_status', 'price_likelihood']
+
+
+def _num_or_none(v):
+    try:
+        f = float(v)
+        return f if np.isfinite(f) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _tonight_projection(proj):
+    """
+    FPL's price_change_projections: one entry per upcoming change window
+    (offset 0 = tonight). The fields are new and undocumented and ship
+    numbers as strings, so read defensively: accept a list of entries or a
+    dict keyed by offset, and a few plausible key names for the percent.
+    Returns (percent, likelihood) for tonight, or (None, None).
+    """
+    if not proj:
+        return None, None
+    entries = []
+    if isinstance(proj, dict):
+        for k, v in proj.items():
+            entries.append({'offset': k, **v} if isinstance(v, dict) else {'offset': k, 'percent': v})
+    elif isinstance(proj, list):
+        entries = [e for e in proj if isinstance(e, dict)]
+    for e in entries:
+        off = _num_or_none(e.get('offset', e.get('day', 0)))
+        if off is None or int(off) != 0:
+            continue
+        pct = None
+        for key in ('percent', 'projected_percent', 'progress', 'value', 'projection'):
+            pct = _num_or_none(e.get(key))
+            if pct is not None:
+                break
+        if pct is None:
+            continue
+        return pct, _num_or_none(e.get('likelihood'))
+    return None, None
+
+
+def _price_status(predicted, progress, likelihood, locked, calibrating):
+    """FPL-style status label. FPL's own likelihood signal wins when present;
+    its scale is inferred (small signed integers), so which magnitudes mean
+    'Very likely' is a best reading, not documented."""
+    if locked:
+        return 'Locked'
+    if likelihood is not None:
+        l = max(-5, min(5, likelihood))
+        if l >= 2:
+            return 'Very likely to rise'
+        if l >= 1:
+            return 'Likely to rise'
+        if l <= -2:
+            return 'Very likely to drop'
+        if l <= -1:
+            return 'Likely to drop'
+        return 'Unlikely to change'
+    if calibrating:
+        return 'Calibrating'
+    ref = predicted if predicted is not None else progress
+    if ref is None:
+        return ''
+    if ref >= 100:
+        return 'Likely to rise'
+    if ref <= -100:
+        return 'Likely to drop'
+    return 'Unlikely to change'
+
+
+def read_fpl_price_tracker(elements):
+    """
+    FPL's official price-change tracker, as published in bootstrap-static:
+    price_change_percent (progress now; a change happens at +/-100),
+    price_change_projections (tonight's projected progress and FPL's own
+    likelihood), price_change_locked_until, price_change_calibrating.
+    Returns a DataFrame indexed by player id, or None if the feed doesn't
+    carry the fields.
+    """
+    if not elements or not any('price_change_percent' in e for e in elements[:50]):
+        return None
+    now = datetime.now().astimezone()
+    rows = []
+    for e in elements:
+        progress = _num_or_none(e.get('price_change_percent'))
+        predicted, likelihood = _tonight_projection(e.get('price_change_projections'))
+        calibrating = bool(e.get('price_change_calibrating'))
+        locked = False
+        lu = e.get('price_change_locked_until')
+        if lu:
+            try:
+                locked = datetime.fromisoformat(str(lu).replace('Z', '+00:00')) > now
+            except ValueError:
+                locked = False
+        if calibrating:
+            predicted = None
+        rows.append({'id': e['id'], 'price_progress': progress, 'price_predicted': predicted,
+                     'price_likelihood': likelihood,
+                     'price_status': _price_status(predicted, progress, likelihood, locked, calibrating)})
+    return pd.DataFrame(rows).set_index('id')
+
+
+def apply_price_tracker(df, tracker):
+    """Attach tracker columns. price_change_likelihood (also used by the
+    Deadline Dashboard) becomes FPL's own tonight projection, falling back to
+    current progress, then to the old transfer-based estimate."""
+    if tracker is None or df is None or df.empty:
+        return df
+    df = df.drop(columns=[c for c in PRICE_TRACKER_COLS if c in df.columns])
+    df = df.join(tracker, on='id')
+    official = df['price_predicted'].fillna(df['price_progress'])
+    if 'price_change_likelihood' in df.columns:
+        df['price_change_likelihood'] = official.fillna(df['price_change_likelihood'])
+    else:
+        df['price_change_likelihood'] = official
+    return df
+
+
+def refresh_price_tracker():
+    """Between the 3-hour full refreshes, re-read just FPL's price tracker
+    (one bootstrap call) so the columns keep up with FPL's own updates."""
+    with DATA_LOCK:
+        if DATA.get('price_tracker_running'):
+            return
+        DATA['price_tracker_running'] = True
+    try:
+        tracker = read_fpl_price_tracker(fetch_bootstrap_data().get('elements', []))
+        if tracker is not None and DATA.get('df_active') is not None:
+            updated = apply_price_tracker(DATA['df_active'].copy(), tracker)
+            with DATA_LOCK:
+                DATA['df_active'] = updated
+                DATA['price_tracker_at'] = time.time()
+    except Exception as e:
+        print(f"  Price tracker refresh failed (non-fatal): {e}")
+    finally:
+        with DATA_LOCK:
+            DATA['price_tracker_running'] = False
+            DATA['price_tracker_next'] = time.time() + PRICE_TRACKER_INTERVAL
+
+
 # =============================================================================
 # DATA PROCESSING
 # =============================================================================
@@ -4230,6 +4372,23 @@ def refresh_core_data():
         df_active['price_change_likelihood'] = df_active.apply(
             lambda r: estimate_price_change_likelihood(r, total_managers), axis=1
         )
+        # FPL's official price-change tracker replaces the estimate when present
+        _tracker = read_fpl_price_tracker(bootstrap_data.get('elements', []))
+        if _tracker is not None:
+            df_active = apply_price_tracker(df_active, _tracker)
+            DATA['price_tracker_at'] = time.time()
+            DATA['price_tracker_next'] = time.time() + PRICE_TRACKER_INTERVAL
+            print(f"  FPL price tracker: {int(_tracker['price_status'].str.contains('rise').sum())} "
+                  f"likely risers, {int(_tracker['price_status'].str.contains('drop').sum())} likely fallers")
+            # One raw sample in the logs, so the undocumented field layout can be checked
+            _sample = next((e for e in bootstrap_data.get('elements', [])
+                            if e.get('price_change_projections')), None)
+            if _sample:
+                print(f"  Price tracker sample ({_sample.get('web_name')}): "
+                      f"percent={_sample.get('price_change_percent')!r} "
+                      f"projections={str(_sample.get('price_change_projections'))[:200]}")
+        else:
+            print("  FPL price tracker fields not in bootstrap — using the transfer-based estimate")
 
         # Differential score
         df_active['differential_score'] = (
@@ -4570,6 +4729,11 @@ def refresh_all_data():
 def check_and_refresh():
     """Check if data is stale and refresh in background if needed."""
     check_shots_sync()   # independent cadence; no-op unless due
+    if (DATA.get('df_active') is not None and not DATA.get('price_tracker_running')
+            and not DATA.get('refreshing') and time.time() >= DATA.get('price_tracker_next', 0)):
+        with DATA_LOCK:
+            DATA['price_tracker_next'] = time.time() + PRICE_TRACKER_INTERVAL   # debounce
+        threading.Thread(target=refresh_price_tracker, daemon=True).start()
     age = time.time() - DATA.get('last_refresh', 0)
     if age > REFRESH_INTERVAL and not DATA.get('refreshing', False):
         print(f"Data is {age / 3600:.1f}h old. Triggering background refresh...")
@@ -7210,8 +7374,11 @@ app.layout = html.Div([
                                  'format': {'specifier': ','}},
                                 {'name': 'In/Out', 'id': 'transfer_ratio', 'type': 'numeric',
                                  'format': {'specifier': '.2f'}},
-                                {'name': 'Price Chg', 'id': 'price_change_likelihood', 'type': 'numeric',
-                                 'format': {'specifier': '.1f'}},
+                                {'name': 'Price Status', 'id': 'price_status'},
+                                {'name': 'Progress %', 'id': 'price_progress', 'type': 'numeric',
+                                 'format': {'specifier': '+.1f'}},
+                                {'name': 'Predicted %', 'id': 'price_predicted', 'type': 'numeric',
+                                 'format': {'specifier': '+.1f'}},
                                 {'name': 'Own \u0394', 'id': 'own_delta_7d', 'type': 'numeric',
                                  'format': {'specifier': '+.2f'}},
                                 {'name': '\u00a3 \u0394', 'id': 'price_delta_7d', 'type': 'numeric',
@@ -7232,10 +7399,24 @@ app.layout = html.Div([
                                  'backgroundColor': '#e6fff2'},
                                 {'if': {'filter_query': '{net_transfers_gw} < 0', 'column_id': 'net_transfers_gw'},
                                  'backgroundColor': '#fde8ef'},
-                                {'if': {'filter_query': '{price_change_likelihood} >= 50',
-                                        'column_id': 'price_change_likelihood'}, 'backgroundColor': '#e6fff2'},
-                                {'if': {'filter_query': '{price_change_likelihood} <= -50',
-                                        'column_id': 'price_change_likelihood'}, 'backgroundColor': '#fde8ef'},
+                                # FPL-style status chips: green rise, red drop
+                                {'if': {'filter_query': '{price_status} contains "rise"',
+                                        'column_id': 'price_status'},
+                                 'backgroundColor': '#00ff87', 'color': '#37003c', 'fontWeight': '700'},
+                                {'if': {'filter_query': '{price_status} contains "drop"',
+                                        'column_id': 'price_status'},
+                                 'backgroundColor': '#e90052', 'color': '#ffffff', 'fontWeight': '700'},
+                                {'if': {'filter_query': '{price_status} = "Unlikely to change"',
+                                        'column_id': 'price_status'},
+                                 'color': '#6b5c70'},
+                                {'if': {'filter_query': '{price_predicted} >= 100',
+                                        'column_id': 'price_predicted'}, 'backgroundColor': '#e6fff2', 'fontWeight': '700'},
+                                {'if': {'filter_query': '{price_predicted} <= -100',
+                                        'column_id': 'price_predicted'}, 'backgroundColor': '#fde8ef', 'fontWeight': '700'},
+                                {'if': {'filter_query': '{price_progress} >= 100',
+                                        'column_id': 'price_progress'}, 'backgroundColor': '#e6fff2'},
+                                {'if': {'filter_query': '{price_progress} <= -100',
+                                        'column_id': 'price_progress'}, 'backgroundColor': '#fde8ef'},
                             ]
                         )
                     ], style=CARD_STYLE)
@@ -8116,7 +8297,7 @@ def update_refresh_status(n):
     # Changes only when the data does: a full refresh, or the heavy stats
     # phase finishing after startup. Drives lazy page re-renders.
     version = (f"{int(last)}-{int(bool(DATA.get('heavy_loaded', False)))}"
-               f"-{DATA.get('shots_version', 0)}") if last else None
+               f"-{DATA.get('shots_version', 0)}-{int(DATA.get('price_tracker_at') or 0)}") if last else None
     return gw_text, status_text, version
 
 
@@ -9434,12 +9615,21 @@ def update_transfers(position, team, max_price, min_minutes, _visit=None):
     sorted_by_activity = filtered.copy()
     sorted_by_activity['abs_net'] = sorted_by_activity['net_transfers_gw'].abs()
     cols = ['web_name', 'team_name', 'position', 'price', 'transfers_in_gw', 'transfers_out_gw',
-            'net_transfers_gw', 'transfer_ratio', 'price_change_likelihood', 'own_delta_7d',
+            'net_transfers_gw', 'transfer_ratio', 'price_status', 'price_progress', 'price_predicted',
+            'own_delta_7d',
             'price_delta_7d', 'cost_change_start', 'form', 'ownership']
+    for c in ('price_status', 'price_progress', 'price_predicted'):
+        if c not in sorted_by_activity.columns:
+            sorted_by_activity[c] = None
     table_data = prepare_table_data(sorted_by_activity.nlargest(50, 'abs_net'), cols)
 
     basis = get_data().get('delta_basis') or 'this gameweek'
-    note = (f"Own \u0394 and \u00a3 \u0394 are measured over {basis}. "
+    _pt = get_data().get('price_tracker_at')
+    tracker_txt = (f"Price Status, Progress and Predicted come straight from FPL's official price "
+                   f"change tracker (read at {datetime.fromtimestamp(_pt, tz=ZoneInfo('Europe/London')):%H:%M}; "
+                   f"a price changes when progress reaches \u00b1100% at the overnight update). "
+                   if _pt else "FPL's price tracker isn't available right now, so those columns are empty. ")
+    note = (tracker_txt + f"Own \u0394 and \u00a3 \u0394 are measured over {basis}. "
             f"Ownership change is derived from net transfers \u00f7 total managers, "
             f"and price change from FPL's own gameweek movement \u2014 neither needs "
             f"stored history, so both populate on the first run.")
