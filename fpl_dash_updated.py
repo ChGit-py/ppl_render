@@ -1705,7 +1705,8 @@ def compute_expected_points(df, gw_elapsed=38, priors=None, components_out=None)
     # Playing chances if fully fit; the availability flag scales them. Every
     # component below is proportional to these, so a week's projection is
     # (projection if fit) x (that week's availability).
-    p60_fit = (n('start_rate') / 100).clip(0, 1).fillna(p60_fallback)
+    p60_fit = ((n('p60_rate') if 'p60_rate' in df.columns else n('start_rate')).fillna(n('start_rate'))
+               / 100).clip(0, 1).fillna(p60_fallback)
     p_any_fit = (share * 1.15 + 0.05).clip(0, 1).where(share > 0, 0)
     p_any_fit = pd.concat([p_any_fit, p60_fit], axis=1).max(axis=1)
     exp90_fit = share
@@ -1953,15 +1954,21 @@ def minutes_security_one(matches, window=6):
     non-starts: skipping 0-minute runs that end with a start was tried and,
     over a 2025/26 replay, made projections worse (it turns a rotation
     player's "0, 0, start, 0, 0, start" into a 100% starter).
-    Returns {start_rate, recent_minutes_pct, recent_games} or None.
+    `p60_rate` is the share of those matches in which he played 60+ minutes:
+    what FPL actually rewards (2 appearance points, clean sheets), and what
+    the projection engine uses — a starter subbed at 55 minutes gets
+    neither. Over a 2025/26 replay it projected better than the start rate.
+    Returns {start_rate, p60_rate, recent_minutes_pct, recent_games} or None.
     """
     recent = sorted(matches or [], key=lambda m: (m.get('round') or 0))[-window:]
     if not recent:
         return None
     total_mins = sum(m.get('minutes') or 0 for m in recent)
     starts = sum(1 for m in recent if _started(m))
+    full = sum(1 for m in recent if (m.get('minutes') or 0) >= 60)
     k = len(recent)
     return {'start_rate': round(starts / k * 100, 1),
+            'p60_rate': round(full / k * 100, 1),
             'recent_minutes_pct': round(total_mins / (k * 90) * 100, 1),
             'recent_games': k}
 
@@ -1972,7 +1979,7 @@ def calculate_minutes_security(player_histories, window=6):
     available minutes over the last `window` matches (see
     minutes_security_one). The biggest source of FPL point loss isn't bad
     picks — it's benched/rotated picks.
-    Returns dict of player_id -> {start_rate, recent_minutes_pct, recent_games}
+    Returns dict of player_id -> {start_rate, p60_rate, recent_minutes_pct, recent_games}
     """
     security = {}
     for pid, matches in player_histories.items():
@@ -3470,6 +3477,7 @@ def reconstruct_player_frame(histories, meta, upto_round, recent_window=6):
             'avail_pct': 100.0,
             'recent_minutes_pct': sec.get('recent_minutes_pct'),
             'start_rate': sec.get('start_rate'),
+            'p60_rate': sec.get('p60_rate'),
         })
     return pd.DataFrame(rows)
 
@@ -3717,7 +3725,7 @@ def _backtest_calibration(goal_pairs, cs_pairs):
 # converting the model from "plausible" to "measured".
 
 FEATURE_COLS = ['id', 'position', 'minutes', 'avail_pct', 'recent_minutes_pct',
-                'start_rate', 'xg_per_90', 'xa_per_90', 'cs_per_90', 'gc_per_90',
+                'start_rate', 'p60_rate', 'xg_per_90', 'xa_per_90', 'cs_per_90', 'gc_per_90',
                 'bonus_threshold', 'defcon_per_90', 'hit_rate', 'qualifying_games',
                 'cs_prob_next', 'cs_prob_5',
                 'saves', 'bonus_per_90', 'next_att_fdr', 'next_def_fdr',
@@ -4950,7 +4958,7 @@ _CACHE_KEYS = [
 # Bump whenever the shape of cached data changes, or at a season rollover.
 # A mismatch (or an over-age cache) forces a clean fetch instead of serving
 # last season's teams and players from disk.
-CACHE_VERSION = 10
+CACHE_VERSION = 11
 # Render sets RENDER_GIT_COMMIT on every deploy. Stamping the cache with it
 # means a new deploy never reuses data pickled by an older build (or a local
 # run that ended up in the repo), so "Updated" always resets on deploy.
@@ -5207,7 +5215,7 @@ def refresh_core_data():
 
         # Initialise home/away + Phase-2 columns as NaN (Phase 2 will populate)
         for col in ['home_ppg', 'away_ppg', 'home_games', 'away_games', 'venue_ppg', 'ha_diff',
-                    'start_rate', 'recent_minutes_pct', 'top_eo']:
+                    'start_rate', 'p60_rate', 'recent_minutes_pct', 'top_eo']:
             df_active[col] = np.nan
 
         # Captain score (partial — venue_ppg/start_rate neutral until Phase 2)
@@ -5483,6 +5491,7 @@ def refresh_heavy_data():
         # Minutes security for everyone the DEFCON pass fetched
         _ms_all = {pid: v['minutes_sec'] for pid, v in consistency_data.items() if v.get('minutes_sec')}
         df_active['start_rate'] = df_active['id'].map(lambda x: _ms_all.get(x, {}).get('start_rate'))
+        df_active['p60_rate'] = df_active['id'].map(lambda x: _ms_all.get(x, {}).get('p60_rate'))
         df_active['recent_minutes_pct'] = df_active['id'].map(
             lambda x: _ms_all.get(x, {}).get('recent_minutes_pct'))
 
@@ -5537,6 +5546,10 @@ def refresh_heavy_data():
         # pass's values for everyone else
         df_active['start_rate'] = df_active['id'].map(
             lambda x: minutes_sec.get(x, {}).get('start_rate')).fillna(df_active['start_rate'])
+        _p60 = {}
+        for _pid, _sec in minutes_sec.items():
+            _p60[_pid] = _sec.get('p60_rate')
+        df_active['p60_rate'] = df_active['id'].map(_p60).fillna(df_active['p60_rate'])
         df_active['recent_minutes_pct'] = df_active['id'].map(
             lambda x: minutes_sec.get(x, {}).get('recent_minutes_pct')).fillna(df_active['recent_minutes_pct'])
 
@@ -8031,10 +8044,13 @@ app.layout = html.Div([
                         html.P([
                             "Captaincy is the ", html.Strong("single biggest rank differentiator"), " in FPL. ",
                             "Your captain's points are doubled, so getting it right every week compounds massively. ",
-                            "This tool scores candidates 0\u2013100 with every input normalized across the pool, so the weights are true relative importances: ",
-                            html.Strong(
-                                "Form (25%), xGI/90 (20%), PPG (15%), Attack-fixture ease (15%), BPS/90 (10%), Venue PPG (10%), Differential (5%)"),
-                            ". Scores are then discounted by availability flags and recent start rate \u2014 a great score means nothing on a 25% flag or a rotation risk."
+                            "Picks are ranked by ", html.Strong("projected points"),
+                            " (fixture, minutes and availability included, doubles counted twice). Rivals' ownership "
+                            "doesn't change what the armband is expected to gain you \u2014 it changes the risk \u2014 so it "
+                            "only breaks near-ties: ", html.Strong("Protect"), " prefers the popular pick, ",
+                            html.Strong("Chase"), " the differential. ", html.Strong("Ceiling"),
+                            " ranks by the chance of a 15+ point haul. The Composite column is the older weighted score, "
+                            "kept for reference."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div([
                             html.Span(f"Next fixture: GW{next_gw_num}",
