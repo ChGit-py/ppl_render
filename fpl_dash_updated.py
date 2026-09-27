@@ -3226,6 +3226,14 @@ def reconstruct_player_frame(histories, meta, upto_round, recent_window=6):
             'web_name': m['web_name'],
             'pen_rank': m.get('pen_rank'),
             'minutes': mins,
+            # Season totals to date: the engine's position priors are pooled
+            # from these, so without them every prior but saves read zero.
+            'expected_goals': f('expected_goals'),
+            'expected_assists': f('expected_assists'),
+            'bonus': f('bonus'),
+            'clean_sheets': f('clean_sheets'),
+            'goals_conceded': f('goals_conceded'),
+            'defensive_contribution': f('defensive_contribution'),
             'xg_per_90': _rate(f('expected_goals'), mins),
             'xa_per_90': _rate(f('expected_assists'), mins),
             'bonus_per_90': _rate(f('bonus'), mins),
@@ -3495,7 +3503,7 @@ FEATURE_COLS = ['id', 'position', 'minutes', 'avail_pct', 'recent_minutes_pct',
                 'saves', 'bonus_per_90', 'next_att_fdr', 'next_def_fdr',
                 'att_env_next', 'fix_mult_next', 'next_fixture_count', 'cs_prob_neutral',
                 'pen_rank', 'expected_goals', 'expected_assists',
-                'clean_sheets', 'goals_conceded', 'bonus']
+                'clean_sheets', 'goals_conceded', 'bonus', 'defensive_contribution']
 
 
 def log_model_features(df_active, target_gw, priors):
