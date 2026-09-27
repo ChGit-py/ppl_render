@@ -14,6 +14,7 @@ import plotly.graph_objects as go
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import json
+import re
 import sqlite3
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -314,17 +315,32 @@ def fetch_player_history(player_id):
     return fetch_player_summary(player_id).get('history', []) or []
 
 
+def _previous_season_label():
+    """'2026/27' -> '2025/26' (FPL's history_past season_name format)."""
+    try:
+        y = int(str(SEASON.get('label', ''))[:4])
+    except (TypeError, ValueError):
+        return None
+    return f"{y - 1}/{str(y)[2:]}"
+
+
 def extract_last_season_prior(summary):
     """
-    Per-90 attacking prior from the most recent PAST season in an
-    element-summary payload. Only trusted with 900+ minutes (10 full games) —
-    below that, last season is itself noise and the position prior is safer.
+    Per-90 attacking prior from LAST season in an element-summary payload.
+    Only trusted with 900+ minutes (10 full games) — below that, last season
+    is itself noise and the price / position prior is safer. history_past
+    only lists Premier League seasons, so for a player who spent last season
+    elsewhere its latest entry can be two or more years old; that is not
+    used.
     Returns {'xg90', 'xa90', 'mins'} or None.
     """
     past = summary.get('history_past') or []
     if not past:
         return None
     last = past[-1]
+    prev = _previous_season_label()
+    if prev and last.get('season_name') and last.get('season_name') != prev:
+        return None
     try:
         mins = float(last.get('minutes') or 0)
         if mins < 900:
@@ -371,13 +387,16 @@ def calculate_bonus_consistency(player_ids, player_thresholds, min_minutes=1):
         history = summary.get('history', []) or []
         if not history:
             return player_id, None, prior
+        # Start rate for every player fetched here, not just the captain
+        # candidates whose histories are kept later (no extra API calls)
+        mins_sec = minutes_security_one(history)
 
         # Every appearance is an opportunity — DEFCON points carry no
         # minutes requirement, unlike clean sheets.
         qualifying_games = [g for g in history if (g.get('minutes') or 0) >= min_minutes]
 
         if not qualifying_games:
-            return player_id, None, prior
+            return player_id, ({'minutes_sec': mins_sec} if mins_sec else None), prior
 
         # Count games hitting bonus threshold (position-aware)
         threshold = player_thresholds.get(player_id, 10)
@@ -409,6 +428,7 @@ def calculate_bonus_consistency(player_ids, player_thresholds, min_minutes=1):
             'max_defcon': max(defcon_values) if defcon_values else 0,
             'min_defcon': min(defcon_values) if defcon_values else 0,
             'threshold': threshold,
+            'minutes_sec': mins_sec,
         }
         return player_id, stats, prior
 
@@ -846,7 +866,7 @@ def build_gw_fixture_lookup(fixtures_data, teams_df, gws, xg_ledger=None, odds_l
 NB_PARTS = ('nb_att', 'nb_cs', 'nb_gc', 'nb_other')
 
 
-def project_player_gw(parts, position, team_id, gw_lookup_for_gw):
+def project_player_gw(parts, position, team_id, gw_lookup_for_gw, avail=1.0):
     """
     One player's projected points in one specific future GW: each part of
     the neutral per-match base scaled by that GW's fixture — attack by the
@@ -854,8 +874,10 @@ def project_player_gw(parts, position, team_id, gw_lookup_for_gw):
     opponent compares with an average one, the rest unscaled — then
     multiplied by fixture count (0 for a blank, 2 for a double).
 
-    `parts` is a mapping with the NB_PARTS keys. A bare number (an old
-    neutral total) is scaled as a whole, the previous behaviour.
+    `parts` is a mapping with the NB_PARTS keys, priced as fully available;
+    `avail` is his availability that week (see weekly_availability). A bare
+    number (an old neutral total) is scaled as a whole, the previous
+    behaviour.
     """
     info = gw_lookup_for_gw.get(team_id)
     if not info or info['count'] == 0:
@@ -868,7 +890,7 @@ def project_player_gw(parts, position, team_id, gw_lookup_for_gw):
     per_match = (_part(parts, 'nb_other') + _part(parts, 'nb_att') * att
                  + _part(parts, 'nb_cs') * info.get('cs_ratio', 1.0)
                  + _part(parts, 'nb_gc') * info.get('gc_ratio', 1.0))
-    return round(per_match * info['count'], 2)
+    return round(per_match * info['count'] * float(avail if avail is not None else 1.0), 2)
 
 
 def _part(parts, key):
@@ -880,14 +902,21 @@ def _part(parts, key):
     return 0.0 if np.isnan(v) else v
 
 
-def project_pool_for_gw(pool, gw_lookup_for_gw):
+def avail_col_for_week(week_index):
+    """Column holding a player's availability `week_index` weeks ahead
+    (1 = the GW being planned), or None beyond the tracked horizon."""
+    return f'avail_w{week_index}' if 1 <= week_index <= AVAIL_WEEKS else None
+
+
+def project_pool_for_gw(pool, gw_lookup_for_gw, avail_col=None):
     """
     Vectorised version of project_player_gw across a whole player frame —
     the Free Hit optimiser has to price every player in the game for every
     gameweek in the horizon, which is far too many scalar calls.
 
     `pool` needs columns: team plus the NB_PARTS columns (or, as a fallback,
-    position + neutral_base). Returns a Series.
+    position + neutral_base); `avail_col` names that week's availability
+    column. Returns a Series.
     """
     info = lambda t, k, d: (gw_lookup_for_gw.get(t) or {}).get(k, d)
     counts = pool['team'].map(lambda t: info(t, 'count', 0))
@@ -898,7 +927,9 @@ def project_pool_for_gw(pool, gw_lookup_for_gw):
         gc_r = pool['team'].map(lambda t: info(t, 'gc_ratio', 1.0)).astype(float)
         per_match = (num('nb_other') + num('nb_att') * fix
                      + num('nb_cs') * cs_r + num('nb_gc') * gc_r)
-        return (per_match * counts).clip(lower=0)
+        wk = (pd.to_numeric(pool[avail_col], errors='coerce').fillna(1.0)
+              if avail_col and avail_col in pool.columns else 1.0)
+        return (per_match * counts * wk).clip(lower=0)
     def_fdr = pool['team'].map(lambda t: info(t, 'def_fdr', 3.0)).astype(float)
     is_def_unit = pool['position'].isin(['GKP', 'DEF'])
     mult = np.where(is_def_unit, FDR_STEP_RATIO ** (3.0 - def_fdr), fix)
@@ -1474,6 +1505,37 @@ def _shrink_per90(obs90, minutes, prior90, k=None):
     return ((obs.fillna(pri) * mins + pri * k) / (mins + k)).fillna(pri)
 
 
+# Players with no usable last season (new to the league, or under 900
+# minutes) start from what their PRICE says players like them produce:
+# a per-position straight line of last-season xG/90 (xA/90) on price, fitted
+# on the players who do have last-season numbers. FPL's price is its own
+# pre-season judgement of a player, so a £9m signing no longer starts at the
+# same prior as a £4.5m backup. Set FPL_PRICE_PRIOR=0 to use the plain
+# position average instead.
+PRICE_PRIOR = os.environ.get('FPL_PRICE_PRIOR', '1') != '0'
+
+
+def _price_prior_per90(df, ind_prior, fallback):
+    """Price-based per-90 prior per position (see PRICE_PRIOR); rows the
+    fit can't cover keep `fallback`."""
+    out = pd.Series(fallback, index=df.index, dtype=float)
+    if not PRICE_PRIOR or 'price' not in df.columns:
+        return out
+    price = pd.to_numeric(df['price'], errors='coerce')
+    ind = pd.to_numeric(ind_prior, errors='coerce')
+    for pos_name in df['position'].dropna().unique():
+        at = df['position'] == pos_name
+        fit = at & ind.notna() & price.notna()
+        if fit.sum() < 12 or price[fit].nunique() < 3:
+            continue
+        slope, icpt = np.polyfit(price[fit].values, ind[fit].values, 1)
+        if slope <= 0:
+            continue                       # no price signal for this position
+        pred = (icpt + slope * price[at]).clip(lower=0, upper=float(ind[fit].max()) * 1.2)
+        out[at] = pred.fillna(out[at])
+    return out
+
+
 def _position_prior_per90(df, stat_total_col):
     """
     Pooled position-level per-90 prior computed from the whole league's
@@ -1488,6 +1550,74 @@ def _position_prior_per90(df, stat_total_col):
     agg = grp.sum()
     rate = (agg['stat'] / agg['mins'].replace(0, np.nan) * 90).fillna(0)
     return df['position'].map(rate).fillna(0)
+
+
+AVAIL_WEEKS = 8
+_NEWS_DATE = re.compile(r'(?:expected back|until)\s+(\d{1,2})\s+([A-Za-z]{3})', re.I)
+_MONTHS = {m: i for i, m in enumerate(['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul',
+                                       'aug', 'sep', 'oct', 'nov', 'dec'], start=1)}
+
+
+def _news_return_date(news, now):
+    """'Hamstring injury - Expected back 04 Oct' / 'Suspended until 11 Oct'
+    -> naive UTC datetime, or None."""
+    m = _NEWS_DATE.search(news or '')
+    if not m or m.group(2).lower() not in _MONTHS:
+        return None
+    day, month = int(m.group(1)), _MONTHS[m.group(2).lower()]
+    try:
+        d = datetime(now.year, month, day)
+    except ValueError:
+        return None
+    if (now - d).days > 60:          # a January date quoted in December
+        d = datetime(now.year + 1, month, day)
+    return d
+
+
+def weekly_availability(df, events, next_gw, weeks=AVAIL_WEEKS, now=None):
+    """
+    Chance each player is available in each of the next `weeks` gameweeks
+    (columns avail_w1..avail_wN, w1 = the GW being planned).
+
+    Week 1 is FPL's chance_of_playing_next_round. After that:
+      - "Expected back <date>" / "Suspended until <date>" in FPL's news:
+        out until the first deadline on or after that date, then available;
+      - otherwise, by the current flag: 75% -> fit from week 2; 50% -> 75%
+        in week 2, fit from week 3; 25% or 0% -> out in week 2 too, fit from
+        week 3; players who have left the club (status 'u') stay out.
+    These defaults are a judgement: FPL publishes no return date for most
+    knocks.
+    """
+    now = now or datetime.utcnow()
+    deadlines = {}
+    for e in events or []:
+        dl = _to_utc_naive(e.get('deadline_time'))
+        if dl is not None and e.get('id'):
+            deadlines[int(e['id'])] = dl
+    avail = pd.to_numeric(df.get('avail_pct'), errors='coerce').fillna(100).clip(0, 100) / 100
+    status = df['status'] if 'status' in df.columns else pd.Series('a', index=df.index)
+    news = df['news'] if 'news' in df.columns else pd.Series('', index=df.index)
+    out = {f'avail_w{k}': [] for k in range(1, weeks + 1)}
+    for a, st, nw in zip(avail, status, news):
+        ret = _news_return_date(nw, now) if a < 1 else None
+        for k in range(1, weeks + 1):
+            if k == 1:
+                v = a
+            elif st == 'u':
+                v = 0.0
+            elif a >= 1:
+                v = 1.0
+            elif ret is not None:
+                dl = deadlines.get(next_gw + k - 1)
+                v = 1.0 if (dl is None or dl >= ret) else 0.0
+            elif a >= 0.75:
+                v = 1.0
+            elif a >= 0.5:
+                v = 0.75 if k == 2 else 1.0
+            else:
+                v = 0.0 if k == 2 else 1.0
+            out[f'avail_w{k}'].append(float(v))
+    return pd.DataFrame(out, index=df.index)
 
 
 def compute_expected_points(df, gw_elapsed=38, priors=None, components_out=None):
@@ -1537,8 +1667,10 @@ def compute_expected_points(df, gw_elapsed=38, priors=None, components_out=None)
         if 'id' in df.columns else pd.Series(np.nan, index=idx)
     ind_xa90 = df['id'].map(lambda i: (priors.get(i) or {}).get('xa90')) \
         if 'id' in df.columns else pd.Series(np.nan, index=idx)
-    prior_xg90 = pd.to_numeric(ind_xg90, errors='coerce').fillna(pos_xg90)
-    prior_xa90 = pd.to_numeric(ind_xa90, errors='coerce').fillna(pos_xa90)
+    prior_xg90 = pd.to_numeric(ind_xg90, errors='coerce').fillna(
+        _price_prior_per90(df, ind_xg90, pos_xg90))
+    prior_xa90 = pd.to_numeric(ind_xa90, errors='coerce').fillna(
+        _price_prior_per90(df, ind_xa90, pos_xa90))
 
     xg90s = _shrink_per90(n('xg_per_90'), mins_raw, prior_xg90)
 
@@ -1570,18 +1702,21 @@ def compute_expected_points(df, gw_elapsed=38, priors=None, components_out=None)
     share = recent_share.fillna(season_share)
 
     p60_fallback = (share * 1.05).clip(0, 1)
-    p60 = (n('start_rate') / 100).clip(0, 1).fillna(p60_fallback) * avail
-    p_any = (share * 1.15 + 0.05).clip(0, 1).where(share > 0, 0) * avail
-    p_any = pd.concat([p_any, p60], axis=1).max(axis=1)
+    # Playing chances if fully fit; the availability flag scales them. Every
+    # component below is proportional to these, so a week's projection is
+    # (projection if fit) x (that week's availability).
+    p60_fit = (n('start_rate') / 100).clip(0, 1).fillna(p60_fallback)
+    p_any_fit = (share * 1.15 + 0.05).clip(0, 1).where(share > 0, 0)
+    p_any_fit = pd.concat([p_any_fit, p60_fit], axis=1).max(axis=1)
+    exp90_fit = share
 
-    exp90 = share * avail
+    p60, p_any, exp90 = p60_fit * avail, p_any_fit * avail, exp90_fit * avail
+    p60_avail, p_any_avail, exp90_avail = p60, p_any, exp90
     exp_mins = (exp90 * 90).round(0)
-
-    appearance_pts = 2 * p60 + 1 * (p_any - p60)
 
     # --- Per-GW component model ------------------------------------------
     def per_gw(att_fdr_col, def_fdr_col, att_env_cols=(), cs_prob_col=None, gc_pen_col=None,
-               neutral=False):
+               neutral=False, fit=False):
         """One match's expected points, and its parts.
 
         Attacking side: the PLAYER fixture multiplier (this opponent and
@@ -1590,7 +1725,12 @@ def compute_expected_points(df, gw_elapsed=38, priors=None, components_out=None)
         a fallback for replay frames logged before the multiplier existed;
         it double-counts the team's own attacking level. neutral=True prices
         an average opponent: the base the chip planner scales week by week.
+        fit=True prices him as fully available (multi-week horizons apply
+        availability week by week instead).
         """
+        p60, p_any, exp90 = ((p60_fit, p_any_fit, exp90_fit) if fit
+                             else (p60_avail, p_any_avail, exp90_avail))
+        appearance_pts = 2 * p60 + 1 * (p_any - p60)
         att_mult = None
         if neutral:
             att_mult = pd.Series(1.0, index=idx)
@@ -1761,23 +1901,36 @@ def compute_expected_points(df, gw_elapsed=38, priors=None, components_out=None)
         # Neutral per-match base (average opponent, neutral venue, one
         # fixture), kept in the parts that fixtures actually move so the
         # chip planner can scale each one by a future week's opponent.
-        neutral_total, nb = per_gw(None, None, cs_prob_col='cs_prob_neutral',
-                                   gc_pen_col='gc_pen_neutral', neutral=True)
+        # Priced as FULLY AVAILABLE: the chip planner multiplies each future
+        # week by that week's availability (avail_w1..avail_w8).
+        neutral_fit, nb = per_gw(None, None, cs_prob_col='cs_prob_neutral',
+                                 gc_pen_col='gc_pen_neutral', neutral=True, fit=True)
         components_out.update({
             'nb_att': (nb['goals'] + nb['assists']).round(3),
             'nb_cs': nb['cs'].round(3),
             'nb_gc': nb['gc'].round(3),
             'nb_other': (nb['appear'] + nb['defcon'] + nb['saves'] + nb['bonus']).round(3),
-            'proj_neutral_gw': neutral_total.round(2),
+            'proj_neutral_gw': (neutral_fit * avail).round(2),
         })
 
-    horizon_per_gw, _ = per_gw('att_fdr_5', 'def_fdr_5',
-                               att_env_cols=('fix_mult_5', 'att_env_5'),
-                               cs_prob_col='cs_prob_5', gc_pen_col='gc_pen_5')
+    # Multi-week horizons: one match against the horizon's average fixture,
+    # priced as fully available, times the fixtures he is expected to be
+    # available for — `avail_fixtures_5/8` sums each week's fixture count x
+    # that week's availability (see weekly_availability), so a player out
+    # for one week isn't written off for eight. Frames without it (older
+    # replay logs) apply next week's availability to every week, as before.
+    horizon_kw = dict(att_env_cols=('fix_mult_5', 'att_env_5'),
+                      cs_prob_col='cs_prob_5', gc_pen_col='gc_pen_5')
     fixture_count = n('fixture_count').fillna(5).clip(0, 10)
-    proj_5 = (horizon_per_gw * fixture_count).round(1)
     fixture_count_8 = n('fixture_count_8').fillna(8).clip(0, 16)
-    proj_8 = (horizon_per_gw * fixture_count_8).round(1)
+    if 'avail_fixtures_5' in df.columns and n('avail_fixtures_5').notna().any():
+        horizon_fit, _ = per_gw('att_fdr_5', 'def_fdr_5', fit=True, **horizon_kw)
+        proj_5 = (horizon_fit * n('avail_fixtures_5').fillna(fixture_count * avail)).round(1)
+        proj_8 = (horizon_fit * n('avail_fixtures_8').fillna(fixture_count_8 * avail)).round(1)
+    else:
+        horizon_per_gw, _ = per_gw('att_fdr_5', 'def_fdr_5', **horizon_kw)
+        proj_5 = (horizon_per_gw * fixture_count).round(1)
+        proj_8 = (horizon_per_gw * fixture_count_8).round(1)
 
     # --- Haul probability: P(2+ goal involvements) next GW ----------------
     att_mult_next = parts['att_mult']
@@ -1788,30 +1941,44 @@ def compute_expected_points(df, gw_elapsed=38, priors=None, components_out=None)
     return exp_mins, proj_next, proj_5, proj_8, haul_pct, lam_neutral.round(3)
 
 
+def _started(m):
+    st = m.get('starts')
+    return bool(st) if st is not None else (m.get('minutes') or 0) >= 60
+
+
+def minutes_security_one(matches, window=6):
+    """
+    Recent start rate and share of minutes for one player's match history,
+    over his last `window` matches. Games missed through injury count as
+    non-starts: skipping 0-minute runs that end with a start was tried and,
+    over a 2025/26 replay, made projections worse (it turns a rotation
+    player's "0, 0, start, 0, 0, start" into a 100% starter).
+    Returns {start_rate, recent_minutes_pct, recent_games} or None.
+    """
+    recent = sorted(matches or [], key=lambda m: (m.get('round') or 0))[-window:]
+    if not recent:
+        return None
+    total_mins = sum(m.get('minutes') or 0 for m in recent)
+    starts = sum(1 for m in recent if _started(m))
+    k = len(recent)
+    return {'start_rate': round(starts / k * 100, 1),
+            'recent_minutes_pct': round(total_mins / (k * 90) * 100, 1),
+            'recent_games': k}
+
+
 def calculate_minutes_security(player_histories, window=6):
     """
     From match-by-match history, compute recent start rate and share of
-    available minutes over the last `window` matches. The biggest source of
-    FPL point loss isn't bad picks — it's benched/rotated picks.
+    available minutes over the last `window` matches (see
+    minutes_security_one). The biggest source of FPL point loss isn't bad
+    picks — it's benched/rotated picks.
     Returns dict of player_id -> {start_rate, recent_minutes_pct, recent_games}
     """
     security = {}
     for pid, matches in player_histories.items():
-        recent = sorted(matches, key=lambda m: (m.get('round') or 0))[-window:]
-        if not recent:
-            continue
-        total_mins = sum(m.get('minutes', 0) for m in recent)
-        # The API ships a `starts` field; fall back to a 60-minute heuristic
-        starts = sum(
-            1 for m in recent
-            if (m.get('starts') if m.get('starts') is not None else (m.get('minutes', 0) >= 60))
-        )
-        n = len(recent)
-        security[pid] = {
-            'start_rate': round(starts / n * 100, 1),
-            'recent_minutes_pct': round(total_mins / (n * 90) * 100, 1),
-            'recent_games': n,
-        }
+        sec = minutes_security_one(matches, window)
+        if sec:
+            security[pid] = sec
     return security
 
 
@@ -3258,9 +3425,8 @@ def reconstruct_player_frame(histories, meta, upto_round, recent_window=6):
             continue
 
         f = lambda k: sum(float(h.get(k) or 0) for h in prior)
-        recent = prior[-recent_window:]
-        rec_mins = sum((h.get('minutes') or 0) for h in recent)
-        starts = sum(1 for h in recent if (h.get('minutes') or 0) >= 60)
+        # Same start-rate / minutes-share logic as the live app
+        sec = minutes_security_one(prior, recent_window) or {}
 
         dc_vals = [float(h.get('defensive_contribution') or 0) for h in prior
                    if (h.get('minutes') or 0) > 0]
@@ -3276,6 +3442,7 @@ def reconstruct_player_frame(histories, meta, upto_round, recent_window=6):
             'team': m['team'],
             'web_name': m['web_name'],
             'pen_rank': m.get('pen_rank'),
+            'price': m.get('price'),
             'minutes': mins,
             # Season totals to date: the engine's position priors are pooled
             # from these, so without them every prior but saves read zero.
@@ -3301,8 +3468,8 @@ def reconstruct_player_frame(histories, meta, upto_round, recent_window=6):
             'bonus_threshold': thr,
             # Availability is unknowable after the fact — see docstring.
             'avail_pct': 100.0,
-            'recent_minutes_pct': (rec_mins / (90.0 * max(len(recent), 1))) * 100,
-            'start_rate': (starts / max(len(recent), 1)) * 100,
+            'recent_minutes_pct': sec.get('recent_minutes_pct'),
+            'start_rate': sec.get('start_rate'),
         })
     return pd.DataFrame(rows)
 
@@ -3557,7 +3724,7 @@ FEATURE_COLS = ['id', 'position', 'minutes', 'avail_pct', 'recent_minutes_pct',
                 'att_env_next', 'fix_mult_next', 'next_fixture_count', 'cs_prob_neutral',
                 'gc_pen_next', 'gc_pen_neutral',
                 'pen_rank', 'expected_goals', 'expected_assists',
-                'clean_sheets', 'goals_conceded', 'bonus', 'defensive_contribution']
+                'clean_sheets', 'goals_conceded', 'bonus', 'defensive_contribution', 'price']
 
 
 def log_model_features(df_active, target_gw, priors):
@@ -5056,6 +5223,28 @@ def refresh_core_data():
                 _c8[_f['team_a']] += 1
         df_active['fixture_count_8'] = df_active['team'].map(_c8).fillna(0)
 
+        # Availability week by week (FPL's flag now, its "expected back"
+        # date or a recovery default later), and the fixtures each player
+        # is expected to be available for over the 5- and 8-week horizons
+        _wk = weekly_availability(df_active, bootstrap_data.get('events'), next_gw_num)
+        for _c in _wk.columns:
+            df_active[_c] = _wk[_c]
+        _af5 = pd.Series(0.0, index=df_active.index)
+        _af8 = pd.Series(0.0, index=df_active.index)
+        for _k in range(1, AVAIL_WEEKS + 1):
+            _g = next_gw_num + _k - 1
+            _cg = Counter()
+            for _f in fixtures_data:
+                if _f.get('event') == _g:
+                    _cg[_f['team_h']] += 1
+                    _cg[_f['team_a']] += 1
+            _wk_fx = df_active['team'].map(_cg).fillna(0) * df_active[f'avail_w{_k}']
+            _af8 += _wk_fx
+            if _k <= 5:
+                _af5 += _wk_fx
+        df_active['avail_fixtures_5'] = _af5
+        df_active['avail_fixtures_8'] = _af8
+
         # Expected points projection (Phase-1 pass: season minutes share;
         # Phase 2 re-runs it with recent start data, priors and hit rates)
         print("Computing expected points projections...")
@@ -5291,6 +5480,11 @@ def refresh_heavy_data():
             lambda x: consistency_data.get(x, {}).get('avg_defcon'))
         df_active['max_defcon_game'] = df_active['id'].map(lambda x: consistency_data.get(x, {}).get('max_defcon'))
         df_active['min_defcon_game'] = df_active['id'].map(lambda x: consistency_data.get(x, {}).get('min_defcon'))
+        # Minutes security for everyone the DEFCON pass fetched
+        _ms_all = {pid: v['minutes_sec'] for pid, v in consistency_data.items() if v.get('minutes_sec')}
+        df_active['start_rate'] = df_active['id'].map(lambda x: _ms_all.get(x, {}).get('start_rate'))
+        df_active['recent_minutes_pct'] = df_active['id'].map(
+            lambda x: _ms_all.get(x, {}).get('recent_minutes_pct'))
 
         # Commit consistency columns immediately — if any LATER Phase-2 step
         # fails (home/away, EO, projections), these results must survive
@@ -5339,10 +5533,12 @@ def refresh_heavy_data():
         # Minutes security from the same histories — no extra API calls
         print("Computing minutes security (last 6 matches)...")
         minutes_sec = calculate_minutes_security(player_histories)
+        # Same numbers as the DEFCON pass for these players; keep that
+        # pass's values for everyone else
         df_active['start_rate'] = df_active['id'].map(
-            lambda x: minutes_sec.get(x, {}).get('start_rate'))
+            lambda x: minutes_sec.get(x, {}).get('start_rate')).fillna(df_active['start_rate'])
         df_active['recent_minutes_pct'] = df_active['id'].map(
-            lambda x: minutes_sec.get(x, {}).get('recent_minutes_pct'))
+            lambda x: minutes_sec.get(x, {}).get('recent_minutes_pct')).fillna(df_active['recent_minutes_pct'])
 
         # Incremental commit: home/away + minutes security now safe too
         with DATA_LOCK:
@@ -10650,9 +10846,14 @@ def _render_backtest_inner():
                       f"what it already has.", style={'color': COLORS['text_light']}), []
     print(f"[backtest] scoring {len(usable)} players over GWs {gws}")
 
+    # Start-of-season price (today's minus this season's change), so the
+    # price prior can't see rises earned by the results being predicted
+    _start_price = (pd.to_numeric(dfa['price'], errors='coerce')
+                    - pd.to_numeric(dfa.get('cost_change_start', 0), errors='coerce').fillna(0))
     meta = {int(r.id): {'position': r.position, 'team': int(r.team),
-                        'web_name': r.web_name, 'pen_rank': getattr(r, 'pen_rank', None)}
-            for r in dfa.itertuples()}
+                        'web_name': r.web_name, 'pen_rank': getattr(r, 'pen_rank', None),
+                        'price': float(p) if pd.notna(p) else None}
+            for r, p in zip(dfa.itertuples(), _start_price)}
     priors = data.get('last_season_priors', {})
 
     rows, player_rows, calib = run_projection_backtest(usable, meta, fixtures, teams_df,
@@ -11287,7 +11488,9 @@ def build_squad(n_clicks, budget, objective, must_include, must_exclude, chip_gw
                     [int(chip_gw)], xg_ledger=data.get('xg_ledger'),
                     odds_lambdas=data.get('odds_lambdas'),
                     ratings=data.get('team_ratings')).get(int(chip_gw), {})
-                df_now['chip_gw_proj'] = project_pool_for_gw(df_now, lookup).values
+                df_now['chip_gw_proj'] = project_pool_for_gw(
+                    df_now, lookup,
+                    avail_col_for_week(int(chip_gw) - int(data.get('next_gw_num') or chip_gw) + 1)).values
                 base_obj = objective if objective in df_now.columns else 'ppg'
                 df_now['chip_weighted'] = (
                     pd.to_numeric(df_now[base_obj], errors='coerce').fillna(0) +
@@ -12077,6 +12280,8 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
     # Neutral per-match base in parts: precomputed in the refresh (falls
     # back to a fresh engine run if the columns predate this feature)
     if not (all(c in squad.columns for c in NB_PARTS) and squad['nb_other'].notna().any()):
+        # (parts are priced as fully available; weekly availability is
+        # applied per gameweek below)
         _parts = {}
         compute_expected_points(squad, gw_elapsed=max(gw_num, 1),
                                 priors=data.get('last_season_priors', {}), components_out=_parts)
@@ -12117,8 +12322,10 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
         blanks = 0
         for r in squad.itertuples():
             info = gw_lookup.get(g, {}).get(r.team, {})
+            _wc = avail_col_for_week(g - gw_num)
             proj = project_player_gw({c: getattr(r, c) for c in NB_PARTS},
-                                     r.position, r.team, gw_lookup.get(g, {}))
+                                     r.position, r.team, gw_lookup.get(g, {}),
+                                     avail=(getattr(r, _wc, 1.0) if _wc else 1.0))
             if proj == 0:
                 blanks += 1
             # Ceiling in THIS gameweek: Poisson P(2+ involvements) with the
@@ -12152,7 +12359,8 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
         # count could only ever see the first case.
         fh_best, fh_xi, fh_meta = 0.0, [], {}
         if not fh_pool.empty:
-            fh_pool['proj_gw'] = project_pool_for_gw(fh_pool, gw_lookup.get(g, {}))
+            fh_pool['proj_gw'] = project_pool_for_gw(fh_pool, gw_lookup.get(g, {}),
+                                                     avail_col_for_week(g - gw_num))
             fh_best, fh_xi, fh_meta = optimise_free_hit_xi(fh_pool, fh_budget)
         fh_delta = round(max(fh_best - xi_total, 0.0), 1)
         # Keep the actual XI, not just the total — the whole point of a Free
