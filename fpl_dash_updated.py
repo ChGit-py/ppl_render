@@ -4990,6 +4990,14 @@ app.index_string = '''
                HEADER — compact single row on phones and narrow tablets
             ================================================================ */
             .hdr-short { display: none; }
+            /* Squad Builder result rows: name/club left, price/score right */
+            .sq-pos-card { flex: 1 1 300px; min-width: 0; }
+            .sq-row { display: flex; justify-content: space-between; align-items: center;
+                      gap: 12px; padding: 10px 0; border-bottom: 1px solid #f0f0f0; }
+            .sq-row:last-child { border-bottom: none; }
+            .sq-row-left { min-width: 0; flex: 1 1 auto; }
+            .sq-row-left .sq-name { overflow-wrap: anywhere; }
+            .sq-row-right { text-align: right; flex: 0 0 auto; }
             /* Lineup Advisor bullets: FPL green, in the darker shade that stays
                visible on white (the bright #00ff87 all but disappears) */
             .lineup-list li::marker { color: #00813f; font-size: 1.15em; }
@@ -5079,6 +5087,9 @@ app.index_string = '''
                 /* The rule above is meant for filter columns, but it also caught the
                    Home spotlight cards and stripped their side padding, leaving the
                    text and photo pressed against the card edges on phones. */
+                #content-area .sq-pos-card {
+                    padding: 16px 14px !important;
+                }
                 #content-area .spotlight-card {
                     padding-left: 14px !important;
                     padding-right: 14px !important;
@@ -5357,7 +5368,13 @@ def build_optimal_squad(df, budget, objective='ppg', must_include=None,
     eligible = eligible.reset_index(drop=True)
 
     prob = pulp.LpProblem("FPL_Squad_Builder", pulp.LpMaximize)
-    x = {i: pulp.LpVariable(f"x_{i}", cat='Binary') for i in eligible.index}
+    # PuLP 4 removed LpVariable(name, cat=...) in favour of
+    # prob.add_variable(...); support both so a Render rebuild that pulls a
+    # newer PuLP doesn't break the Squad Builder.
+    if hasattr(prob, 'add_variable'):
+        x = {i: prob.add_variable(f"x_{i}", 0, 1, cat=pulp.LpBinary) for i in eligible.index}
+    else:
+        x = {i: pulp.LpVariable(f"x_{i}", 0, 1, pulp.LpBinary) for i in eligible.index}
 
     # Objective
     prob += pulp.lpSum(x[i] * eligible.loc[i, obj_col] for i in eligible.index)
@@ -10544,6 +10561,12 @@ def build_squad(n_clicks, budget, objective, must_include, must_exclude, chip_gw
             'chip_weighted': 'Chip-Weighted Projection',
         }
         obj_label = obj_labels.get(objective, objective)
+        short_label = {
+            'ppg': 'PPG', 'form': 'form', 'expected_goal_involvements': 'xGI',
+            'total_points': 'pts', 'blended': 'score',
+            'proj_pts_next': 'proj pts', 'proj_pts_5': 'proj pts',
+            'proj_pts_8': 'proj pts', 'chip_weighted': 'proj pts',
+        }.get(objective, '')
 
         total_cost = result['price'].sum()
         remaining = budget - total_cost
@@ -10581,35 +10604,41 @@ def build_squad(n_clicks, budget, objective, must_include, must_exclude, chip_gw
                 score_val = p.get(obj_col, 0)
                 if pd.isna(score_val):
                     score_val = 0
+                # Two stacked columns (name/club left, price/score right) so a row
+                # never runs past the card edge on a phone.
                 rows.append(html.Div([
                     html.Div([
-                        html.Span(pos, style={
-                            'backgroundColor': pos_colors[pos],
-                            'color': 'white' if pos != 'GKP' else COLORS['primary'],
-                            'padding': '2px 8px', 'borderRadius': '4px',
-                            'fontSize': '11px', 'fontWeight': '700', 'marginRight': '8px'
-                        }),
-                        html.Span(p['web_name'],
-                                  style={'fontWeight': '600', 'fontSize': '15px', 'color': COLORS['text_dark']}),
-                    ]),
+                        html.Div([
+                            html.Span(pos, style={
+                                'backgroundColor': pos_colors[pos],
+                                'color': 'white' if pos != 'GKP' else COLORS['primary'],
+                                'padding': '2px 8px', 'borderRadius': '4px',
+                                'fontSize': '11px', 'fontWeight': '700', 'marginRight': '8px',
+                                'flexShrink': '0'
+                            }),
+                            html.Span(p['web_name'], className='sq-name',
+                                      style={'fontWeight': '600', 'fontSize': '15px',
+                                             'color': COLORS['text_dark']}),
+                        ], style={'display': 'flex', 'alignItems': 'center', 'minWidth': '0'}),
+                        html.Div(p['team_name'],
+                                 style={'color': COLORS['text_light'], 'fontSize': '13px',
+                                        'marginTop': '2px'}),
+                    ], className='sq-row-left'),
                     html.Div([
-                        html.Span(p['team_name'],
-                                  style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginRight': '10px'}),
-                        html.Span(f"£{p['price']:.1f}m",
-                                  style={'color': COLORS['primary'], 'fontWeight': '600', 'fontSize': '14px',
-                                         'marginRight': '10px'}),
-                        html.Span(f"{obj_label}: {score_val:.0f}",
-                                  style={'color': COLORS['text_light'], 'fontSize': '13px'}),
-                    ])
-                ], style={
-                    'display': 'flex', 'justifyContent': 'space-between', 'alignItems': 'center',
-                    'padding': '10px 0', 'borderBottom': '1px solid #f0f0f0'
-                }))
+                        html.Div(f"£{p['price']:.1f}m",
+                                 style={'color': COLORS['primary'], 'fontWeight': '600',
+                                        'fontSize': '14px'}),
+                        html.Div(f"{score_val:.1f} {short_label}" if obj_col in ('ppg', 'form', 'expected_goal_involvements')
+                                 else f"{score_val:.0f} {short_label}",
+                                 style={'color': COLORS['text_light'], 'fontSize': '13px',
+                                        'marginTop': '2px', 'whiteSpace': 'nowrap'}),
+                    ], className='sq-row-right'),
+                ], className='sq-row'))
             pos_cards.append(html.Div([
                 html.H4(f"{pos}  ({len(pos_df)})",
-                        style={'color': pos_colors[pos], 'marginBottom': '12px', 'fontWeight': '700'}),
+                        style={'color': pos_colors[pos], 'marginBottom': '8px', 'fontWeight': '700'}),
                 html.Div(rows)
-            ], style={**CARD_STYLE, 'flex': '1', 'minWidth': '300px'}))
+            ], className='sq-pos-card', style=CARD_STYLE))
 
         squad_display = html.Div([
             html.Div([
