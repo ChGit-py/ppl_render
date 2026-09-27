@@ -2706,6 +2706,16 @@ def reconstruct_player_frame(histories, meta, upto_round, recent_window=6):
             'cs_per_90': _rate(f('clean_sheets'), mins),
             'gc_per_90': _rate(f('goals_conceded'), mins),
             'saves': f('saves'),
+            # Season totals as of this round. The engine pools these into the
+            # positional priors it shrinks every rate toward; without them the
+            # priors came out as zero and the backtest dragged goals, assists,
+            # bonus and clean sheets toward nothing, understating the model.
+            'expected_goals': f('expected_goals'),
+            'expected_assists': f('expected_assists'),
+            'bonus': f('bonus'),
+            'clean_sheets': f('clean_sheets'),
+            'goals_conceded': f('goals_conceded'),
+            'defensive_contribution': f('defensive_contribution'),
             'defcon_per_90': _rate(f('defensive_contribution'), mins),
             'defcon_per_90_games': _rate(f('defensive_contribution'), mins),
             'defcon_var': dc_var,
@@ -2740,6 +2750,177 @@ def _fixtures_as_of(fixtures_data, upto_round):
     return out
 
 
+# The eight projected components, in the order the engine sums them.
+BACKTEST_COMPONENTS = ['appear', 'goals', 'assists', 'cs', 'gc', 'defcon', 'saves', 'bonus']
+BACKTEST_COMPONENT_LABELS = {
+    'appear': 'Appearance', 'goals': 'Goals', 'assists': 'Assists',
+    'cs': 'Clean sheets', 'gc': 'Goals conceded', 'defcon': 'DefCon',
+    'saves': 'Saves', 'bonus': 'Bonus', 'other': 'Cards, pens & other',
+}
+
+
+def _actual_components(rows, position):
+    """
+    Split one player's real points for a gameweek into the same buckets the
+    engine projects, using the same scoring constants. `rows` is every
+    element-summary history row for that round (two in a double gameweek).
+
+    Anything the buckets don't explain (cards, own goals, penalty saves or
+    misses) lands in 'other', so the parts always add up to the real total.
+    """
+    out = {k: 0.0 for k in BACKTEST_COMPONENTS}
+    out['other'] = 0.0
+    thr = (SEASON.get('thresholds') or {}).get(position)
+    for h in rows:
+        m = h.get('minutes') or 0
+        parts = {
+            'appear': 2 if m >= 60 else (1 if m > 0 else 0),
+            'goals': (h.get('goals_scored') or 0) * GOAL_POINTS.get(position, 4),
+            'assists': (h.get('assists') or 0) * ASSIST_POINTS,
+            'cs': (h.get('clean_sheets') or 0) * CS_POINTS.get(position, 0) if m >= 60 else 0,
+            'gc': -((h.get('goals_conceded') or 0) // 2) if position in ('GKP', 'DEF') else 0,
+            'defcon': DEFCON_POINTS if (thr and (h.get('defensive_contribution') or 0) >= thr) else 0,
+            'saves': ((h.get('saves') or 0) // 3) if position == 'GKP' else 0,
+            'bonus': h.get('bonus') or 0,
+        }
+        for k, v in parts.items():
+            out[k] += float(v)
+        out['other'] += float((h.get('total_points') or 0) - sum(parts.values()))
+    return out
+
+
+def summarise_backtest_misses(diag_rows):
+    """
+    Turn the per-player-per-GW backtest rows into the answer to "where is my
+    model weakest?": by scoring component, by position, by projection band
+    (calibration), minutes, and the captaincy pick. Returns None when there
+    is nothing to summarise.
+    """
+    if not diag_rows:
+        return None
+    d = pd.DataFrame(diag_rows)
+    d['err'] = d['proj'] - d['actual']
+    d['abs_err'] = d['err'].abs()
+    n_gws = d['gw'].nunique()
+
+    # --- Components: average per player-game, projected vs actual ---------
+    comps = []
+    for k in BACKTEST_COMPONENTS + ['other']:
+        xp = float(d['xp_' + k].mean()) if ('xp_' + k) in d else 0.0
+        act = float(d['act_' + k].mean())
+        if abs(xp) < 0.005 and abs(act) < 0.005:
+            continue
+        comps.append({'component': BACKTEST_COMPONENT_LABELS[k], 'key': k,
+                      'proj': round(xp, 3), 'actual': round(act, 3),
+                      'gap': round(xp - act, 3)})
+
+    # --- Positions ---------------------------------------------------------
+    positions = []
+    for pos in ['GKP', 'DEF', 'MID', 'FWD']:
+        s = d[d['position'] == pos]
+        if len(s) < 5:
+            continue
+        sp = s[['proj', 'actual']].corr(method='spearman').iloc[0, 1]
+        positions.append({'position': pos, 'n': int(len(s)),
+                          'proj': round(float(s['proj'].mean()), 2),
+                          'actual': round(float(s['actual'].mean()), 2),
+                          'bias': round(float(s['err'].mean()), 2),
+                          'mae': round(float(s['abs_err'].mean()), 2),
+                          'spearman': round(float(sp), 3) if pd.notna(sp) else None})
+
+    # --- Calibration by projection band -----------------------------------
+    edges = [0, 1, 2, 3, 4, 5, 6, 99]
+    labels = ['0-1', '1-2', '2-3', '3-4', '4-5', '5-6', '6+']
+    d['band'] = pd.cut(d['proj'], bins=edges, labels=labels, right=False)
+    bands = []
+    for lab in labels:
+        s = d[d['band'] == lab]
+        if len(s) == 0:
+            continue
+        bands.append({'band': lab, 'n': int(len(s)),
+                      'proj': round(float(s['proj'].mean()), 2),
+                      'actual': round(float(s['actual'].mean()), 2),
+                      'gap': round(float(s['proj'].mean() - s['actual'].mean()), 2)})
+
+    # --- Minutes -------------------------------------------------------------
+    total_abs = float(d['abs_err'].sum()) or 1.0
+    zero = d[d['mins'] <= 0]
+    played60 = d[d['mins'] >= 60]
+    nailed = d[d['p60'] >= 0.7]
+    minutes = {
+        'mins_mae': round(float((d['exp_mins'] - d['mins']).abs().mean()), 1),
+        'zero_share': round(float(zero['abs_err'].sum()) / total_abs * 100, 1),
+        'zero_rows': int(len(zero)),
+        'nailed_benched': int((nailed['mins'] <= 0).sum()),
+        'nailed_n': int(len(nailed)),
+        'mae_all': round(float(d['abs_err'].mean()), 2),
+        'mae_60': round(float(played60['abs_err'].mean()), 2) if len(played60) else None,
+    }
+
+    # --- Captaincy: the model's top pick each GW vs alternatives ------------
+    cap_rows = []
+    for g, s in d.groupby('gw'):
+        if s.empty:
+            continue
+        m = s.loc[s['proj'].idxmax()]
+        b = s.loc[s['base_ppg'].idxmax()]
+        best = s.loc[s['actual'].idxmax()]
+        top10 = s.nlargest(10, 'proj')
+        cap_rows.append({'gw': f"GW{int(g)}", 'model_pick': m['web_name'],
+                         'model_proj': round(float(m['proj']), 2),
+                         'model_pts': int(m['actual']),
+                         'ppg_pick': b['web_name'], 'ppg_pts': int(b['actual']),
+                         'best_pick': best['web_name'], 'best_pts': int(best['actual']),
+                         'top10_proj': round(float(top10['proj'].mean()), 2),
+                         'top10_actual': round(float(top10['actual'].mean()), 2)})
+    captain = None
+    if cap_rows:
+        c = pd.DataFrame(cap_rows)
+        captain = {'rows': cap_rows,
+                   'model_avg': round(float(c['model_pts'].mean()), 2),
+                   'ppg_avg': round(float(c['ppg_pts'].mean()), 2),
+                   'best_avg': round(float(c['best_pts'].mean()), 2),
+                   'top10_proj': round(float(c['top10_proj'].mean()), 2),
+                   'top10_actual': round(float(c['top10_actual'].mean()), 2)}
+
+    # --- Plain-language findings, biggest issues first ------------------------
+    findings = []
+    real = [c for c in comps if c['key'] != 'other']
+    if real:
+        worst = max(real, key=lambda c: abs(c['gap']))
+        direction = 'over' if worst['gap'] > 0 else 'under'
+        findings.append(
+            f"Biggest component miss is {worst['component'].lower()}: projected "
+            f"{worst['proj']:.2f} per player per match, actually {worst['actual']:.2f} "
+            f"({direction}-projecting).")
+    if positions:
+        wp = max(positions, key=lambda r: abs(r['bias']))
+        findings.append(
+            f"Position the model misses most is {wp['position']}: averaging {wp['proj']:.2f} "
+            f"projected vs {wp['actual']:.2f} actual "
+            f"({'too high' if wp['bias'] > 0 else 'too low'} by {abs(wp['bias']):.2f}).")
+    top_band = next((b for b in reversed(bands) if b['n'] >= 10), None)
+    if top_band:
+        findings.append(
+            f"Top-end projections ({top_band['band']} pts, {top_band['n']} cases): "
+            f"projected {top_band['proj']:.2f}, actually scored {top_band['actual']:.2f} "
+            f"on average.")
+    findings.append(
+        f"Minutes: {minutes['zero_share']:.0f}% of all projection error came from players "
+        f"who didn't play at all. When a player played 60+ minutes the average miss "
+        f"was {minutes['mae_60'] if minutes['mae_60'] is not None else '-'} pts, vs "
+        f"{minutes['mae_all']:.2f} overall.")
+    if captain:
+        findings.append(
+            f"Captaincy: the model's top pick averaged {captain['model_avg']:.1f} pts vs "
+            f"{captain['ppg_avg']:.1f} for the highest points-per-game pick "
+            f"(best possible {captain['best_avg']:.1f}).")
+
+    return {'components': comps, 'positions': positions, 'bands': bands,
+            'minutes': minutes, 'captain': captain, 'findings': findings,
+            'n': int(len(d)), 'gws': int(n_gws)}
+
+
 def run_projection_backtest(histories, meta, fixtures_data, teams_df,
                             gws, priors=None, recent_window=6):
     """
@@ -2757,7 +2938,7 @@ def run_projection_backtest(histories, meta, fixtures_data, teams_df,
     makes is a ranking decision, not an absolute-value one, so Spearman
     correlation and top-20 precision say more than MAE does.
     """
-    results, player_rows = [], []
+    results, player_rows, diag_rows = [], [], []
     for g in gws:
         frame = reconstruct_player_frame(histories, meta, g, recent_window)
         if frame.empty or len(frame) < 30:
@@ -2792,9 +2973,11 @@ def run_projection_backtest(histories, meta, fixtures_data, teams_df,
         frame['cs_prob_5'] = 0.25
         frame['fixture_count_8'] = 8
 
+        _parts = {}
         try:
-            _, proj, _, _, _, _ = compute_expected_points(
-                frame, gw_elapsed=max(g - 1, 1), priors=priors or {})
+            exp_mins, proj, _, _, _, _ = compute_expected_points(
+                frame, gw_elapsed=max(g - 1, 1), priors=priors or {},
+                components_out=_parts)
         except Exception as e:
             print(f"  backtest GW{g} projection failed: {e}")
             continue
@@ -2805,7 +2988,12 @@ def run_projection_backtest(histories, meta, fixtures_data, teams_df,
         played = {pid: any((h.get('round') or 0) == g for h in hist)
                   for pid, hist in histories.items()}
 
-        frame = frame.assign(proj=proj.values)
+        frame = frame.assign(proj=proj.values, exp_mins=pd.Series(exp_mins).values)
+        for _k in BACKTEST_COMPONENTS:
+            _v = _parts.get('xp_' + _k)
+            frame['xp_' + _k] = _v.values if _v is not None else 0.0
+        _p60 = _parts.get('xp_p60')
+        frame['xp_p60'] = _p60.values if _p60 is not None else np.nan
         frame['actual'] = frame['id'].map(actual)
         frame['gw_label'] = f"GW{g}"
         frame['mins_played'] = frame['id'].map(
@@ -2838,6 +3026,26 @@ def run_projection_backtest(histories, meta, fixtures_data, teams_df,
         top20_act = set(frame.nlargest(20, 'actual')['id'])
         spear = frame[['proj', 'actual']].corr(method='spearman').iloc[0, 1]
 
+        # Diagnostic detail: projected vs actual split into the same eight
+        # components, so misses can be traced to minutes, goals, CS, etc.
+        for _r in frame.itertuples():
+            _act = _actual_components(
+                [h for h in histories.get(_r.id, []) if (h.get('round') or 0) == g],
+                _r.position)
+            _d = {'gw': g, 'id': int(_r.id), 'position': _r.position,
+                  'proj': float(_r.proj), 'actual': float(_r.actual),
+                  'base_ppg': float(_r.base_ppg),
+                  'exp_mins': float(_r.exp_mins) if pd.notna(_r.exp_mins) else 0.0,
+                  'mins': float(_r.mins_played),
+                  'p60': float(_r.xp_p60) if pd.notna(_r.xp_p60) else np.nan,
+                  'web_name': _r.web_name}
+            for _k in BACKTEST_COMPONENTS:
+                _xv = getattr(_r, 'xp_' + _k)
+                _d['xp_' + _k] = float(_xv) if pd.notna(_xv) else 0.0
+                _d['act_' + _k] = _act[_k]
+            _d['act_other'] = _act['other']
+            diag_rows.append(_d)
+
         # Per-player detail: what the model said, what he actually got.
         for _r in frame.itertuples():
             player_rows.append({
@@ -2860,7 +3068,7 @@ def run_projection_backtest(histories, meta, fixtures_data, teams_df,
             'mae_ppg': round((frame['base_ppg'] - frame['actual']).abs().mean(), 3),
             'mae_pos': round((frame['base_pos'] - frame['actual']).abs().mean(), 3),
         })
-    return results, player_rows
+    return results, player_rows, summarise_backtest_misses(diag_rows)
 
 
 # =============================================================================
@@ -9875,6 +10083,136 @@ def render_backtest(n_clicks):
         ]), []
 
 
+BT_PROJ_COLOR = '#7a2c8a'    # projected (brand purple, lifted for chart legibility)
+BT_ACTUAL_COLOR = '#00a0ad'  # actual (teal) — pair validated for colour-blind separation
+
+
+def _bt_table(rows, columns, cond=None):
+    return dash_table.DataTable(
+        data=rows, columns=columns, sort_action='native',
+        style_table={'overflowX': 'auto'},
+        style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
+        style_data=TABLE_STYLE_DATA,
+        style_data_conditional=[{'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'}]
+                               + (cond or []))
+
+
+def _gap_cond(col, tol, extra=''):
+    """Shade a projected-minus-actual column: pink = too high, green = too low."""
+    return [
+        {'if': {'filter_query': f'{{{col}}} >= {tol}{extra}', 'column_id': col},
+         'backgroundColor': '#fde8ef', 'fontWeight': '600'},
+        {'if': {'filter_query': f'{{{col}}} <= -{tol}{extra}', 'column_id': col},
+         'backgroundColor': '#e6fff2', 'fontWeight': '600'},
+    ]
+
+
+def _render_backtest_misses(m):
+    """'Where the model misses' block under the backtest summary."""
+    if not m:
+        return html.Div()
+    sub = {'color': COLORS['text_light'], 'marginBottom': '8px', 'fontSize': '14px'}
+    h5 = {'color': COLORS['primary'], 'margin': '20px 0 6px 0'}
+    num = lambda i, n, f: {'name': n, 'id': i, 'type': 'numeric', 'format': {'specifier': f}}
+
+    # Calibration chart: projected vs actual average in each projection band
+    bands = m.get('bands') or []
+    fig = go.Figure()
+    if bands:
+        x = [b['band'] for b in bands]
+        hover = [f"{b['n']} player-matches" for b in bands]
+        fig.add_trace(go.Bar(name='Projected', x=x, y=[b['proj'] for b in bands],
+                             marker=dict(color=BT_PROJ_COLOR, line=dict(color='white', width=2)),
+                             customdata=hover,
+                             hovertemplate='%{x} pts band<br>Projected avg %{y:.2f}<br>%{customdata}<extra></extra>'))
+        fig.add_trace(go.Bar(name='Actual', x=x, y=[b['actual'] for b in bands],
+                             marker=dict(color=BT_ACTUAL_COLOR, line=dict(color='white', width=2)),
+                             customdata=hover,
+                             hovertemplate='%{x} pts band<br>Actual avg %{y:.2f}<br>%{customdata}<extra></extra>'))
+    fig.update_layout(template='plotly_white', height=320, barmode='group', bargap=0.3,
+                      margin=dict(t=30, b=40, l=40, r=10),
+                      xaxis_title='Projected points band', yaxis_title='Average points',
+                      legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
+                      font=dict(family=FONT_FAMILY))
+    fig.update_yaxes(gridcolor='#eeeeee', rangemode='tozero')
+
+    mins = m.get('minutes') or {}
+    cap = m.get('captain')
+
+    children = [
+        html.H4("Where the Model Misses",
+                style={'color': COLORS['primary'], 'margin': '28px 0 6px 0'}),
+        html.P(f"Based on {m['n']:,} player-matches across {m['gws']} gameweek"
+               f"{'s' if m['gws'] != 1 else ''}. With only a few gameweeks, treat these as "
+               f"early signals rather than verdicts; they firm up as the season goes on.",
+               style=sub),
+        html.Ul([html.Li(f) for f in m.get('findings', [])], className='lineup-list',
+                style={'color': COLORS['text_dark'], 'paddingLeft': '20px',
+                       'lineHeight': '1.6', 'marginBottom': '8px'}),
+
+        html.H5("By scoring component", style=h5),
+        html.P("Average points per player per match. Gap = projected minus actual: pink means the "
+               "model gives too much for that component, green means too little. The model doesn't "
+               "try to predict cards or penalty misses, so the last row is shown for completeness.",
+               style=sub),
+        _bt_table(m['components'],
+                  [{'name': 'Component', 'id': 'component'},
+                   num('proj', 'Projected', '.2f'), num('actual', 'Actual', '.2f'),
+                   num('gap', 'Gap', '+.2f')],
+                  _gap_cond('gap', 0.05, ' && {component} != "Cards, pens & other"')),
+
+        html.H5("By position", style=h5),
+        html.P("Bias is projected minus actual. Spearman is how well the model ranked players "
+               "within that position (1 = perfect order).", style=sub),
+        _bt_table(m['positions'],
+                  [{'name': 'Pos', 'id': 'position'}, num('n', 'Cases', ','),
+                   num('proj', 'Projected', '.2f'), num('actual', 'Actual', '.2f'),
+                   num('bias', 'Bias', '+.2f'), num('mae', 'Avg miss', '.2f'),
+                   num('spearman', 'Spearman', '.3f')],
+                  _gap_cond('bias', 0.3)),
+
+        html.H5("Calibration: does a 5 really mean 5?", style=h5),
+        html.P("Players grouped by what the model projected. In a well-calibrated model the two "
+               "bars match in every band. Bars pulling apart at the top end mean the big "
+               "projections are too optimistic (or too cautious).", style=sub),
+        dcc.Graph(figure=fig, config={'displayModeBar': False}),
+        _bt_table(bands,
+                  [{'name': 'Band', 'id': 'band'}, num('n', 'Cases', ','),
+                   num('proj', 'Projected', '.2f'), num('actual', 'Actual', '.2f'),
+                   num('gap', 'Gap', '+.2f')],
+                  _gap_cond('gap', 0.5)),
+
+        html.H5("Minutes", style=h5),
+        html.P("FPL doesn't archive injury flags, so the backtest treats everyone as fit. "
+               "Minutes misses here are therefore a bit worse than they would be live.", style=sub),
+        html.Ul([
+            html.Li(f"Average miss on minutes: {mins.get('mins_mae', '-')} min per player."),
+            html.Li(f"{mins.get('zero_share', 0):.0f}% of all projection error came from the "
+                    f"{mins.get('zero_rows', 0):,} cases where the player didn't play."),
+            html.Li(f"Players the model rated as nailed (70%+ to play 60 mins) who then didn't "
+                    f"play: {mins.get('nailed_benched', 0)} of {mins.get('nailed_n', 0):,}."),
+        ], className='lineup-list',
+            style={'color': COLORS['text_dark'], 'paddingLeft': '20px', 'lineHeight': '1.6'}),
+    ]
+
+    if cap:
+        children += [
+            html.H5("Captaincy test", style=h5),
+            html.P(f"If you had captained the model's top projection every week it averaged "
+                   f"{cap['model_avg']:.1f} pts (before doubling), vs {cap['ppg_avg']:.1f} for "
+                   f"simply picking the highest points-per-game player. The model's top 10 "
+                   f"projections averaged {cap['top10_proj']:.2f} projected vs "
+                   f"{cap['top10_actual']:.2f} actual.", style=sub),
+            _bt_table(cap['rows'],
+                      [{'name': 'GW', 'id': 'gw'},
+                       {'name': 'Model pick', 'id': 'model_pick'},
+                       num('model_proj', 'Proj', '.2f'), num('model_pts', 'Pts', 'd'),
+                       {'name': 'PPG pick', 'id': 'ppg_pick'}, num('ppg_pts', 'Pts', 'd'),
+                       {'name': 'Best', 'id': 'best_pick'}, num('best_pts', 'Pts', 'd')]),
+        ]
+    return html.Div(children)
+
+
 def _render_backtest_inner():
     """Returns (children, player_rows) — player_rows is the raw, unfiltered
     per-player-per-GW list that feeds lab-player-rows-store, so the Diff/Mins
@@ -9938,7 +10276,7 @@ def _render_backtest_inner():
             for r in dfa.itertuples()}
     priors = data.get('last_season_priors', {})
 
-    rows, player_rows = run_projection_backtest(usable, meta, fixtures, teams_df,
+    rows, player_rows, misses = run_projection_backtest(usable, meta, fixtures, teams_df,
                                                 gws, priors=priors)
     print(f"[backtest] done in {time.time() - t_start:.0f}s, "
           f"{len(rows)} gameweeks scored")
@@ -9990,6 +10328,8 @@ def _render_backtest_inner():
             style_data_conditional=[
                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
             ]),
+
+        _render_backtest_misses(misses),
 
         html.H4("Every Player, Every Gameweek",
                 style={'color': COLORS['primary'], 'margin': '24px 0 8px 0'}),
