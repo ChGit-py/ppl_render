@@ -2524,13 +2524,14 @@ def calculate_expected_clean_sheets(fixtures_data, teams_df, anchor_gw,
             lam = league_avg_goals
         # Market blend: when the bookmakers have priced THIS specific
         # fixture (this team vs this opponent — could be next GW or a
-        # couple out, whatever fetch_market_lambdas found priced), average
-        # our model with the market's goals-against rate — the market
-        # prices in team news hours before any stats feed does.
+        # couple out, whatever fetch_market_lambdas found priced), blend our
+        # model with the market's goals-against rate (MARKET_WEIGHT to the
+        # market) — the market prices in team news hours before any stats
+        # feed does.
         if odds_lambdas:
             mk = odds_lambdas.get(tid, {}).get(opp_id)
             if mk:
-                lam = 0.5 * lam + 0.5 * mk['lam_against']
+                lam = (1 - MARKET_WEIGHT) * lam + MARKET_WEIGHT * mk['lam_against']
         lam = float(np.clip(lam, 0.25, 3.5))
         p_cs = float(np.exp(-lam))
         result[tid]['xcs'] += p_cs
@@ -2703,24 +2704,76 @@ def match_odds_team_to_fpl(odds_name, fpl_names_by_id):
     return None
 
 
+# How much of a priced fixture's expected goals comes from the market (the
+# rest from the team ratings). Betting markets price team news within hours
+# and are usually the sharpest single-match forecast available.
+MARKET_WEIGHT = float(os.environ.get('MARKET_WEIGHT', '0.7'))
+
+_GOAL_GRID = np.arange(0, 16)
+
+
+def _poisson_pmf(lam):
+    lam = max(float(lam), 1e-9)
+    logp = _GOAL_GRID * np.log(lam) - lam - np.cumsum(np.r_[0.0, np.log(_GOAL_GRID[1:])])
+    return np.exp(logp)
+
+
+def _bisect(fn, lo, hi, iters=60):
+    """Root of an increasing function on [lo, hi] (clamped to the ends)."""
+    f_lo, f_hi = fn(lo), fn(hi)
+    if f_lo >= 0:
+        return lo
+    if f_hi <= 0:
+        return hi
+    for _ in range(iters):
+        mid = 0.5 * (lo + hi)
+        if fn(mid) < 0:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
 def derive_match_lambdas(h2h_probs, total_line, over_prob):
     """
-    Expected goals per side from market prices.
+    Expected goals per side from market prices, fitted exactly under
+    independent Poisson scoring (the standard model for football scores).
 
-    h2h_probs: de-vigged (p_home, p_draw, p_away). total_line: the main
-    over/under line (e.g. 2.5). over_prob: de-vigged P(over).
+    h2h_probs: de-vigged (p_home, p_draw, p_away). total_line: the over/under
+    line (e.g. 2.5). over_prob: de-vigged P(over).
 
-    Total goals: nudge the line by how the market leans (a 60% over at 2.5
-    implies a true total nearer 2.8). Supremacy: s ≈ 1.3 x (pH − pA) is a
-    standard first-order mapping from outcome probabilities to goal
-    difference for football scorelines. Split total ± supremacy and clip to
-    sane per-side rates.
+    1. Total: the goal expectation T whose P(total > line) equals the
+       market's over price. On a whole-number line (e.g. 3.0) a total equal
+       to the line is a push, so over_prob is read as P(over | no push).
+    2. Supremacy: the home-minus-away split s of T whose P(home win) -
+       P(away win) equals the market's.
+    The old straight-line shortcuts (total = line + 1.2 x lean, supremacy =
+    1.3 x (pH - pA)) understated favourites by up to ~0.6 goals.
     """
     p_home, _p_draw, p_away = h2h_probs
-    lam_total = max(0.5, float(total_line) + (float(over_prob) - 0.5) * 1.2)
-    supremacy = 1.3 * (p_home - p_away)
-    lam_home = float(np.clip((lam_total + supremacy) / 2, 0.2, 4.0))
-    lam_away = float(np.clip((lam_total - supremacy) / 2, 0.2, 4.0))
+    line = float(total_line)
+    over = float(np.clip(over_prob, 0.02, 0.98))
+    is_whole = abs(line - round(line)) < 1e-9
+
+    def over_gap(t):
+        pmf = _poisson_pmf(t)
+        p_over = pmf[_GOAL_GRID > line].sum()
+        if is_whole:
+            push = pmf[_GOAL_GRID == int(round(line))].sum()
+            p_over = p_over / max(1.0 - push, 1e-9)
+        return p_over - over
+
+    lam_total = _bisect(over_gap, 0.3, 8.0)
+    target = float(p_home) - float(p_away)
+
+    def sup_gap(sd):
+        ph, pa = _poisson_pmf((lam_total + sd) / 2), _poisson_pmf((lam_total - sd) / 2)
+        grid = np.outer(ph, pa)
+        return (np.tril(grid, -1).sum() - np.triu(grid, 1).sum()) - target
+
+    supremacy = _bisect(sup_gap, -lam_total + 0.02, lam_total - 0.02)
+    lam_home = float(np.clip((lam_total + supremacy) / 2, 0.1, 5.0))
+    lam_away = float(np.clip((lam_total - supremacy) / 2, 0.1, 5.0))
     return lam_home, lam_away
 
 
@@ -2785,10 +2838,12 @@ def fetch_market_lambdas(teams_df):
         # the change that lets a team carry more than one priced fixture.
         if not home_id or not away_id or away_id in out.get(home_id, {}):
             continue
-        h2h, totals = None, None
+        # Consensus across every bookmaker listed, not whichever came first:
+        # each book's prices are de-vigged, then the median taken.
+        h2h_all, totals_by_line = [], {}
         for bm in ev.get('bookmakers', []):
             for mk in bm.get('markets', []):
-                if mk['key'] == 'h2h' and h2h is None and len(mk.get('outcomes', [])) == 3:
+                if mk.get('key') == 'h2h' and len(mk.get('outcomes', [])) == 3:
                     prices = {o['name']: o['price'] for o in mk['outcomes']}
                     ph = prices.get(ev.get('home_team'))
                     pa = prices.get(ev.get('away_team'))
@@ -2796,19 +2851,25 @@ def fetch_market_lambdas(teams_df):
                     if ph and pa and pd_:
                         probs = _devig([ph, pd_, pa])
                         if probs:
-                            h2h = (probs[0], probs[1], probs[2])
-                if mk['key'] == 'totals' and totals is None:
-                    overs = [o for o in mk.get('outcomes', []) if o.get('name') == 'Over']
-                    unders = [o for o in mk.get('outcomes', []) if o.get('name') == 'Under']
-                    if overs and unders and overs[0].get('point') is not None:
-                        probs = _devig([overs[0]['price'], unders[0]['price']])
-                        if probs:
-                            totals = (overs[0]['point'], probs[0])
-            if h2h and totals:
-                break
-        if not h2h or not totals:
+                            h2h_all.append(probs)
+                if mk.get('key') == 'totals':
+                    # Pair Over and Under on the SAME line
+                    by_pt = {}
+                    for o in mk.get('outcomes', []):
+                        if o.get('point') is not None and o.get('name') in ('Over', 'Under'):
+                            by_pt.setdefault(float(o['point']), {})[o['name']] = o.get('price')
+                    for pt, side in by_pt.items():
+                        if side.get('Over') and side.get('Under'):
+                            probs = _devig([side['Over'], side['Under']])
+                            if probs:
+                                totals_by_line.setdefault(pt, []).append(probs[0])
+        if not h2h_all or not totals_by_line:
             continue
-        lam_h, lam_a = derive_match_lambdas(h2h, totals[0], totals[1])
+        h2h = tuple(np.median(np.array(h2h_all), axis=0))
+        h2h = tuple(v / sum(h2h) for v in h2h)
+        # The most-quoted line (2.5 on ties): most books, most liquid
+        line = max(totals_by_line, key=lambda pt: (len(totals_by_line[pt]), -abs(pt - 2.5)))
+        lam_h, lam_a = derive_match_lambdas(h2h, line, float(np.median(totals_by_line[line])))
         out.setdefault(home_id, {})[away_id] = {'lam_for': lam_h, 'lam_against': lam_a}
         out.setdefault(away_id, {})[home_id] = {'lam_for': lam_a, 'lam_against': lam_h}
         n_fixtures += 1
@@ -2944,7 +3005,7 @@ def calculate_goal_environment(fixtures_data, teams_df, anchor_gw, num_gws=5,
         if odds_lambdas:
             mk = odds_lambdas.get(tid, {}).get(opp_id)
             if mk:
-                lam = 0.5 * lam + 0.5 * mk['lam_for']
+                lam = (1 - MARKET_WEIGHT) * lam + MARKET_WEIGHT * mk['lam_for']
         if not np.isfinite(lam):
             lam = league_avg
         own = _own_attack_neutral(tid)
