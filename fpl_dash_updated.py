@@ -567,10 +567,10 @@ def build_rank_card(history, overall_rank):
             html.Div(f"{overall_rank:,}" if overall_rank else '\u2014',
                      style={'fontSize': '44px', 'fontWeight': '800', 'lineHeight': '1.05',
                             'color': '#ffffff', 'letterSpacing': '-0.02em'}),
-            html.Div([f"After GW{last_gw}" if last_gw else '', ' | ' if delta is not None else '',
+            html.Div([f"After GW{last_gw}" if last_gw else '', ' \u00b7 ' if delta is not None else '',
                       delta if delta is not None else ''],
                      style={'fontSize': '14px', 'color': 'rgba(255,255,255,0.85)'}),
-            html.Div(f"Season best:  {best['overall_rank']:,} (GW{best['event']})" if best else '',
+            html.Div(f"Season best {best['overall_rank']:,} (GW{best['event']})" if best else '',
                      style={'fontSize': '13px', 'color': 'rgba(255,255,255,0.6)', 'marginTop': '2px'}),
         ], style={'display': 'flex', 'flexDirection': 'column', 'gap': '4px', 'flex': '0 1 auto'}),
         html.Div(spark, style={'flex': '1 1 220px', 'minWidth': '180px', 'alignSelf': 'center'}),
@@ -4990,6 +4990,9 @@ app.index_string = '''
                HEADER — compact single row on phones and narrow tablets
             ================================================================ */
             .hdr-short { display: none; }
+            /* Lineup Advisor bullets: FPL green, in the darker shade that stays
+               visible on white (the bright #00ff87 all but disappears) */
+            .lineup-list li::marker { color: #00813f; font-size: 1.15em; }
             /* min-width lives here, not inline: an inline min-width on the header's
                left group matched the mobile filter-row rule, which stretched it to
                100% width and pushed the GW / Updated text off the right edge. */
@@ -7906,11 +7909,10 @@ app.layout = html.Div([
                             " that satisfies FPL's rules: ",
                             html.Strong("2 GKP · 5 DEF · 5 MID · 3 FWD · max 3 per club"), "."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
-                        html.Div([
-                            html.Span("Click on 'Build Optimal Squad' once your parameters have been set",
-                                      style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
-                                             'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
-                        ])
+                        html.Div("Set your parameters below, then click 'Build Optimal Squad'.",
+                                 style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
+                                        'padding': '8px 14px', 'borderRadius': '10px', 'fontWeight': '600',
+                                        'display': 'inline-block', 'lineHeight': '1.4', 'fontSize': '14px'})
                     ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
                     # Controls
@@ -7920,12 +7922,17 @@ app.layout = html.Div([
                             html.Div([
                                 html.Label("Budget (£m)",
                                            style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Slider(
-                                    id='sq-budget', min=75, max=105, step=0.1, value=100,
-                                    marks={i: f'£{i}m' for i in range(75, 106, 5)},
-                                    tooltip={"placement": "bottom", "always_visible": True}
-                                )
-                            ], style={'flex': '3', 'minWidth': '280px', 'padding': '0 10px'}),
+                                dcc.Input(
+                                    id='sq-budget', type='number', min=75, max=110, step=0.1, value=100,
+                                    inputMode='decimal', placeholder='e.g. 100.0',
+                                    style={'width': '100%', 'padding': '8px', 'borderRadius': '4px',
+                                           'border': '1px solid #ccc', 'fontSize': '15px',
+                                           'boxSizing': 'border-box'}
+                                ),
+                                html.Div("75.0 to 110.0, in steps of 0.1",
+                                         style={'fontSize': '12px', 'color': COLORS['text_light'],
+                                                'marginTop': '4px'})
+                            ], style={'flex': '0 1 180px', 'minWidth': '150px', 'padding': '0 10px'}),
                             html.Div([
                                 html.Label("Optimise For",
                                            style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
@@ -10292,16 +10299,11 @@ def run_deadline_check(n_clicks, team_id):
 
     # 1. Deadline
     if nxt and nxt.get('deadline_time'):
-        dl = datetime.fromisoformat(
-            nxt['deadline_time'].replace('Z', '+00:00')
-        ).astimezone(ZoneInfo('Europe/London'))
-
+        dl = datetime.fromisoformat(nxt['deadline_time'].replace('Z', '+00:00'))
         cards.append(html.Div([
-            html.H4(
-                f"Next deadline: {nxt['name'].replace('Gameweek ', 'GW')} — "
-                f"{dl.strftime('%a %d %b, %H:%M')} UK",
-                style={'color': COLORS['primary'], 'margin': 0}
-            )
+            html.H4(f"Next deadline: {nxt['name'].replace('Gameweek ', 'GW')} — "
+                    f"{dl.strftime('%a %d %b, %H:%M')} UTC",
+                    style={'color': COLORS['primary'], 'margin': 0})
         ], style={**CARD_STYLE, 'backgroundColor': '#f0e6f5'}))
 
     # 2. Availability flags in squad
@@ -10480,6 +10482,12 @@ def populate_chip_gw_options(page):
 def build_squad(n_clicks, budget, objective, must_include, must_exclude, chip_gw):
     import traceback
     try:
+        # Budget comes from a free-typed number box: treat blank/invalid as
+        # £100.0m, clamp to 75-110 and round to one decimal place.
+        try:
+            budget = round(min(max(float(budget), 75.0), 110.0), 1)
+        except (TypeError, ValueError):
+            budget = 100.0
         data = get_data()
         df_now = data['df_active'].copy()
 
@@ -10506,7 +10514,7 @@ def build_squad(n_clicks, budget, objective, must_include, must_exclude, chip_gw
 
         result = build_optimal_squad(
             df_now,
-            budget=budget or 83,
+            budget=budget,
             objective=objective or 'ppg',
             must_include=must_include or [],
             must_exclude=must_exclude or [],
@@ -11031,18 +11039,21 @@ def load_my_squad(n_clicks, team_id):
 
             advice = []
             if promote:
-                for pin, pout in zip(promote, demote):
-                    advice.append(html.P([
-                        "\u2192 Start ", html.Strong(pin['name']),
-                        f" ({pin['proj']:.1f} proj) over ",
-                        html.Strong(pout['name']), f" ({pout['proj']:.1f} proj)"],
-                        style={'color': COLORS['text_dark'], 'marginBottom': '6px'}))
+                # Proper bulleted list; the bullet colour comes from .lineup-list in the CSS
+                advice.append(html.Ul([
+                    html.Li(["Start ", html.Strong(pin['name']),
+                             f" ({pin['proj']:.1f} proj) over ",
+                             html.Strong(pout['name']), f" ({pout['proj']:.1f} proj)"],
+                            style={'marginBottom': '6px'})
+                    for pin, pout in zip(promote, demote)
+                ], className='lineup-list',
+                   style={'color': COLORS['text_dark'], 'paddingLeft': '22px', 'margin': '0 0 6px 0'}))
             else:
                 advice.append(html.P("\u2713 Your XI already matches the projected-optimal lineup.",
                                      style={'color': COLORS['success_text'], 'fontWeight': '600',
                                             'marginBottom': '6px'}))
             advice.append(html.P([html.Strong("Recommended bench order: "),
-                                  '  \u2192  '.join(
+                                  ',  '.join(
                                       f"{i}. {pl['name']}" for i, pl in enumerate(bench_order, 1))],
                                  style={'color': COLORS['text_dark'], 'marginTop': '10px'}))
             advice.append(html.P("Bench order decides which auto-subs you get — highest "
