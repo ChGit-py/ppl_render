@@ -567,7 +567,7 @@ def build_rank_card(history, overall_rank):
             html.Div(f"{overall_rank:,}" if overall_rank else '\u2014',
                      style={'fontSize': '44px', 'fontWeight': '800', 'lineHeight': '1.05',
                             'color': '#ffffff', 'letterSpacing': '-0.02em'}),
-            html.Div([f"After GW{last_gw}" if last_gw else '', ' \u00b7 ' if delta is not None else '',
+            html.Div([f"After GW{last_gw}" if last_gw else '', ' | ' if delta is not None else '',
                       delta if delta is not None else ''],
                      style={'fontSize': '14px', 'color': 'rgba(255,255,255,0.85)'}),
             html.Div(f"Season best {best['overall_rank']:,} (GW{best['event']})" if best else '',
@@ -7924,7 +7924,7 @@ app.layout = html.Div([
                             "Set your budget and objective, and the optimiser will find the ",
                             html.Strong("highest scoring 15 player squad"),
                             " that satisfies FPL's rules: ",
-                            html.Strong("2 GKP · 5 DEF · 5 MID · 3 FWD · max 3 per club"), "."
+                            html.Strong("2 GKP | 5 DEF | 5 MID | 3 FWD | max. 3 per club"), "."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div("Set your parameters below, then click 'Build Optimal Squad'.",
                                  style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
@@ -10876,7 +10876,7 @@ def load_my_squad(n_clicks, team_id):
     bank_m       = entry_history.get('bank', entry.get('last_deadline_bank', 0)) / 10
     team_value_m = entry_history.get('value', entry.get('last_deadline_value', 0)) / 10
     transfer_cost = entry_history.get('event_transfers_cost', 0)
-    chip_str     = f" · Chip: {active_chip.upper()}" if active_chip else ''
+    chip_str     = f" | Chip: {active_chip.upper()}" if active_chip else ''
     rank_str     = f"{overall_rank:,}" if overall_rank else 'N/A'
 
     manager_card = html.Div([
