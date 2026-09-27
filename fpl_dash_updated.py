@@ -790,20 +790,27 @@ def build_league_ownership(snapshots):
 # CHIP PLANNER — per-gameweek squad projection
 # =============================================================================
 
-def build_gw_fixture_lookup(fixtures_data, teams_df, gws):
+def build_gw_fixture_lookup(fixtures_data, teams_df, gws, xg_ledger=None, odds_lambdas=None):
     """
     For each gameweek in `gws`, per team: fixture count, average
-    attack/defence difficulty (1-5), fixture-specific ATTACKING GOAL
-    ENVIRONMENT (form + strengths blended; 1.0 = neutral), and the
-    opponent string. Returns
-    {gw: {team_id: {'count', 'att_fdr', 'def_fdr', 'att_env', 'opp'}}}.
+    attack/defence difficulty (1-5), the team's attacking goal environment
+    (for display), the PLAYER fixture multiplier (opponent + venue relative
+    to the team's average fixture), and how the clean-sheet and
+    goals-conceded outlook compares with an average opponent. Uses the same
+    xG ledger and market prices as the main projection so the chip planner
+    and the Proj column price fixtures with one model. Returns
+    {gw: {team_id: {'count', 'att_fdr', 'def_fdr', 'att_env', 'fix_mult',
+    'cs_ratio', 'gc_ratio', 'opp'}}}.
     """
     lookup = {}
     for gw in gws:
         per_gw = calculate_custom_fdr(fixtures_data, teams_df,
                                       anchor_gw=gw - 1, num_gameweeks=1)
-        env_gw = calculate_goal_environment(fixtures_data, teams_df,
-                                            anchor_gw=gw - 1, num_gws=1)
+        env_gw = calculate_goal_environment(fixtures_data, teams_df, anchor_gw=gw - 1, num_gws=1,
+                                            odds_lambdas=odds_lambdas, xg_ledger=xg_ledger)
+        cs_gw = calculate_expected_clean_sheets(fixtures_data, teams_df, anchor_gw=gw - 1,
+                                                num_gws=1, odds_lambdas=odds_lambdas,
+                                                xg_ledger=xg_ledger)
         counts = Counter()
         for f in fixtures_data:
             if f.get('event') == gw:
@@ -813,42 +820,62 @@ def build_gw_fixture_lookup(fixtures_data, teams_df, gws):
         for tid in set(list(per_gw.keys()) + list(counts.keys()) + list(env_gw.keys())):
             v = per_gw.get(tid, {})
             e = env_gw.get(tid, {})
+            c = cs_gw.get(tid, {})
+            cs_n = c.get('cs_prob_neutral') or 0
+            lam_n = c.get('lam_neutral') or 0
             lookup[gw][tid] = {
                 'count': counts.get(tid, 0),
                 'att_fdr': (v.get('att_fdr') if v.get('att_fdr') is not None else 3.0),
                 'def_fdr': (v.get('def_fdr') if v.get('def_fdr') is not None else 3.0),
                 'att_env': e.get('att_env_avg', 1.0),
+                'fix_mult': e.get('fix_mult_avg', 1.0),
+                # This week's defensive outlook relative to an average opponent
+                'cs_ratio': ((c.get('avg_cs_prob') or 0) / 100.0 / cs_n) if cs_n > 0 and c.get('count') else 1.0,
+                'gc_ratio': (c['lam_avg'] / lam_n) if lam_n > 0 and c.get('lam_avg') else 1.0,
                 'opp': (f"{e.get('opp_next', '')} ({e.get('venue_next', '')})"
                         if e.get('opp_next') else ''),
             }
     return lookup
 
 
-def project_player_gw(neutral_base, position, team_id, gw_lookup_for_gw):
+# Parts of the neutral per-match projection that fixtures move (see
+# compute_expected_points): attack (goals + assists), clean sheet, goals
+# conceded, and everything else (appearance, DEFCON, saves, bonus).
+NB_PARTS = ('nb_att', 'nb_cs', 'nb_gc', 'nb_other')
+
+
+def project_player_gw(parts, position, team_id, gw_lookup_for_gw):
     """
-    One player's projected points in one specific future GW: the neutral
-    (FDR-3, single-fixture) per-GW base scaled by that GW's fixture and
+    One player's projected points in one specific future GW: each part of
+    the neutral per-match base scaled by that GW's fixture — attack by the
+    player fixture multiplier, clean sheets and goals conceded by how this
+    opponent compares with an average one, the rest unscaled — then
     multiplied by fixture count (0 for a blank, 2 for a double).
 
-    MID/FWD scale by the ATTACKING GOAL ENVIRONMENT (0.55-1.80) — so a
-    striker at home to a promoted side gets the real ~1.5x his fixture
-    deserves, not a ±12% nudge, and recency alone can no longer outrank the
-    fixture of the season. GKP/DEF stay on defensive difficulty (their
-    points are CS-driven).
+    `parts` is a mapping with the NB_PARTS keys. A bare number (an old
+    neutral total) is scaled as a whole, the previous behaviour.
     """
     info = gw_lookup_for_gw.get(team_id)
     if not info or info['count'] == 0:
         return 0.0
-    if position in ('GKP', 'DEF'):
-        mult = FDR_STEP_RATIO ** (3.0 - info['def_fdr'])
-    else:
-        mult = float(np.clip(info.get('att_env', 1.0) or 1.0, *ATT_ENV_CLIP))
-    return round(neutral_base * mult * info['count'], 2)
+    att = float(np.clip(info.get('fix_mult', 1.0) or 1.0, *ATT_ENV_CLIP))
+    if not hasattr(parts, 'get'):
+        mult = (FDR_STEP_RATIO ** (3.0 - info['def_fdr'])
+                if position in ('GKP', 'DEF') else att)
+        return round(float(parts or 0) * mult * info['count'], 2)
+    per_match = (_part(parts, 'nb_other') + _part(parts, 'nb_att') * att
+                 + _part(parts, 'nb_cs') * info.get('cs_ratio', 1.0)
+                 + _part(parts, 'nb_gc') * info.get('gc_ratio', 1.0))
+    return round(per_match * info['count'], 2)
 
 
-FORMATIONS = ((3, 4, 3), (3, 5, 2), (4, 3, 3), (4, 4, 2),
-              (4, 5, 1), (5, 3, 2), (5, 4, 1))
-SQUAD_QUOTA = {'GKP': 2, 'DEF': 5, 'MID': 5, 'FWD': 3}
+def _part(parts, key):
+    v = parts.get(key, 0.0)
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return 0.0
+    return 0.0 if np.isnan(v) else v
 
 
 def project_pool_for_gw(pool, gw_lookup_for_gw):
@@ -857,19 +884,28 @@ def project_pool_for_gw(pool, gw_lookup_for_gw):
     the Free Hit optimiser has to price every player in the game for every
     gameweek in the horizon, which is far too many scalar calls.
 
-    `pool` needs columns: position, team, neutral_base. Returns a Series.
+    `pool` needs columns: team plus the NB_PARTS columns (or, as a fallback,
+    position + neutral_base). Returns a Series.
     """
-    counts = pool['team'].map(lambda t: (gw_lookup_for_gw.get(t) or {}).get('count', 0))
-    def_fdr = pool['team'].map(
-        lambda t: (gw_lookup_for_gw.get(t) or {}).get('def_fdr', 3.0)).astype(float)
-    att_env = pool['team'].map(
-        lambda t: (gw_lookup_for_gw.get(t) or {}).get('att_env', 1.0) or 1.0).astype(float)
-
+    info = lambda t, k, d: (gw_lookup_for_gw.get(t) or {}).get(k, d)
+    counts = pool['team'].map(lambda t: info(t, 'count', 0))
+    fix = pool['team'].map(lambda t: info(t, 'fix_mult', 1.0) or 1.0).astype(float).clip(*ATT_ENV_CLIP)
+    if all(c in pool.columns for c in NB_PARTS):
+        num = lambda c: pd.to_numeric(pool[c], errors='coerce').fillna(0.0)
+        cs_r = pool['team'].map(lambda t: info(t, 'cs_ratio', 1.0)).astype(float)
+        gc_r = pool['team'].map(lambda t: info(t, 'gc_ratio', 1.0)).astype(float)
+        per_match = (num('nb_other') + num('nb_att') * fix
+                     + num('nb_cs') * cs_r + num('nb_gc') * gc_r)
+        return (per_match * counts).clip(lower=0)
+    def_fdr = pool['team'].map(lambda t: info(t, 'def_fdr', 3.0)).astype(float)
     is_def_unit = pool['position'].isin(['GKP', 'DEF'])
-    mult = np.where(is_def_unit,
-                    FDR_STEP_RATIO ** (3.0 - def_fdr),
-                    att_env.clip(*ATT_ENV_CLIP))
+    mult = np.where(is_def_unit, FDR_STEP_RATIO ** (3.0 - def_fdr), fix)
     return (pool['neutral_base'].fillna(0) * mult * counts).clip(lower=0)
+
+
+FORMATIONS = ((3, 4, 3), (3, 5, 2), (4, 3, 3), (4, 4, 2),
+              (4, 5, 1), (5, 3, 2), (5, 4, 1))
+SQUAD_QUOTA = {'GKP': 2, 'DEF': 5, 'MID': 5, 'FWD': 3}
 
 
 def optimise_free_hit_xi(pool, budget, max_per_club=3, pool_depth=60):
@@ -1149,6 +1185,14 @@ def _safe_val(v):
     return float(v)
 
 
+# Captaincy: expected points decide; ownership only breaks near-ties. Between
+# two players you own, the armband's expected gain on the field is simply the
+# extra copy of the captain's points: rivals' ownership doesn't change it, it
+# changes the RISK. So popular picks win near-ties when protecting a lead and
+# differentials when chasing, and ownership can shift a player by at most
+# half this many points either way.
+CAPTAIN_TIEBREAK_PTS = float(os.environ.get('FPL_CAPTAIN_TIEBREAK_PTS', '1.0'))
+
 CAPTAIN_WEIGHTS = {
     'form': 0.25,
     'xgi90': 0.20,
@@ -1213,17 +1257,24 @@ def compute_captain_distribution(df, n_sims=4000, seed=17):
     pos = df['position']
     num = lambda c, d=0.0: pd.to_numeric(df[c], errors='coerce').fillna(d).values
 
+    # xp_* are per-GAMEWEEK totals: a double holds both matches. Simulate
+    # each match separately (a blank simulates none), so per-match rates
+    # come from dividing by the fixture count.
+    n_fx = (np.clip(np.round(num('next_fixture_count', 1.0)), 0, 3).astype(int)
+            if 'next_fixture_count' in df.columns else np.ones(len(idx), dtype=int))
+    per = np.where(n_fx > 0, 1.0 / np.maximum(n_fx, 1), 0.0)
+
     gpts = pos.map(GOAL_POINTS).fillna(4).values.astype(float)
     cpts = pos.map(CS_POINTS).fillna(0).values.astype(float)
 
-    # Invert expected component points back into rates
-    lam_g = np.clip(num('xp_goals') / np.maximum(gpts, 1e-9), 0, 5)
-    lam_a = np.clip(num('xp_assists') / ASSIST_POINTS, 0, 5)
-    p_cs = np.clip(np.where(cpts > 0, num('xp_cs') / np.maximum(cpts, 1e-9), 0.0), 0, 1)
-    p_dc = np.clip(num('xp_defcon') / DEFCON_POINTS, 0, 1)
-    lam_sv = np.clip(num('xp_saves') * 3.0, 0, 15)
-    m_bon = np.clip(num('xp_bonus'), 0, 3)
-    lam_gc = np.clip(-num('xp_gc') * 2.0, 0, 8)
+    # Invert expected component points (per match) back into rates
+    lam_g = np.clip(num('xp_goals') * per / np.maximum(gpts, 1e-9), 0, 5)
+    lam_a = np.clip(num('xp_assists') * per / ASSIST_POINTS, 0, 5)
+    p_cs = np.clip(np.where(cpts > 0, num('xp_cs') * per / np.maximum(cpts, 1e-9), 0.0), 0, 1)
+    p_dc = np.clip(num('xp_defcon') * per / DEFCON_POINTS, 0, 1)
+    lam_sv = np.clip(num('xp_saves') * per * 3.0, 0, 15)
+    m_bon = np.clip(num('xp_bonus') * per, 0, 3)
+    lam_gc = np.clip(-num('xp_gc') * per * 2.0, 0, 8)
 
     mins = np.clip(num('exp_mins_next', 60.0), 0, 90)
     p_start = np.clip(mins / 90.0, 0, 1)          # P(plays 60+)
@@ -1248,50 +1299,29 @@ def compute_captain_distribution(df, n_sims=4000, seed=17):
     lam_gc_c = lam_gc / p_st
 
     N, P = n_sims, len(idx)
-    started = rng.random((N, P)) < p_start
-    cameo = (~started) & (rng.random((N, P)) < p_cameo)
-    played = started | cameo
+    pts = np.zeros((N, P))
+    for k in range(int(n_fx.max()) if len(n_fx) else 0):
+        live = (n_fx > k)                       # players with a (k+1)th match
+        started = (rng.random((N, P)) < p_start) & live
+        cameo = (~started) & (rng.random((N, P)) < p_cameo) & live
+        played = started | cameo
 
-    pts = np.where(started, 2.0, np.where(cameo, 1.0, 0.0))
-    pts += rng.poisson(np.broadcast_to(lam_g_c, (N, P))) * gpts * played
-    pts += rng.poisson(np.broadcast_to(lam_a_c, (N, P))) * ASSIST_POINTS * played
-    pts += (rng.random((N, P)) < p_cs_c) * cpts * started
-    pts += (rng.random((N, P)) < p_dc_c) * DEFCON_POINTS * started
-    pts += np.where(is_gk, rng.poisson(np.broadcast_to(np.maximum(lam_sv_c, 1e-9),
-                                                      (N, P))) // 3, 0) * started
-    conceded = rng.poisson(np.broadcast_to(np.maximum(lam_gc_c, 1e-9), (N, P)))
-    pts -= np.where(is_def_unit, conceded // 2, 0) * started
-    pts += rng.binomial(3, np.clip(m_bon_c / 3.0, 0, 1), size=(N, P)) * played
+        pts += np.where(started, 2.0, np.where(cameo, 1.0, 0.0))
+        pts += rng.poisson(np.broadcast_to(lam_g_c, (N, P))) * gpts * played
+        pts += rng.poisson(np.broadcast_to(lam_a_c, (N, P))) * ASSIST_POINTS * played
+        pts += (rng.random((N, P)) < p_cs_c) * cpts * started
+        pts += (rng.random((N, P)) < p_dc_c) * DEFCON_POINTS * started
+        pts += np.where(is_gk, rng.poisson(np.broadcast_to(np.maximum(lam_sv_c, 1e-9),
+                                                          (N, P))) // 3, 0) * started
+        conceded = rng.poisson(np.broadcast_to(np.maximum(lam_gc_c, 1e-9), (N, P)))
+        pts -= np.where(is_def_unit, conceded // 2, 0) * started
+        pts += rng.binomial(3, np.clip(m_bon_c / 3.0, 0, 1), size=(N, P)) * played
 
     return pd.DataFrame({
         'p_10': pd.Series((pts >= 10).mean(axis=0) * 100, index=idx).round(1),
         'p_15': pd.Series((pts >= 15).mean(axis=0) * 100, index=idx).round(1),
         'sim_mean': pd.Series(pts.mean(axis=0), index=idx).round(2),
     })
-
-
-def compute_captain_gain(df):
-    """
-    Expected points gained on the AVERAGE MANAGER by captaining a player.
-
-    Captaincy is the one decision where raw expected points is the wrong
-    ranking. Doubling is a constant multiplier, so ranking by 2 x xP gives
-    exactly the same order as xP — the armband changes nothing about who is
-    "best". What it changes is what you gain RELATIVE to everyone else, and
-    that depends on effective ownership.
-
-    If EO% of the field effectively owns a player (captaincy counted twice),
-    your net from captaining him is (2 - EO/100) x his points. Captain a
-    90% EO player and you bank 1.1x his score against the field; captain a
-    15% differential and you bank 1.85x. That is the mini-league lever, and
-    top_eo was sitting in the table unused by any ranking.
-    """
-    proj = pd.to_numeric(df.get('proj_pts_next'), errors='coerce')
-    eo = pd.to_numeric(df.get('top_eo'), errors='coerce')
-    if eo is None or eo.isna().all():
-        eo = pd.to_numeric(df.get('ownership'), errors='coerce')
-    eo = eo.fillna(0).clip(0, 200)
-    return ((2.0 - eo / 100.0).clip(lower=0.1) * proj).round(2)
 
 
 def compute_captain_scores(df):
@@ -1454,10 +1484,13 @@ def compute_expected_points(df, gw_elapsed=38, priors=None, components_out=None)
     all gated by expected minutes (recent start rate x availability) and
     scaled by attack/defence-specific fixture difficulty.
 
-    `proj_pts_5` / `proj_pts_8` re-use the per-GW model with horizon-average
-    FDRs x fixture counts (DGW/BGW aware). `haul_pct` is the Poisson
-    probability of 2+ goal involvements next GW — the ceiling metric for
-    chase-mode captaincy.
+    `proj_pts_next` counts the fixtures in the next GW (`next_fixture_count`:
+    0 for a blank, 2 for a double). `proj_pts_5` / `proj_pts_8` re-use the
+    per-match model with horizon-average fixtures x fixture counts.
+    `haul_pct` is the Poisson probability of 2+ goal involvements next GW.
+    With `components_out`, also returns the per-GW parts (xp_*) and the
+    neutral per-match base (proj_neutral_gw and its nb_* parts) that the
+    chip planner scales week by week.
 
     Returns (exp_mins, proj_next, proj_5, proj_8, haul_pct).
     """
@@ -1519,20 +1552,33 @@ def compute_expected_points(df, gw_elapsed=38, priors=None, components_out=None)
     appearance_pts = 2 * p60 + 1 * (p_any - p60)
 
     # --- Per-GW component model ------------------------------------------
-    def per_gw(att_fdr_col, def_fdr_col, att_env_col=None, cs_prob_col=None, collect=False):
-        # Attacking side: prefer the goal-environment ratio (expected goals
-        # for this fixture / league average) — it spreads real fixtures
-        # (promoted side at home ~1.5x, top defence away ~0.7x) where the
-        # old linear FDR multiplier compressed everything into ±12%.
+    def per_gw(att_fdr_col, def_fdr_col, att_env_cols=(), cs_prob_col=None, neutral=False):
+        """One match's expected points, and its parts.
+
+        Attacking side: the PLAYER fixture multiplier (this opponent and
+        venue relative to his team's average fixture — see
+        calculate_goal_environment). The older team-level env column is only
+        a fallback for replay frames logged before the multiplier existed;
+        it double-counts the team's own attacking level. neutral=True prices
+        an average opponent: the base the chip planner scales week by week.
+        """
         att_mult = None
-        if att_env_col and att_env_col in df.columns:
-            env = pd.to_numeric(df[att_env_col], errors='coerce')
-            if env.notna().any():
-                att_mult = env.clip(*ATT_ENV_CLIP).fillna(1.0)
+        if neutral:
+            att_mult = pd.Series(1.0, index=idx)
+        for col in att_env_cols:
+            if att_mult is not None:
+                break
+            if col in df.columns:
+                env = pd.to_numeric(df[col], errors='coerce')
+                if env.notna().any():
+                    att_mult = env.clip(*ATT_ENV_CLIP).fillna(1.0)
         if att_mult is None:
             att_mult = _fdr_mult(df.get(att_fdr_col), idx)
-        def_mult_cs = _fdr_mult(df.get(def_fdr_col), idx)
-        def_mult_gc = _fdr_mult(df.get(def_fdr_col), idx, invert=True)
+        def_fdr = None if neutral else df.get(def_fdr_col)
+        def_fdr_vals = (pd.Series(3.0, index=idx) if neutral
+                        else n(def_fdr_col).fillna(3.0))
+        def_mult_cs = _fdr_mult(def_fdr, idx)
+        def_mult_gc = _fdr_mult(def_fdr, idx, invert=True)
 
         goal_pts = xg90s * exp90 * att_mult * pos.map(GOAL_POINTS).fillna(4)
         assist_pts = xa90s * exp90 * att_mult * ASSIST_POINTS
@@ -1552,14 +1598,12 @@ def compute_expected_points(df, gw_elapsed=38, priors=None, components_out=None)
             _team_cs = pd.to_numeric(df[cs_prob_col], errors='coerce')
             if _team_cs.notna().any():
                 cs_prob = _team_cs.clip(0, 0.90)
+        cs_fixture = (0.50 - 0.08 * (def_fdr_vals - 1)
+                      ).clip(0.05, 0.55) * def_mult_cs.clip(0.8, 1.2)
         if cs_prob is None:
-            cs_fixture = (0.50 - 0.08 * (n(def_fdr_col).fillna(3.0) - 1)
-                          ).clip(0.05, 0.55) * def_mult_cs.clip(0.8, 1.2)
             cs_prob = (0.5 * cs90s + 0.5 * cs_fixture).clip(0, 0.75)
         else:
             # Fill any team the CS model couldn't price with the old blend
-            cs_fixture = (0.50 - 0.08 * (n(def_fdr_col).fillna(3.0) - 1)
-                          ).clip(0.05, 0.55) * def_mult_cs.clip(0.8, 1.2)
             cs_prob = cs_prob.fillna((0.5 * cs90s + 0.5 * cs_fixture).clip(0, 0.75))
         cs_pts = cs_prob * p60 * pos.map(CS_POINTS).fillna(0)
 
@@ -1635,44 +1679,62 @@ def compute_expected_points(df, gw_elapsed=38, priors=None, components_out=None)
 
         total = (appearance_pts + goal_pts + assist_pts + cs_pts +
                  gc_pts + defcon_pts + save_pts + bonus_pts)
-        # The eight components are summed and thrown away, which makes a
-        # projection impossible to interrogate from outside: an 8.8 built
-        # from a modest rate x a 1.6 fixture multiplier is indistinguishable
-        # from an 8.5 rate barely scaled, and they need opposite fixes.
-        if collect and components_out is not None:
-            components_out.update({
-                'xp_appear': appearance_pts.round(2),
-                'xp_goals': goal_pts.round(2),
-                'xp_assists': assist_pts.round(2),
-                'xp_cs': cs_pts.round(2),
-                'xp_gc': gc_pts.round(2),
-                'xp_defcon': defcon_pts.round(2),
-                'xp_saves': save_pts.round(2),
-                'xp_bonus': bonus_pts.round(2),
-                'xp_att_mult': pd.Series(att_mult, index=idx).round(3)
-                               if att_mult is not None else pd.Series(1.0, index=idx),
-                'xp_cs_prob_used': cs_prob.round(3),
-                'xp_p60': p60.round(3),
-            })
-        return total
+        parts = {'appear': appearance_pts, 'goals': goal_pts, 'assists': assist_pts,
+                 'cs': cs_pts, 'gc': gc_pts, 'defcon': defcon_pts, 'saves': save_pts,
+                 'bonus': bonus_pts, 'att_mult': pd.Series(att_mult, index=idx),
+                 'cs_prob': cs_prob}
+        return total, parts
 
-    proj_next = per_gw('next_att_fdr', 'next_def_fdr', att_env_col='att_env_next',
-                       cs_prob_col='cs_prob_next', collect=True).round(2)
+    # Next GW. A blank (0 fixtures) projects nothing and a double projects
+    # both matches: the per-match figures use the gameweek's AVERAGE fixture
+    # multiplier and clean-sheet chance, so multiplying by the count sums
+    # the two fixtures. Frames without the count (older replay logs) are
+    # treated as single-fixture weeks, as before.
+    next_count = n('next_fixture_count').fillna(1.0).clip(0, 3)
+    per_match_next, parts = per_gw('next_att_fdr', 'next_def_fdr',
+                                   att_env_cols=('fix_mult_next', 'att_env_next'),
+                                   cs_prob_col='cs_prob_next')
+    proj_next = (per_match_next * next_count).round(2)
 
-    horizon_per_gw = per_gw('att_fdr_5', 'def_fdr_5', att_env_col='att_env_5',
-                            cs_prob_col='cs_prob_5')
+    # The eight components are summed and thrown away otherwise, which makes
+    # a projection impossible to interrogate from outside: an 8.8 built from
+    # a modest rate x a 1.6 fixture multiplier is indistinguishable from an
+    # 8.5 rate barely scaled, and they need opposite fixes. Components are
+    # per GAMEWEEK (a double counts both matches) so they sum to the
+    # projection; the captain simulation divides by next_fixture_count.
+    if components_out is not None:
+        components_out.update({
+            f'xp_{k}': (parts[k] * next_count).round(2)
+            for k in ('appear', 'goals', 'assists', 'cs', 'gc', 'defcon', 'saves', 'bonus')})
+        components_out.update({
+            'xp_att_mult': parts['att_mult'].round(3),
+            'xp_cs_prob_used': parts['cs_prob'].round(3),
+            'xp_p60': p60.round(3),
+        })
+        # Neutral per-match base (average opponent, neutral venue, one
+        # fixture), kept in the parts that fixtures actually move so the
+        # chip planner can scale each one by a future week's opponent.
+        neutral_total, nb = per_gw(None, None, cs_prob_col='cs_prob_neutral', neutral=True)
+        components_out.update({
+            'nb_att': (nb['goals'] + nb['assists']).round(3),
+            'nb_cs': nb['cs'].round(3),
+            'nb_gc': nb['gc'].round(3),
+            'nb_other': (nb['appear'] + nb['defcon'] + nb['saves'] + nb['bonus']).round(3),
+            'proj_neutral_gw': neutral_total.round(2),
+        })
+
+    horizon_per_gw, _ = per_gw('att_fdr_5', 'def_fdr_5',
+                               att_env_cols=('fix_mult_5', 'att_env_5'),
+                               cs_prob_col='cs_prob_5')
     fixture_count = n('fixture_count').fillna(5).clip(0, 10)
     proj_5 = (horizon_per_gw * fixture_count).round(1)
     fixture_count_8 = n('fixture_count_8').fillna(8).clip(0, 16)
     proj_8 = (horizon_per_gw * fixture_count_8).round(1)
 
     # --- Haul probability: P(2+ goal involvements) next GW ----------------
-    if 'att_env_next' in df.columns and pd.to_numeric(df['att_env_next'], errors='coerce').notna().any():
-        att_mult_next = pd.to_numeric(df['att_env_next'], errors='coerce').clip(*ATT_ENV_CLIP).fillna(1.0)
-    else:
-        att_mult_next = _fdr_mult(df.get('next_att_fdr'), idx)
+    att_mult_next = parts['att_mult']
     lam_neutral = ((xg90s + xa90s) * exp90).clip(lower=0)
-    lam_i = (lam_neutral * att_mult_next).clip(lower=0)
+    lam_i = (lam_neutral * att_mult_next * next_count).clip(lower=0)
     haul_pct = ((1 - np.exp(-lam_i) * (1 + lam_i)) * 100).round(1)
 
     return exp_mins, proj_next, proj_5, proj_8, haul_pct, lam_neutral.round(3)
@@ -2087,7 +2149,18 @@ def calculate_expected_clean_sheets(fixtures_data, teams_df, anchor_gw,
     upcoming = sorted([f for f in fixtures_data if f.get('event') in upcoming_gws],
                       key=lambda f: (f.get('event') or 0, f.get('kickoff_time') or ''))
 
-    result = {tid: {'xcs': 0.0, 'fixtures': [], 'count': 0} for tid in all_ids}
+    result = {tid: {'xcs': 0.0, 'fixtures': [], 'count': 0, 'lams': []} for tid in all_ids}
+
+    def _lam_neutral(tid):
+        """Expected goals against an AVERAGE opponent at a neutral venue —
+        the baseline each real fixture is compared with."""
+        if strengths_ok:
+            lam = league_avg_goals * 0.5 * (_def_factor(tid, 'home') + _def_factor(tid, 'away'))
+        else:
+            wT = _w(tid)
+            own_form = recent.get(tid, {}).get('conceded_pm', league_avg_goals) / league_avg_goals
+            lam = (0.70 + 0.35 * 2) * ((1 - wT) + wT * own_form)
+        return float(np.clip(lam if np.isfinite(lam) else league_avg_goals, 0.25, 3.5))
 
     def _add(tid, opp_id, venue, opp_venue, gw, own_difficulty):
         if tid not in result:
@@ -2117,6 +2190,7 @@ def calculate_expected_clean_sheets(fixtures_data, teams_df, anchor_gw,
         p_cs = float(np.exp(-lam))
         result[tid]['xcs'] += p_cs
         result[tid]['count'] += 1
+        result[tid]['lams'].append(lam)
         result[tid]['fixtures'].append((gw, short.get(opp_id, '???'),
                                         'H' if venue == 'home' else 'A', p_cs))
 
@@ -2129,6 +2203,9 @@ def calculate_expected_clean_sheets(fixtures_data, teams_df, anchor_gw,
     for tid, v in result.items():
         v['xcs'] = round(v['xcs'], 2)
         v['avg_cs_prob'] = round(v['xcs'] / v['count'] * 100, 1) if v['count'] else 0.0
+        v['lam_avg'] = round(float(np.mean(v['lams'])), 3) if v['lams'] else None
+        v['lam_neutral'] = round(_lam_neutral(tid), 3)
+        v['cs_prob_neutral'] = round(float(np.exp(-v['lam_neutral'])), 4)
         v['fixture_string'] = ', '.join(
             f"{opp} ({ven}) {p * 100:.0f}%" for _gw, opp, ven, p in v['fixtures'])
         rec = recent.get(tid, {})
@@ -2473,14 +2550,32 @@ def calculate_goal_environment(fixtures_data, teams_df, anchor_gw, num_gws=5,
             recent.get(opp_id, {}).get('conceded_pm', league_avg) / league_avg, 0.5, 1.7))
         return (1 - w) * static + w * form_f
 
+    def _own_attack_neutral(tid):
+        """The team's own attacking level against an average opponent at a
+        neutral venue, relative to the league average — what a player's own
+        xG rate already reflects."""
+        if strengths_ok:
+            return 0.5 * (_att_factor(tid, 'home') + _att_factor(tid, 'away'))
+        w = _w(tid)
+        return (1 - w) + w * recent.get(tid, {}).get('scored_pm', league_avg) / league_avg
+
     upcoming_gws = set(range(anchor_gw + 1, anchor_gw + num_gws + 1))
     upcoming = sorted([f for f in fixtures_data if f.get('event') in upcoming_gws],
                       key=lambda f: (f.get('event') or 0, f.get('kickoff_time') or ''))
 
     envs = {tid: [] for tid in teams_df['id']}
+    mults = {tid: [] for tid in teams_df['id']}
     meta = {tid: {'opp_next': '', 'venue_next': ''} for tid in teams_df['id']}
 
     def _env_for(tid, opp_id, venue, opp_venue, own_difficulty):
+        """(team env, player fixture multiplier) for one fixture.
+
+        env = the team's expected goals in this fixture / league average —
+        right for showing a TEAM's goal expectation. A player's xG rate
+        already carries his own team's attacking level, so scaling it by env
+        would count that level twice. The player multiplier divides it back
+        out: this fixture relative to the team's own average fixture, which
+        leaves only the opponent and the venue."""
         if strengths_ok:
             lam = league_avg * _att_factor(tid, venue) * _opp_def_weakness(opp_id, opp_venue)
         else:
@@ -2498,7 +2593,10 @@ def calculate_goal_environment(fixtures_data, teams_df, anchor_gw, num_gws=5,
                 lam = 0.5 * lam + 0.5 * mk['lam_for']
         if not np.isfinite(lam):
             lam = league_avg
-        return float(np.clip(lam / league_avg, *ATT_ENV_CLIP))
+        own = _own_attack_neutral(tid)
+        mult = lam / (league_avg * own) if own and np.isfinite(own) and own > 0 else lam / league_avg
+        return (float(np.clip(lam / league_avg, *ATT_ENV_CLIP)),
+                float(np.clip(mult, *ATT_ENV_CLIP)))
 
     # Per-fixture detail as well as the aggregate. The clean-sheet model
     # already emits this; the attacking side needs it too so a grid can show
@@ -2509,23 +2607,29 @@ def calculate_goal_environment(fixtures_data, teams_df, anchor_gw, num_gws=5,
         h, a = f['team_h'], f['team_a']
         gw = f.get('event')
         if h in envs:
-            env = _env_for(h, a, 'home', 'away', f.get('team_h_difficulty'))
+            env, mult = _env_for(h, a, 'home', 'away', f.get('team_h_difficulty'))
             if not envs[h]:
                 meta[h] = {'opp_next': short.get(a, '???'), 'venue_next': 'H'}
             envs[h].append(env)
+            mults[h].append(mult)
             per_fixture[h].append((gw, short.get(a, '???'), 'H', env))
         if a in envs:
-            env = _env_for(a, h, 'away', 'home', f.get('team_a_difficulty'))
+            env, mult = _env_for(a, h, 'away', 'home', f.get('team_a_difficulty'))
             if not envs[a]:
                 meta[a] = {'opp_next': short.get(h, '???'), 'venue_next': 'A'}
             envs[a].append(env)
+            mults[a].append(mult)
             per_fixture[a].append((gw, short.get(h, '???'), 'A', env))
 
     out = {}
     for tid, vals in envs.items():
+        mv = mults[tid]
         out[tid] = {
             'att_env_next': round(vals[0], 3) if vals else 1.0,
             'att_env_avg': round(float(np.mean(vals)), 3) if vals else 1.0,
+            # Player-level fixture multipliers (see _env_for)
+            'fix_mult_next': round(mv[0], 3) if mv else 1.0,
+            'fix_mult_avg': round(float(np.mean(mv)), 3) if mv else 1.0,
             'n_fixtures': len(vals),
             'fixtures': per_fixture.get(tid, []),
             'league_avg_goals': round(float(league_avg), 3),
@@ -2876,7 +2980,8 @@ FEATURE_COLS = ['id', 'position', 'minutes', 'avail_pct', 'recent_minutes_pct',
                 'bonus_threshold', 'defcon_per_90', 'hit_rate', 'qualifying_games',
                 'cs_prob_next', 'cs_prob_5',
                 'saves', 'bonus_per_90', 'next_att_fdr', 'next_def_fdr',
-                'att_env_next', 'pen_rank', 'expected_goals', 'expected_assists',
+                'att_env_next', 'fix_mult_next', 'next_fixture_count', 'cs_prob_neutral',
+                'pen_rank', 'expected_goals', 'expected_assists',
                 'clean_sheets', 'goals_conceded', 'bonus']
 
 
@@ -4203,7 +4308,7 @@ def refresh_core_data():
         print(f"  Season started: {started} | active players: {len(df_active)}")
 
         # Initialise consistency columns as NaN (Phase 2 will populate these)
-        for col in ['p_10', 'p_15', 'sim_mean', 'captain_gain',
+        for col in ['p_10', 'p_15', 'sim_mean',
                     'qualifying_games', 'bonus_games', 'hit_rate', 'starts_60',
                     'bonus_games_60', 'defcon_per_90_games', 'defcon_var',
                     'avg_defcon_qualifying', 'max_defcon_game', 'min_defcon_game']:
@@ -4276,6 +4381,9 @@ def refresh_core_data():
             lambda t: (xcs_next.get(t, {}).get('avg_cs_prob') or 0) / 100.0 or np.nan)
         df_active['cs_prob_5'] = df_active['team'].map(
             lambda t: (xcs_5.get(t, {}).get('avg_cs_prob') or 0) / 100.0 or np.nan)
+        # Against an average opponent — the neutral base the chip planner scales
+        df_active['cs_prob_neutral'] = df_active['team'].map(
+            lambda t: xcs_next.get(t, {}).get('cs_prob_neutral'))
         with DATA_LOCK:
             DATA['xcs_next'] = xcs_next
         print(f"  Clean-sheet probabilities computed for {len(xcs_next)} teams")
@@ -4291,6 +4399,20 @@ def refresh_core_data():
             lambda t: goal_env_next.get(t, {}).get('att_env_next'))
         df_active['att_env_5'] = df_active['team'].map(
             lambda t: goal_env_5.get(t, {}).get('att_env_avg'))
+        # Player-level fixture multipliers (opponent + venue only; the team's
+        # own attacking level is already in each player's xG rate). The next
+        # GW uses its fixtures' average so a double is priced as two matches.
+        df_active['fix_mult_next'] = df_active['team'].map(
+            lambda t: goal_env_next.get(t, {}).get('fix_mult_avg'))
+        df_active['fix_mult_5'] = df_active['team'].map(
+            lambda t: goal_env_5.get(t, {}).get('fix_mult_avg'))
+        # Fixtures in the GW being planned: 0 = blank, 2 = double
+        _cnt_next = Counter()
+        for _f in fixtures_data:
+            if _f.get('event') == next_gw_num:
+                _cnt_next[_f['team_h']] += 1
+                _cnt_next[_f['team_a']] += 1
+        df_active['next_fixture_count'] = df_active['team'].map(_cnt_next).fillna(0)
         print(f"  Goal environments computed for {len(goal_env_next)} teams")
 
         total_managers = bootstrap_data['total_players']
@@ -4356,23 +4478,15 @@ def refresh_core_data():
         for _k, _v in (_xp_parts or {}).items():
             df_active[_k] = _v
 
-        # Captain distribution + EO-adjusted gain, both built off those parts
+        # Captain points distribution, built off those parts. (The neutral
+        # per-match base the chip planner uses — proj_neutral_gw and its
+        # nb_* parts — came out of the same engine pass above.)
         try:
             _cd = compute_captain_distribution(df_active)
             for _c in _cd.columns:
                 df_active[_c] = _cd[_c]
-            df_active['captain_gain'] = compute_captain_gain(df_active)
         except Exception as _e:
             print(f"  captain distribution unavailable ({_e})")
-
-        # Neutral per-GW base (flat FDR-3, single fixture) — reused by the
-        # chip planner and the squad builder's chip-target emphasis
-        _neutral = df_active.copy()
-        _neutral['next_att_fdr'] = 3.0
-        _neutral['next_def_fdr'] = 3.0
-        df_active['proj_neutral_gw'] = compute_expected_points(
-            _neutral, gw_elapsed, priors=_priors)[1]
-        del _neutral
 
         # Transfer trend / price prediction
         print("Computing price change likelihood scores...")
@@ -4688,20 +4802,13 @@ def refresh_heavy_data():
         for _k, _v in (_xp_parts or {}).items():
             df_active[_k] = _v
 
-        # Captain distribution + EO-adjusted gain, both built off those parts
+        # Captain points distribution, built off those parts
         try:
             _cd = compute_captain_distribution(df_active)
             for _c in _cd.columns:
                 df_active[_c] = _cd[_c]
-            df_active['captain_gain'] = compute_captain_gain(df_active)
         except Exception as _e:
             print(f"  captain distribution unavailable ({_e})")
-        _neutral = df_active.copy()
-        _neutral['next_att_fdr'] = 3.0
-        _neutral['next_def_fdr'] = 3.0
-        df_active['proj_neutral_gw'] = compute_expected_points(
-            _neutral, gw_elapsed, priors=_priors)[1]
-        del _neutral
 
         # Swap into global store
         with DATA_LOCK:
@@ -7178,9 +7285,11 @@ app.layout = html.Div([
                                 dcc.RadioItems(
                                     id='cap-mode',
                                     options=[
-                                        {'label': ' Protect (expected pts)', 'value': 'ev'},
-                                        {'label': ' Chase (P of 15+)', 'value': 'ceiling'},
-                                        {'label': ' Differential (gain vs field)', 'value': 'gain'},
+                                        {'label': ' Protect (expected pts, popular picks win near-ties)',
+                                         'value': 'ev'},
+                                        {'label': ' Chase (expected pts, differentials win near-ties)',
+                                         'value': 'chase'},
+                                        {'label': ' Ceiling (P of 15+)', 'value': 'ceiling'},
                                     ],
                                     value='ev', inline=True,
                                     inputStyle={'marginRight': '4px', 'marginLeft': '10px'}
@@ -7190,9 +7299,11 @@ app.layout = html.Div([
                     ], style=CARD_STYLE),
 
                     html.Div([
-                        html.H3("Top Captain Picks (Weighted Score)",
+                        html.H3("Top Captain Picks",
                                 style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-                        html.P("Composite score combining form, xGI, fixtures, BPS, and home/away splits.",
+                        html.P("Protect and Chase rank by projected points; top-manager ownership only "
+                               "reorders players within about 1 point of each other. Ceiling ranks by the "
+                               "chance of 15+ points.",
                                style={'color': COLORS['text_light']}),
                         dcc.Graph(id='cap-bar')
                     ], style=CARD_STYLE),
@@ -7221,13 +7332,11 @@ app.layout = html.Div([
                                  'format': {'specifier': '.0f'}},
                                 {'name': 'P(15+)', 'id': 'p_15', 'type': 'numeric',
                                  'format': {'specifier': '.0f'}},
-                                {'name': 'Gain vs field', 'id': 'captain_gain', 'type': 'numeric',
-                                 'format': {'specifier': '.2f'}},
                                 {'name': 'Composite', 'id': 'captain_score', 'type': 'numeric',
                                  'format': {'specifier': '.1f'}},
                                 {'name': 'Involv. haul %', 'id': 'haul_pct', 'type': 'numeric',
                                  'format': {'specifier': '.1f'}},
-                                {'name': 'Env \u00d7', 'id': 'att_env_next', 'type': 'numeric',
+                                {'name': 'Fixture \u00d7', 'id': 'fix_mult_next', 'type': 'numeric',
                                  'format': {'specifier': '.2f'}},
                                 {'name': 'FPL xP', 'id': 'ep_next', 'type': 'numeric',
                                  'format': {'specifier': '.1f'}},
@@ -9479,8 +9588,9 @@ def update_captain(position, team, max_price, min_minutes, mode, _n):
     Captain ranking, env-aware. Protect mode ranks by projected points
     (which now scale attacking output by the fixture's goal environment, so
     'elite striker vs promoted side at home' beats 'good week last week').
-    Chase mode ranks by haul probability — when you're behind, the doubled
-    captain is your variance lever and P(2+ involvements) is the metric.
+    Protect and Chase both rank by projected points, with top-manager
+    ownership breaking near-ties (see CAPTAIN_TIEBREAK_PTS): popular picks
+    when protecting, differentials when chasing. Ceiling ranks by P(15+).
     Defensive: any failure renders an error message, never a dead page.
     """
     _need_visit(_n)
@@ -9490,19 +9600,28 @@ def update_captain(position, team, max_price, min_minutes, mode, _n):
         filtered = filtered.dropna(subset=['captain_score'])
         filtered = filtered[filtered['captain_score'] > 0]
 
-        # Chase ranks on P(15+ TOTAL points) — every scoring route, not just
-        # goal involvements. Differential ranks on points gained against the
-        # field after effective ownership. Protect stays on expected points.
+        # Ceiling ranks on P(15+ TOTAL points) — every scoring route, not
+        # just goal involvements. Protect and Chase rank on expected points;
+        # ownership only breaks near-ties, in opposite directions.
+        order = None
         if mode == 'ceiling' and 'p_15' in filtered.columns and filtered['p_15'].notna().any():
             rank_col, rank_label = 'p_15', 'P(15+ points) %'
         elif mode == 'ceiling' and 'haul_pct' in filtered.columns and filtered['haul_pct'].notna().any():
             rank_col, rank_label = 'haul_pct', 'Haul probability (%)'
-        elif mode == 'gain' and 'captain_gain' in filtered.columns and filtered['captain_gain'].notna().any():
-            rank_col, rank_label = 'captain_gain', 'Expected gain vs field (pts)'
         elif 'proj_pts_next' in filtered.columns and filtered['proj_pts_next'].notna().any():
             rank_col, rank_label = 'proj_pts_next', 'Projected points (next GW)'
+            eo = (pd.to_numeric(filtered['top_eo'], errors='coerce')
+                  if 'top_eo' in filtered.columns else pd.Series(np.nan, index=filtered.index))
+            if eo.isna().all():
+                eo = pd.to_numeric(filtered.get('ownership'), errors='coerce')
+            eo = eo.fillna(0).clip(0, 100) / 100.0
+            sign = -1.0 if mode == 'chase' else 1.0
+            order = (pd.to_numeric(filtered['proj_pts_next'], errors='coerce').fillna(0)
+                     + sign * CAPTAIN_TIEBREAK_PTS * (eo - 0.5))
         else:
             rank_col, rank_label = 'captain_score', 'Captain score'
+        filtered = filtered.assign(
+            _order=order if order is not None else pd.to_numeric(filtered[rank_col], errors='coerce'))
 
         if len(filtered) == 0:
             empty_fig = go.Figure()
@@ -9512,9 +9631,9 @@ def update_captain(position, team, max_price, min_minutes, mode, _n):
             empty_fig.update_layout(template='plotly_white', height=400)
             return empty_fig, empty_fig, []
 
-        top_20 = filtered.nlargest(20, rank_col)
-        env_series = pd.to_numeric(top_20.get('att_env_next'), errors='coerce').fillna(1.0) \
-            if 'att_env_next' in top_20.columns else pd.Series(1.0, index=top_20.index)
+        top_20 = filtered.nlargest(20, '_order')
+        env_series = pd.to_numeric(top_20.get('fix_mult_next'), errors='coerce').fillna(1.0) \
+            if 'fix_mult_next' in top_20.columns else pd.Series(1.0, index=top_20.index)
         bar_fig = go.Figure()
         bar_fig.add_trace(go.Bar(
             x=top_20['web_name'], y=top_20[rank_col],
@@ -9524,7 +9643,7 @@ def update_captain(position, team, max_price, min_minutes, mode, _n):
             textposition='outside',
             hovertemplate=('%{x}<br>' + rank_label + ': %{y:.2f}<br>'
                            'vs %{customdata[0]} (%{customdata[1]})<br>'
-                           'Attack env: \u00d7%{customdata[2]:.2f}<br>'
+                           'Fixture: \u00d7%{customdata[2]:.2f}<br>'
                            'Proj: %{customdata[3]:.2f}  |  Haul: %{customdata[4]:.0f}%'
                            '<extra></extra>'),
             customdata=np.column_stack([
@@ -9560,14 +9679,14 @@ def update_captain(position, team, max_price, min_minutes, mode, _n):
                                  xaxis_title='Away PPG', yaxis_title='Home PPG')
 
         cols = ['web_name', 'team_name', 'position', 'price', 'proj_pts_next',
-                'p_10', 'p_15', 'captain_gain', 'captain_score',
-                'haul_pct', 'att_env_next', 'ep_next', 'form', 'ppg',
+                'p_10', 'p_15', 'captain_score',
+                'haul_pct', 'fix_mult_next', 'ep_next', 'form', 'ppg',
                 'xgi_per_90', 'next_att_fdr', 'venue_ppg', 'start_rate', 'avail_pct',
                 'set_pieces', 'top_eo',
                 'next_opponent', 'next_venue', 'next_fdr',
                 'home_ppg', 'away_ppg', 'bps_per_90', 'ownership']
         cols = [c for c in cols if c in filtered.columns]
-        table_data = prepare_table_data(filtered.nlargest(50, rank_col), cols)
+        table_data = prepare_table_data(filtered.nlargest(50, '_order'), cols)
 
         return bar_fig, ha_scatter, table_data
 
@@ -10508,16 +10627,13 @@ def build_squad(n_clicks, budget, objective, must_include, must_exclude, chip_gw
         # Chip-target emphasis: add each player's projection in the target
         # GW to the objective, so the wildcard draft is pulled toward squads
         # that peak (bench included) exactly when you plan to Bench Boost.
-        if chip_gw and 'proj_neutral_gw' in df_now.columns:
+        if chip_gw and all(c in df_now.columns for c in NB_PARTS):
             try:
                 lookup = build_gw_fixture_lookup(
                     data.get('fixtures_data', []), data.get('teams_df', pd.DataFrame()),
-                    [int(chip_gw)]).get(int(chip_gw), {})
-                df_now['chip_gw_proj'] = [
-                    project_player_gw(
-                        0 if pd.isna(r.proj_neutral_gw) else r.proj_neutral_gw,
-                        r.position, r.team, lookup)
-                    for r in df_now.itertuples()]
+                    [int(chip_gw)], xg_ledger=data.get('xg_ledger'),
+                    odds_lambdas=data.get('odds_lambdas')).get(int(chip_gw), {})
+                df_now['chip_gw_proj'] = project_pool_for_gw(df_now, lookup).values
                 base_obj = objective if objective in df_now.columns else 'ppg'
                 df_now['chip_weighted'] = (
                     pd.to_numeric(df_now[base_obj], errors='coerce').fillna(0) +
@@ -11304,16 +11420,14 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
         return html.Div([html.P("No projection data found for this squad.",
                                 style={'color': COLORS['danger_text']})], style=CARD_STYLE)
 
-    # Neutral per-GW base: precomputed in the refresh (falls back to a
-    # fresh engine run if the column predates this feature)
-    if 'proj_neutral_gw' in squad.columns and squad['proj_neutral_gw'].notna().any():
-        squad['neutral_base'] = squad['proj_neutral_gw'].fillna(0)
-    else:
-        neutral = squad.copy()
-        neutral['next_att_fdr'] = 3.0
-        neutral['next_def_fdr'] = 3.0
-        squad['neutral_base'] = compute_expected_points(
-            neutral, gw_elapsed=max(gw_num, 1))[1].values
+    # Neutral per-match base in parts: precomputed in the refresh (falls
+    # back to a fresh engine run if the columns predate this feature)
+    if not (all(c in squad.columns for c in NB_PARTS) and squad['nb_other'].notna().any()):
+        _parts = {}
+        compute_expected_points(squad, gw_elapsed=max(gw_num, 1),
+                                priors=data.get('last_season_priors', {}), components_out=_parts)
+        for c in NB_PARTS:
+            squad[c] = _parts[c].values
 
     fixtures_data = data.get('fixtures_data', [])
     teams_df = data.get('teams_df', pd.DataFrame())
@@ -11323,7 +11437,9 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
         return html.Div([html.P("No future gameweeks left this season.",
                                 style={'color': COLORS['text_light']})], style=CARD_STYLE)
 
-    gw_lookup = build_gw_fixture_lookup(fixtures_data, teams_df, future_gws)
+    gw_lookup = build_gw_fixture_lookup(fixtures_data, teams_df, future_gws,
+                                        xg_ledger=data.get('xg_ledger'),
+                                        odds_lambdas=data.get('odds_lambdas'))
 
     # --- Free Hit needs a priced pool and a budget -----------------------
     # Budget is squad selling value + bank, NOT £100m — the Free Hit team is
@@ -11331,9 +11447,7 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
     _eh = (picks_data or {}).get('entry_history') or {}
     fh_budget = (float(_eh.get('value', 1000)) + float(_eh.get('bank', 0))) / 10.0
     fh_pool = dfa[dfa['position'].notna() & dfa['price'].notna()].copy()
-    if 'proj_neutral_gw' in fh_pool.columns and fh_pool['proj_neutral_gw'].notna().any():
-        fh_pool['neutral_base'] = fh_pool['proj_neutral_gw'].fillna(0)
-    else:
+    if not (all(c in fh_pool.columns for c in NB_PARTS) and fh_pool['nb_other'].notna().any()):
         fh_pool = fh_pool.iloc[0:0]
 
     _team_short = (dict(zip(teams_df['id'], teams_df['short_name']))
@@ -11348,17 +11462,18 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
         blanks = 0
         for r in squad.itertuples():
             info = gw_lookup.get(g, {}).get(r.team, {})
-            proj = project_player_gw(r.neutral_base, r.position, r.team, gw_lookup.get(g, {}))
+            proj = project_player_gw({c: getattr(r, c) for c in NB_PARTS},
+                                     r.position, r.team, gw_lookup.get(g, {}))
             if proj == 0:
                 blanks += 1
             # Ceiling in THIS gameweek: Poisson P(2+ involvements) with the
-            # neutral xGI rate scaled by this fixture's goal environment and
+            # neutral xGI rate scaled by this fixture's player multiplier and
             # fixture count. Triple Captain multiplies a hoped-for haul, not
             # an average — so the TC pick is scored on EV x ceiling, which
             # is how an explosive striker at home to a promoted side beats a
             # steady accumulator whose mean is marginally higher.
             lam_n = float(getattr(r, 'xgi_lam_neutral', 0) or 0) if has_lam else 0.0
-            env = float(np.clip(info.get('att_env', 1.0) or 1.0, *ATT_ENV_CLIP))
+            env = float(np.clip(info.get('fix_mult', 1.0) or 1.0, *ATT_ENV_CLIP))
             lam_g = max(lam_n * env * max(info.get('count', 0), 0), 0.0)
             p_haul = float(1 - np.exp(-lam_g) * (1 + lam_g)) if lam_g > 0 else 0.0
             tc_score = proj * (0.6 + 0.8 * p_haul)
@@ -11419,7 +11534,7 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
             'tc_haul': best['haul'], 'tc_score': best['tc_score'],
             'tc_alt': (f"{runner['name']} ({runner['haul']:.0f}%)" if runner else ''),
             'tc_opp': _binfo.get('opp', ''),
-            'tc_env': _binfo.get('att_env', 1.0),
+            'tc_env': _binfo.get('fix_mult', 1.0),
             'blanks': blanks, 'with_fixture': with_fixture,
         })
 
