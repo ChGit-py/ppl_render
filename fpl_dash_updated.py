@@ -2722,6 +2722,9 @@ def compute_calibration(min_actual_minutes_players=50):
     by_gw = {}
     for gw, proj, fpl_ep, pts in rows:
         by_gw.setdefault(gw, []).append((proj, fpl_ep, pts))
+    # RMSE leads: projections are averages, and squared error is what an
+    # average minimises (MAE rewards the median, i.e. flat projections).
+    rmse = lambda errs: float(np.sqrt(np.mean(np.square(errs))))
     per_gw = []
     for gw in sorted(by_gw):
         sample = by_gw[gw]
@@ -2729,6 +2732,8 @@ def compute_calibration(min_actual_minutes_players=50):
         fp = [(f, a) for _p, f, a in sample if f is not None]
         mae_fpl = float(np.mean([abs(f - a) for f, a in fp])) if fp else None
         per_gw.append({'gw': gw, 'n': len(sample),
+                       'rmse_model': round(rmse([p - a for p, _f, a in sample]), 3),
+                       'rmse_fpl': round(rmse([f - a for f, a in fp]), 3) if fp else None,
                        'mae_model': round(mae_model, 3),
                        'mae_fpl': round(mae_fpl, 3) if mae_fpl is not None else None})
     all_rows = [x for sample in by_gw.values() for x in sample]
@@ -2736,6 +2741,8 @@ def compute_calibration(min_actual_minutes_players=50):
     fp = [(f, a) for _p, f, a in all_rows if f is not None]
     mae_fpl = round(float(np.mean([abs(f - a) for f, a in fp])), 3) if fp else None
     return {'per_gw': per_gw, 'mae_model': mae_model, 'mae_fpl': mae_fpl,
+            'rmse_model': round(rmse([p - a for p, _f, a in all_rows]), 3),
+            'rmse_fpl': round(rmse([f - a for f, a in fp]), 3) if fp else None,
             'n': len(all_rows), 'gws': len(per_gw)}
 
 
@@ -2845,23 +2852,38 @@ def _fixtures_as_of(fixtures_data, upto_round):
 
 
 def run_projection_backtest(histories, meta, fixtures_data, teams_df,
-                            gws, priors=None, recent_window=6):
+                            gws, priors=None, recent_window=6, xg_ledger=None):
     """
     Walk forward one gameweek at a time: rebuild the inputs, project, then
-    score against what actually happened.
+    score against what actually happened — using the SAME fixture model the
+    live projection uses (player fixture multiplier, clean-sheet model, xG
+    ledger, blank/double counts).
 
     Reported alongside the model, and this is the part that matters, are two
     naive baselines — predict each player's points-per-game to date, and
-    predict the positional average. MAE on FPL scores is a weak test because
-    most players score 1-3 points, so a flat guess near 2.2 already scores
-    about 2.0. If the model cannot beat "just use his PPG", the modelling
-    layer is not earning its place.
+    predict the positional average. If the model cannot beat "just use his
+    PPG", the modelling layer is not earning its place.
 
-    Rank metrics are included for the same reason. Every decision the app
-    makes is a ranking decision, not an absolute-value one, so Spearman
-    correlation and top-20 precision say more than MAE does.
+    Error is reported as RMSE (squared error) first and MAE second. The
+    projection is an AVERAGE (expected points), and squared error is the
+    measure an average minimises; MAE is minimised by the median, and most
+    FPL scores are 1-2, so tuning on MAE rewards flat projections that
+    underrate hauls. Rank metrics (Spearman, top-20) are included because
+    every decision the app makes is a ranking decision.
+
+    Calibration checks the two sub-models directly: predicted vs actual
+    goals, and clean-sheet probability vs how often clean sheets happened
+    (with a Brier score against a "league-average rate" baseline).
+
+    The xG ledger is safe to pass whole: team form only reads fixtures that
+    had finished before the target round (see _fixtures_as_of).
+    Known limits: availability flags and penalty order are today's (FPL
+    doesn't archive them), and market odds aren't replayed.
+
+    Returns (per_gw_rows, player_rows, calibration).
     """
     results, player_rows = [], []
+    goal_pairs, cs_pairs = [], []
     for g in gws:
         frame = reconstruct_player_frame(histories, meta, g, recent_window)
         if frame.empty or len(frame) < 30:
@@ -2869,9 +2891,12 @@ def run_projection_backtest(histories, meta, fixtures_data, teams_df,
 
         hist_fx = _fixtures_as_of(fixtures_data, g)
         try:
-            xcs = calculate_expected_clean_sheets(hist_fx, teams_df, g - 1, num_gws=1)
-            genv = calculate_goal_environment(hist_fx, teams_df, g - 1, num_gws=1)
-        except Exception:
+            xcs = calculate_expected_clean_sheets(hist_fx, teams_df, g - 1, num_gws=1,
+                                                  xg_ledger=xg_ledger)
+            genv = calculate_goal_environment(hist_fx, teams_df, g - 1, num_gws=1,
+                                              xg_ledger=xg_ledger)
+        except Exception as e:
+            print(f"  backtest GW{g} team models failed: {e}")
             xcs, genv = {}, {}
 
         tgt = [f for f in fixtures_data if (f.get('event') or 0) == g]
@@ -2883,43 +2908,66 @@ def run_projection_backtest(histories, meta, fixtures_data, teams_df,
             counts[f['team_h']] += 1
             counts[f['team_a']] += 1
 
+        team_env = lambda t, k, d: (genv.get(t, {}) or {}).get(k, d)
         frame['next_att_fdr'] = frame['team'].map(att_fdr).fillna(3.0)
         frame['next_def_fdr'] = frame['next_att_fdr']
-        frame['att_env_next'] = frame['team'].map(
-            lambda t: (genv.get(t, {}) or {}).get('avg_att_env', 1.0)).fillna(1.0)
+        frame['att_env_next'] = frame['team'].map(lambda t: team_env(t, 'att_env_avg', 1.0)).fillna(1.0)
+        frame['fix_mult_next'] = frame['team'].map(lambda t: team_env(t, 'fix_mult_avg', 1.0)).fillna(1.0)
         frame['cs_prob_next'] = frame['team'].map(
             lambda t: ((xcs.get(t, {}) or {}).get('avg_cs_prob') or 0) / 100.0).replace(0, np.nan)
-        frame['fixture_count'] = frame['team'].map(counts).fillna(0)
+        frame['cs_prob_neutral'] = frame['team'].map(
+            lambda t: (xcs.get(t, {}) or {}).get('cs_prob_neutral'))
+        frame['next_fixture_count'] = frame['team'].map(counts).fillna(0)
+        frame['fixture_count'] = frame['next_fixture_count']
         for c in ('att_fdr_5', 'def_fdr_5'):
             frame[c] = 3.0
         frame['att_env_5'] = 1.0
         frame['cs_prob_5'] = 0.25
         frame['fixture_count_8'] = 8
 
+        parts = {}
         try:
             _, proj, _, _, _, _ = compute_expected_points(
-                frame, gw_elapsed=max(g - 1, 1), priors=priors or {})
+                frame, gw_elapsed=max(g - 1, 1), priors=priors or {}, components_out=parts)
         except Exception as e:
             print(f"  backtest GW{g} projection failed: {e}")
             continue
 
-        actual = {pid: sum(h.get('total_points') or 0
-                           for h in hist if (h.get('round') or 0) == g)
+        rows_g = {pid: [h for h in hist if (h.get('round') or 0) == g]
                   for pid, hist in histories.items()}
-        played = {pid: any((h.get('round') or 0) == g for h in hist)
-                  for pid, hist in histories.items()}
+        actual = {pid: sum(h.get('total_points') or 0 for h in rs) for pid, rs in rows_g.items()}
+        goals_act = {pid: sum(h.get('goals_scored') or 0 for h in rs) for pid, rs in rows_g.items()}
 
         frame = frame.assign(proj=proj.values)
+        gpts = frame['position'].map(GOAL_POINTS).fillna(4)
+        frame['pred_goals'] = (pd.to_numeric(parts.get('xp_goals'), errors='coerce')
+                               .fillna(0).values / gpts.values)
         frame['actual'] = frame['id'].map(actual)
+        frame['goals_actual'] = frame['id'].map(goals_act).fillna(0)
         frame['gw_label'] = f"GW{g}"
         frame['mins_played'] = frame['id'].map(
-            {pid: sum(h.get('minutes') or 0 for h in hist if (h.get('round') or 0) == g)
-             for pid, hist in histories.items()}).fillna(0)
-        frame['in_gw'] = frame['id'].map(played).fillna(False)
+            {pid: sum(h.get('minutes') or 0 for h in rs) for pid, rs in rows_g.items()}).fillna(0)
         # Only players whose team actually had a fixture that week
-        frame = frame[(frame['fixture_count'] > 0) & frame['actual'].notna()]
+        frame = frame[(frame['next_fixture_count'] > 0) & frame['actual'].notna()]
         if len(frame) < 30:
             continue
+        goal_pairs += list(zip(frame['pred_goals'], frame['goals_actual']))
+
+        # Clean sheets, team level: every fixture this week, with the
+        # league's clean-sheet rate to date as the naive baseline.
+        prior_fin = [f for f in fixtures_data if (f.get('event') or 0) < g
+                     and f.get('team_h_score') is not None and f.get('team_a_score') is not None]
+        base_cs = (sum((f['team_a_score'] == 0) + (f['team_h_score'] == 0) for f in prior_fin)
+                   / (2 * len(prior_fin))) if prior_fin else 0.25
+        for f in tgt:
+            if f.get('team_h_score') is None or f.get('team_a_score') is None:
+                continue
+            for tid, conceded in ((f['team_h'], f['team_a_score']),
+                                  (f['team_a'], f['team_h_score'])):
+                fx_list = (xcs.get(tid, {}) or {}).get('fixtures') or []
+                p = [q for (_gw, _o, _v, q) in fx_list]
+                if p:
+                    cs_pairs.append((float(np.mean(p)), 1.0 if conceded == 0 else 0.0, base_cs))
 
         # Naive baselines
         frame['base_ppg'] = frame.apply(
@@ -2936,8 +2984,12 @@ def run_projection_backtest(histories, meta, fixtures_data, teams_df,
                     for h in histories.get(pid, []) if (h.get('round') or 0) < g]
             _prior_pos[_pos] = (sum(_pts) / len(_pts)) if _pts else 0.0
         frame['base_pos'] = frame['position'].map(_prior_pos)
+        # Baselines are per match; a double counts twice
+        frame['base_ppg'] = frame['base_ppg'] * frame['next_fixture_count']
+        frame['base_pos'] = frame['base_pos'] * frame['next_fixture_count']
 
         err = (frame['proj'] - frame['actual'])
+        rmse = lambda e: float(np.sqrt(np.mean(np.square(e))))
         top20_proj = set(frame.nlargest(20, 'proj')['id'])
         top20_act = set(frame.nlargest(20, 'actual')['id'])
         spear = frame[['proj', 'actual']].corr(method='spearman').iloc[0, 1]
@@ -2957,14 +3009,45 @@ def run_projection_backtest(histories, meta, fixtures_data, teams_df,
         results.append({
             'gw': g,
             'players': len(frame),
+            'rmse': round(rmse(err), 3),
             'mae': round(err.abs().mean(), 3),
             'bias': round(err.mean(), 3),
             'spearman': round(float(spear) if pd.notna(spear) else 0, 3),
             'top20': len(top20_proj & top20_act),
+            'rmse_ppg': round(rmse(frame['base_ppg'] - frame['actual']), 3),
+            'rmse_pos': round(rmse(frame['base_pos'] - frame['actual']), 3),
             'mae_ppg': round((frame['base_ppg'] - frame['actual']).abs().mean(), 3),
             'mae_pos': round((frame['base_pos'] - frame['actual']).abs().mean(), 3),
         })
-    return results, player_rows
+    return results, player_rows, _backtest_calibration(goal_pairs, cs_pairs)
+
+
+def _backtest_calibration(goal_pairs, cs_pairs):
+    """Bucketed predicted-vs-actual tables for goals and clean sheets."""
+    out = {'goals': [], 'cs': [], 'n_goals': len(goal_pairs), 'n_cs': len(cs_pairs)}
+    if goal_pairs:
+        gp = pd.DataFrame(goal_pairs, columns=['pred', 'act'])
+        out['goals_pred_total'] = round(float(gp['pred'].sum()), 1)
+        out['goals_act_total'] = int(gp['act'].sum())
+        bins = [-0.001, 0.1, 0.25, 0.5, 10]
+        labels = ['under 0.10', '0.10-0.25', '0.25-0.50', '0.50+']
+        gp['bucket'] = pd.cut(gp['pred'], bins=bins, labels=labels)
+        for lab, grp in gp.groupby('bucket', observed=True):
+            out['goals'].append({'bucket': str(lab), 'n': len(grp),
+                                 'pred': round(float(grp['pred'].mean()), 3),
+                                 'actual': round(float(grp['act'].mean()), 3)})
+    if cs_pairs:
+        cp = pd.DataFrame(cs_pairs, columns=['p', 'cs', 'base'])
+        out['cs_brier'] = round(float(np.mean((cp['p'] - cp['cs']) ** 2)), 4)
+        out['cs_brier_base'] = round(float(np.mean((cp['base'] - cp['cs']) ** 2)), 4)
+        bins = [-0.001, 0.2, 0.3, 0.4, 1.0]
+        labels = ['under 20%', '20-30%', '30-40%', '40%+']
+        cp['bucket'] = pd.cut(cp['p'], bins=bins, labels=labels)
+        for lab, grp in cp.groupby('bucket', observed=True):
+            out['cs'].append({'bucket': str(lab), 'n': len(grp),
+                              'pred': round(float(grp['p'].mean()) * 100, 1),
+                              'actual': round(float(grp['cs'].mean()) * 100, 1)})
+    return out
 
 
 # =============================================================================
@@ -3032,44 +3115,49 @@ def _load_replay_frames():
     return frames
 
 
-def run_parameter_sweep(fdr_ratios=(1.10, 1.18, 1.26, 1.34),
-                        shrink_ks=(250, 450, 700)):
+def run_parameter_sweep(shrink_ks=(150, 300, 450, 700, 1000)):
     """
-    Replay every scoreable gameweek under each parameter combination and
-    score projection MAE against realised points. Single-threaded, mutates
-    the module constants under a try/finally restore — do not call from
-    concurrent contexts (Dash callbacks are fine; they serialise per worker).
-    Returns sorted results + how the current live config ranks.
+    Replay every scoreable gameweek under each shrinkage strength (how many
+    minutes of evidence it takes for a player's own numbers to outweigh his
+    prior) and score projections against realised points. Ranked by RMSE:
+    projections are averages, and squared error is what an average
+    minimises — MAE would reward flat projections that underrate hauls.
+
+    The FDR ratio is no longer swept: fixtures now come from the goal-
+    environment multiplier and the clean-sheet model, so it only affects
+    frames that lack them. Single-threaded, mutates SHRINK_K under a
+    try/finally restore — do not call from concurrent contexts (Dash
+    callbacks are fine; they serialise per worker).
+    Returns sorted results + how the current live setting ranks.
     """
-    global FDR_STEP_RATIO, SHRINK_K
+    global SHRINK_K
     frames = _load_replay_frames()
     if not frames:
         return None
-    saved = (FDR_STEP_RATIO, SHRINK_K)
+    saved = SHRINK_K
     results = []
     try:
-        for ratio in fdr_ratios:
-            for k in shrink_ks:
-                FDR_STEP_RATIO, SHRINK_K = ratio, k
-                errs = []
-                for gw, fdf, priors, actuals in frames:
-                    proj = compute_expected_points(fdf, gw_elapsed=max(gw - 1, 1),
-                                                   priors=priors)[1]
-                    for pid, p in zip(fdf['id'], proj):
-                        a = actuals.get(int(pid))
-                        if a is not None and pd.notna(p):
-                            errs.append(abs(float(p) - a))
-                if errs:
-                    results.append({'fdr_ratio': ratio, 'shrink_k': k,
-                                    'mae': round(float(np.mean(errs)), 4),
-                                    'n': len(errs)})
+        for k in shrink_ks:
+            SHRINK_K = k
+            errs = []
+            for gw, fdf, priors, actuals in frames:
+                proj = compute_expected_points(fdf, gw_elapsed=max(gw - 1, 1),
+                                               priors=priors)[1]
+                for pid, p in zip(fdf['id'], proj):
+                    a = actuals.get(int(pid))
+                    if a is not None and pd.notna(p):
+                        errs.append(float(p) - a)
+            if errs:
+                results.append({'shrink_k': k,
+                                'rmse': round(float(np.sqrt(np.mean(np.square(errs)))), 4),
+                                'mae': round(float(np.mean(np.abs(errs))), 4),
+                                'n': len(errs)})
     finally:
-        FDR_STEP_RATIO, SHRINK_K = saved
-    results.sort(key=lambda r: r['mae'])
-    current = next((r for r in results
-                    if r['fdr_ratio'] == saved[0] and r['shrink_k'] == saved[1]), None)
+        SHRINK_K = saved
+    results.sort(key=lambda r: r['rmse'])
+    current = next((r for r in results if r['shrink_k'] == saved), None)
     return {'results': results, 'current': current,
-            'gws': len(frames), 'live': {'fdr_ratio': saved[0], 'shrink_k': saved[1]}}
+            'gws': len(frames), 'live': {'shrink_k': saved}}
 
 
 # =============================================================================
@@ -7657,8 +7745,9 @@ app.layout = html.Div([
 
                     html.Div([
                         html.H4("Parameter Sweep", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-                        html.P("Grid-searches the fixture-response ratio and shrinkage strength over every "
-                               "scoreable gameweek. Needs at least one completed GW with logged features; "
+                        html.P("Tests how many minutes of a player's own data it should take to outweigh "
+                               "his starting estimate, replaying every scoreable gameweek "
+                               "and ranking by RMSE. Needs at least one completed GW with logged features; "
                                "results sharpen as gameweeks accumulate — re-run every few weeks.",
                                style={'color': COLORS['text_light'], 'marginBottom': '12px'}),
                         html.Button("Run Parameter Sweep", id='lab-sweep-btn', n_clicks=0,
@@ -10054,8 +10143,9 @@ def _render_backtest_inner():
             for r in dfa.itertuples()}
     priors = data.get('last_season_priors', {})
 
-    rows, player_rows = run_projection_backtest(usable, meta, fixtures, teams_df,
-                                                gws, priors=priors)
+    rows, player_rows, calib = run_projection_backtest(usable, meta, fixtures, teams_df,
+                                                       gws, priors=priors,
+                                                       xg_ledger=data.get('xg_ledger'))
     print(f"[backtest] done in {time.time() - t_start:.0f}s, "
           f"{len(rows)} gameweeks scored")
     if not rows:
@@ -10064,21 +10154,67 @@ def _render_backtest_inner():
 
     n = sum(r['players'] for r in rows)
     w = lambda k: sum(r[k] * r['players'] for r in rows) / n
-    mae, mae_ppg, mae_pos = w('mae'), w('mae_ppg'), w('mae_pos')
+    # Squared errors pool as a weighted mean of squares, not of roots
+    wr = lambda k: float(np.sqrt(sum(r[k] ** 2 * r['players'] for r in rows) / n))
+    rmse, rmse_ppg, rmse_pos = wr('rmse'), wr('rmse_ppg'), wr('rmse_pos')
+    mae = w('mae')
     spear = sum(r['spearman'] * r['players'] for r in rows) / n
     bias = w('bias')
     top20 = sum(r['top20'] for r in rows) / len(rows)
 
-    beats_ppg = mae < mae_ppg
-    verdict = (f"Model MAE {mae:.3f} vs {mae_ppg:.3f} for 'use his points per game' and "
-               f"{mae_pos:.3f} for the positional average. ")
+    verdict = (f"Model error (RMSE) {rmse:.3f} vs {rmse_ppg:.3f} for 'use his points per game' "
+               f"and {rmse_pos:.3f} for the positional average (MAE {mae:.3f}). ")
     verdict += ("The model is beating both naive baselines."
-                if beats_ppg and mae < mae_pos else
+                if rmse < rmse_ppg and rmse < rmse_pos else
                 "The model is NOT beating the naive baselines \u2014 the modelling layer "
                 "is not earning its place yet.")
     verdict += (f" Rank correlation {spear:.3f}; {top20:.1f} of the top 20 projections "
                 f"landed in the actual top 20 per gameweek. Bias {bias:+.3f} "
                 f"({'over' if bias > 0 else 'under'}-projecting on average).")
+
+    calib_blocks = []
+    if calib.get('goals'):
+        calib_blocks += [
+            html.H4("Goals: predicted vs actual", style={'color': COLORS['primary'],
+                                                          'margin': '20px 0 6px 0'}),
+            html.P(f"Players grouped by predicted goals per gameweek. Across the whole test: "
+                   f"{calib.get('goals_pred_total', 0):.1f} goals predicted, "
+                   f"{calib.get('goals_act_total', 0)} scored.",
+                   style={'color': COLORS['text_light'], 'fontSize': '13px'}),
+            dash_table.DataTable(
+                data=calib['goals'],
+                columns=[{'name': 'Predicted goals', 'id': 'bucket'},
+                         {'name': 'Player-GWs', 'id': 'n', 'type': 'numeric'},
+                         {'name': 'Avg predicted', 'id': 'pred', 'type': 'numeric'},
+                         {'name': 'Avg actual', 'id': 'actual', 'type': 'numeric'}],
+                style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
+                style_data=TABLE_STYLE_DATA),
+        ]
+    if calib.get('cs'):
+        better = calib['cs_brier'] < calib['cs_brier_base']
+        calib_blocks += [
+            html.H4("Clean sheets: predicted vs actual", style={'color': COLORS['primary'],
+                                                                 'margin': '20px 0 6px 0'}),
+            html.P(f"Every team fixture, grouped by the model's clean-sheet chance. Brier score "
+                   f"{calib['cs_brier']:.4f} vs {calib['cs_brier_base']:.4f} for 'every team "
+                   f"gets the league-average rate' (lower is better) \u2014 the model is "
+                   f"{'ahead of' if better else 'NOT beating'} that baseline over "
+                   f"{calib['n_cs']} team-fixtures.",
+                   style={'color': COLORS['text_light'], 'fontSize': '13px'}),
+            dash_table.DataTable(
+                data=calib['cs'],
+                columns=[{'name': 'Predicted CS chance', 'id': 'bucket'},
+                         {'name': 'Team-fixtures', 'id': 'n', 'type': 'numeric'},
+                         {'name': 'Avg predicted %', 'id': 'pred', 'type': 'numeric'},
+                         {'name': 'Actual CS %', 'id': 'actual', 'type': 'numeric'}],
+                style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
+                style_data=TABLE_STYLE_DATA),
+        ]
+    calib_blocks.append(html.P(
+        "Limits: FPL doesn't archive injury flags or penalty order, so the test uses "
+        "today's penalty order and treats everyone as available; bookmaker odds aren't "
+        "replayed. Small samples early in the season are noisy.",
+        style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginTop': '12px'}))
 
     return html.Div([
         html.P(verdict, style={'color': COLORS['text_dark'], 'fontWeight': '600',
@@ -10088,11 +10224,13 @@ def _render_backtest_inner():
             columns=[
                 {'name': 'GW', 'id': 'gw'},
                 {'name': 'Players', 'id': 'players', 'type': 'numeric'},
+                {'name': 'Model RMSE', 'id': 'rmse', 'type': 'numeric',
+                 'format': {'specifier': '.3f'}},
+                {'name': 'PPG baseline', 'id': 'rmse_ppg', 'type': 'numeric',
+                 'format': {'specifier': '.3f'}},
+                {'name': 'Pos-avg baseline', 'id': 'rmse_pos', 'type': 'numeric',
+                 'format': {'specifier': '.3f'}},
                 {'name': 'Model MAE', 'id': 'mae', 'type': 'numeric',
-                 'format': {'specifier': '.3f'}},
-                {'name': 'PPG baseline', 'id': 'mae_ppg', 'type': 'numeric',
-                 'format': {'specifier': '.3f'}},
-                {'name': 'Pos-avg baseline', 'id': 'mae_pos', 'type': 'numeric',
                  'format': {'specifier': '.3f'}},
                 {'name': 'Spearman', 'id': 'spearman', 'type': 'numeric',
                  'format': {'specifier': '.3f'}},
@@ -10106,6 +10244,7 @@ def _render_backtest_inner():
             style_data_conditional=[
                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
             ]),
+        *calib_blocks,
 
         html.H4("Every Player, Every Gameweek",
                 style={'color': COLORS['primary'], 'margin': '24px 0 8px 0'}),
@@ -10309,13 +10448,14 @@ def render_lab_calibration(page):
         return html.P("Nothing scoreable yet. Calibration appears once a logged gameweek "
                       "has finished. The logging is already running in the background.",
                       style={'color': COLORS['text_light']})
-    rows = [{'gw': f"GW{r['gw']}", 'n': r['n'], 'mae_model': r['mae_model'],
+    rows = [{'gw': f"GW{r['gw']}", 'n': r['n'], 'rmse_model': r.get('rmse_model'),
+             'rmse_fpl': r.get('rmse_fpl'), 'mae_model': r['mae_model'],
              'mae_fpl': r['mae_fpl'],
-             'edge': (round(r['mae_fpl'] - r['mae_model'], 3)
-                      if r['mae_fpl'] is not None else None)}
+             'edge': (round(r['rmse_fpl'] - r['rmse_model'], 3)
+                      if r.get('rmse_fpl') is not None else None)}
             for r in cal['per_gw']]
     verdict = ("Model is beating FPL's xP overall — trust the Proj columns."
-               if (cal['mae_fpl'] is not None and cal['mae_model'] < cal['mae_fpl'])
+               if (cal.get('rmse_fpl') is not None and cal['rmse_model'] < cal['rmse_fpl'])
                else "FPL's xP is ahead overall — run the sweep and consider its suggested constants.")
     return html.Div([
         dash_table.DataTable(
@@ -10323,10 +10463,12 @@ def render_lab_calibration(page):
             columns=[
                 {'name': 'GW', 'id': 'gw'},
                 {'name': 'Players', 'id': 'n', 'type': 'numeric'},
-                {'name': 'Model MAE', 'id': 'mae_model', 'type': 'numeric'},
-                {'name': 'FPL xP MAE', 'id': 'mae_fpl', 'type': 'numeric'},
+                {'name': 'Model RMSE', 'id': 'rmse_model', 'type': 'numeric'},
+                {'name': 'FPL xP RMSE', 'id': 'rmse_fpl', 'type': 'numeric'},
                 {'name': 'Edge vs FPL', 'id': 'edge', 'type': 'numeric',
                  'format': {'specifier': '+.3f'}},
+                {'name': 'Model MAE', 'id': 'mae_model', 'type': 'numeric'},
+                {'name': 'FPL xP MAE', 'id': 'mae_fpl', 'type': 'numeric'},
             ],
             style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
             style_data=TABLE_STYLE_DATA,
@@ -10337,8 +10479,9 @@ def render_lab_calibration(page):
                 {'if': {'filter_query': '{edge} < 0', 'column_id': 'edge'},
                  'backgroundColor': '#fde8ef'},
             ]),
-        html.P([html.Strong(f"Overall: model {cal['mae_model']:.3f} vs FPL "
-                            f"{cal['mae_fpl']:.3f} MAE over {cal['gws']} GW(s). "), verdict],
+        html.P([html.Strong(f"Overall RMSE: model {cal['rmse_model']:.3f} vs FPL "
+                            f"{cal['rmse_fpl'] if cal.get('rmse_fpl') is not None else float('nan'):.3f} "
+                            f"over {cal['gws']} GW(s). "), verdict],
                style={'color': COLORS['text_dark'], 'marginTop': '12px'}),
     ])
 
@@ -10357,20 +10500,17 @@ def run_lab_sweep(n_clicks):
     best = sweep['results'][0]
     live = sweep['live']
     cur = sweep['current']
-    rows = [{'fdr_ratio': r['fdr_ratio'], 'shrink_k': r['shrink_k'],
-             'mae': r['mae'],
+    rows = [{'shrink_k': r['shrink_k'], 'rmse': r['rmse'], 'mae': r['mae'],
              'tag': ('BEST' if r is best else '') +
-                    (' LIVE' if (r['fdr_ratio'] == live['fdr_ratio'] and
-                                 r['shrink_k'] == live['shrink_k']) else '')}
+                    (' LIVE' if r['shrink_k'] == live['shrink_k'] else '')}
             for r in sweep['results']]
     advice = []
-    if cur and best['mae'] < cur['mae'] - 0.005:
+    if cur and best['rmse'] < cur['rmse'] - 0.005:
         advice.append(html.P([
             html.Strong("Suggested change: "),
-            f"FDR ratio {best['fdr_ratio']}, shrinkage k {best['shrink_k']} would have cut MAE "
-            f"from {cur['mae']:.4f} to {best['mae']:.4f} over {sweep['gws']} GW(s). Apply by "
-            f"setting env vars FPL_FDR_RATIO={best['fdr_ratio']} and "
-            f"FPL_SHRINK_K={best['shrink_k']} on Render, then redeploy."],
+            f"shrinkage k {best['shrink_k']} would have cut RMSE "
+            f"from {cur['rmse']:.4f} to {best['rmse']:.4f} over {sweep['gws']} GW(s). Apply by "
+            f"setting the env var FPL_SHRINK_K={best['shrink_k']} on Render, then redeploy."],
             style={'color': COLORS['text_dark'], 'marginTop': '12px',
                    'backgroundColor': '#f0e6f5', 'padding': '10px', 'borderRadius': '6px'}))
     else:
@@ -10387,8 +10527,8 @@ def run_lab_sweep(n_clicks):
         dash_table.DataTable(
             data=rows,
             columns=[
-                {'name': 'FDR Ratio', 'id': 'fdr_ratio', 'type': 'numeric'},
-                {'name': 'Shrink k', 'id': 'shrink_k', 'type': 'numeric'},
+                {'name': 'Shrink k (minutes)', 'id': 'shrink_k', 'type': 'numeric'},
+                {'name': 'RMSE', 'id': 'rmse', 'type': 'numeric'},
                 {'name': 'MAE', 'id': 'mae', 'type': 'numeric'},
                 {'name': '', 'id': 'tag'},
             ],
