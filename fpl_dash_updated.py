@@ -11,7 +11,7 @@ from dash import Dash, html, dcc, dash_table, callback, Output, Input, State, ct
 from dash.exceptions import PreventUpdate
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import json
 import sqlite3
@@ -790,7 +790,8 @@ def build_league_ownership(snapshots):
 # CHIP PLANNER — per-gameweek squad projection
 # =============================================================================
 
-def build_gw_fixture_lookup(fixtures_data, teams_df, gws, xg_ledger=None, odds_lambdas=None):
+def build_gw_fixture_lookup(fixtures_data, teams_df, gws, xg_ledger=None, odds_lambdas=None,
+                            ratings=None):
     """
     For each gameweek in `gws`, per team: fixture count, average
     attack/defence difficulty (1-5), the team's attacking goal environment
@@ -805,12 +806,13 @@ def build_gw_fixture_lookup(fixtures_data, teams_df, gws, xg_ledger=None, odds_l
     lookup = {}
     for gw in gws:
         per_gw = calculate_custom_fdr(fixtures_data, teams_df,
-                                      anchor_gw=gw - 1, num_gameweeks=1)
+                                      anchor_gw=gw - 1, num_gameweeks=1, ratings=ratings)
         env_gw = calculate_goal_environment(fixtures_data, teams_df, anchor_gw=gw - 1, num_gws=1,
-                                            odds_lambdas=odds_lambdas, xg_ledger=xg_ledger)
+                                            odds_lambdas=odds_lambdas, xg_ledger=xg_ledger,
+                                            ratings=ratings)
         cs_gw = calculate_expected_clean_sheets(fixtures_data, teams_df, anchor_gw=gw - 1,
                                                 num_gws=1, odds_lambdas=odds_lambdas,
-                                                xg_ledger=xg_ledger)
+                                                xg_ledger=xg_ledger, ratings=ratings)
         counts = Counter()
         for f in fixtures_data:
             if f.get('event') == gw:
@@ -1827,10 +1829,14 @@ def calculate_schedule_adjusted_form(player_histories, teams_df, window=4,
     return out
 
 
-def calculate_custom_fdr(fixtures, teams_df, anchor_gw, num_gameweeks=5):
+def calculate_custom_fdr(fixtures, teams_df, anchor_gw, num_gameweeks=5, ratings=None):
     """
-    Attack- and defence-specific fixture difficulty built from FPL's team
-    strength ratings, scaled to the familiar 1-5 range.
+    Attack- and defence-specific fixture difficulty on the familiar 1-5
+    scale. With `ratings` (the normal case) it comes from the fitted team
+    ratings: each FDR step is one FDR_STEP_RATIO change in expected goals
+    against an average fixture (3 = average, 2 = ~18% more goals for the
+    attacking side, ...). Otherwise it is built from FPL's team strength
+    ratings — which are all zero in some seasons, making every fixture 3.
 
     FPL's generic FDR gives one number per fixture, but "easy fixture for a
     defender" and "easy fixture for a forward" are different questions:
@@ -1839,6 +1845,8 @@ def calculate_custom_fdr(fixtures, teams_df, anchor_gw, num_gameweeks=5):
 
     Returns dict of team_id -> {att_fdr, def_fdr, next_att_fdr, next_def_fdr}
     """
+    if ratings:
+        return _custom_fdr_from_ratings(fixtures, teams_df, anchor_gw, num_gameweeks, ratings)
     strength_cols = ['strength_attack_home', 'strength_attack_away',
                      'strength_defence_home', 'strength_defence_away']
     if not all(c in teams_df.columns for c in strength_cols):
@@ -1880,6 +1888,334 @@ def calculate_custom_fdr(fixtures, teams_df, anchor_gw, num_gameweeks=5):
             'next_def_fdr': vals['def'][0] if vals['def'] else None,
         }
     return result
+
+
+def _custom_fdr_from_ratings(fixtures, teams_df, anchor_gw, num_gameweeks, ratings):
+    """calculate_custom_fdr on fitted ratings: difficulty = how far this
+    fixture moves expected goals from an average one, in FDR_STEP_RATIO steps."""
+    step = np.log(FDR_STEP_RATIO) if FDR_STEP_RATIO > 1 else np.log(1.18)
+    to_fdr = lambda log_mult, sign: round(float(np.clip(3.0 + sign * log_mult / step, 1.0, 5.0)), 2)
+    upcoming_gws = set(range(anchor_gw + 1, anchor_gw + num_gameweeks + 1))
+    per_team = {int(t): {'att': [], 'def': []} for t in teams_df['id']}
+    h_adv = ratings['home']
+    for f in sorted([f for f in fixtures if f.get('event') in upcoming_gws],
+                    key=lambda f: (f.get('event') or 0, f.get('kickoff_time') or '')):
+        for tid, opp, home in ((f['team_h'], f['team_a'], True), (f['team_a'], f['team_h'], False)):
+            if tid not in per_team:
+                continue
+            venue = h_adv / 2 if home else -h_adv / 2
+            # Attacking: opponent's defence + own venue (lower FDR = more goals)
+            per_team[tid]['att'].append(to_fdr(venue + ratings['def'].get(opp, 0.0), -1))
+            # Defending: opponent's attack + their venue (higher FDR = more against)
+            per_team[tid]['def'].append(to_fdr(-venue + ratings['att'].get(opp, 0.0), +1))
+    out = {}
+    for tid, v in per_team.items():
+        out[tid] = {
+            'att_fdr': round(sum(v['att']) / len(v['att']), 2) if v['att'] else None,
+            'def_fdr': round(sum(v['def']) / len(v['def']), 2) if v['def'] else None,
+            'next_att_fdr': v['att'][0] if v['att'] else None,
+            'next_def_fdr': v['def'][0] if v['def'] else None,
+        }
+    return out
+
+
+# =============================================================================
+# TEAM RATINGS — attack / defence / home advantage from expected goals
+# =============================================================================
+# FPL's own strength ratings are coarse (they span about ±15% where real
+# scoring rates span about 2x) and can ship as all zeros, which leaves the
+# team models running on a few weeks of form. These ratings are fitted from
+# expected goals instead: this season's match-by-match xG (the keeper-built
+# ledger, actual goals where a match is missing) plus last season's Understat
+# xG, with recent matches counting more.
+#
+#   log(expected goals) = season level + home advantage (home side only)
+#                         + attacker's attack + defender's defence
+#
+# Every team starts from FPL's own view of it — read off the fixture
+# difficulty (1-5) its opponents are given, which FPL publishes even when
+# its strength ratings are blank — held with the weight of
+# RATING_PRIOR_MATCHES matches, so a handful of games can't produce extreme
+# ratings. Promoted sides (no Premier League data last season) hold their
+# starting point twice as firmly, and fall back to a typical promoted team
+# if FPL's difficulties are missing.
+#
+# Tested on a full-season replay of 2025/26 (740 team-fixtures, each rated
+# only from matches before it): better than FPL's strength ratings + form on
+# goals, match xG and clean sheets. A Poisson clean-sheet probability on
+# these ratings is well calibrated; a wider "uncertain rate" version
+# over-predicted clean sheets and was dropped.
+RATING_HALF_LIFE_DAYS = float(os.environ.get('FPL_RATING_HALF_LIFE_DAYS', '150'))
+RATING_LAST_SEASON_WEIGHT = float(os.environ.get('FPL_RATING_LAST_SEASON_WEIGHT', '0.5'))
+RATING_PRIOR_MATCHES = float(os.environ.get('FPL_RATING_PRIOR_MATCHES', '8'))
+# One FDR step in a team's rating ~ this much on the log scale of goals
+# (the old difficulty fallback moved expected goals ~25% per step).
+RATING_FDR_PRIOR_SCALE = float(os.environ.get('FPL_RATING_FDR_SCALE', '0.2'))
+# A typical promoted side creates ~22% less xG than average and concedes ~21%
+# more (log scale); used only when FPL's difficulties are unavailable.
+PROMOTED_PRIOR = {'att': -0.25, 'def': 0.19}
+PROMOTED_PRIOR_MATCHES = 8.0
+
+
+def fpl_fdr_strength(fixtures_data):
+    """FPL's own rating of each team (about 2 = weak, 5 = strong), read off
+    the difficulty its opponents are given across the fixture list."""
+    acc = {}
+    for f in fixtures_data or []:
+        dh, da = f.get('team_h_difficulty'), f.get('team_a_difficulty')
+        if dh:
+            acc.setdefault(f['team_a'], []).append(float(dh))   # home side facing the away team
+        if da:
+            acc.setdefault(f['team_h'], []).append(float(da))
+    return {t: float(np.mean(v)) for t, v in acc.items() if v}
+
+
+def _to_utc_naive(ts):
+    """ISO / 'YYYY-mm-dd HH:MM:SS' timestamp -> naive UTC datetime, or None."""
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(ts).replace('Z', '+00:00').replace(' ', 'T'))
+    except ValueError:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def _us_team_matches_conn():
+    conn = sqlite3.connect(SNAPSHOT_DB_PATH, timeout=30)
+    conn.execute("""CREATE TABLE IF NOT EXISTS us_team_matches (
+        season INTEGER, match_id INTEGER, kickoff TEXT,
+        h_team TEXT, a_team TEXT, h_short TEXT, a_short TEXT,
+        h_xg REAL, a_xg REAL, h_goals INTEGER, a_goals INTEGER,
+        PRIMARY KEY (season, match_id))""")
+    return conn
+
+
+def load_last_season_team_xg():
+    """Last season's Premier League results with team xG, from Understat.
+    Downloaded once (one request), stored in the snapshot DB and read from
+    there afterwards — a finished season never changes. Fails soft to []."""
+    season = _season_start_year() - 1
+    try:
+        conn = _us_team_matches_conn()
+        rows = conn.execute("SELECT kickoff, h_team, a_team, h_short, a_short, h_xg, a_xg, "
+                            "h_goals, a_goals FROM us_team_matches WHERE season = ?",
+                            (season,)).fetchall()
+        if len(rows) < 300:
+            league = _understat_get(f'getLeagueData/EPL/{season}')
+            new = []
+            for d in league.get('dates') or []:
+                if str(d.get('isResult')).lower() not in ('true', '1'):
+                    continue
+                h, a = d.get('h') or {}, d.get('a') or {}
+                xg, gl = d.get('xG') or {}, d.get('goals') or {}
+                new.append((season, _us_int(d.get('id')), d.get('datetime'),
+                            h.get('title'), a.get('title'), h.get('short_title'), a.get('short_title'),
+                            _us_float(xg.get('h'), None), _us_float(xg.get('a'), None),
+                            _us_int(gl.get('h'), None), _us_int(gl.get('a'), None)))
+            if new:
+                with conn:
+                    conn.executemany("INSERT OR REPLACE INTO us_team_matches VALUES "
+                                     "(?,?,?,?,?,?,?,?,?,?,?)", new)
+                print(f"  Team ratings: stored {len(new)} matches from Understat {season}/{season + 1}")
+            rows = [r[2:] for r in new]
+        conn.close()
+    except Exception as e:
+        print(f"  Team ratings: last season's xG unavailable ({type(e).__name__}: {e})")
+        return []
+    return [{'kickoff': r[0], 'h_team': r[1], 'a_team': r[2], 'h_short': r[3], 'a_short': r[4],
+             'h_xg': r[5], 'a_xg': r[6], 'h_goals': r[7], 'a_goals': r[8]} for r in rows]
+
+
+def _map_understat_teams(rows, teams_df):
+    """Understat team title -> FPL team id. Exact name (with the usual
+    aliases) or short name only: a relegated side must NOT fuzzy-match onto
+    a current team, so anything else stays unmapped (its own rating)."""
+    fpl_norm = {_norm_team_name(n): int(t) for t, n in zip(teams_df['id'], teams_df['name'])}
+    by_short = ({str(s).upper(): int(t) for t, s in zip(teams_df['id'], teams_df['short_name'])}
+                if 'short_name' in teams_df.columns else {})
+    out = {}
+    for r in rows:
+        for title, sh in ((r['h_team'], r['h_short']), (r['a_team'], r['a_short'])):
+            if title in out:
+                continue
+            tid = fpl_norm.get(_norm_team_name(title))
+            if tid is None:
+                tid = by_short.get(str(sh or '').upper())
+            out[title] = tid if tid is not None else f"us:{title}"
+    return out
+
+
+def build_team_match_records(fixtures_data, xg_ledger=None, last_season=None, teams_df=None):
+    """Match records for the rating fit: one per match, with each side's
+    expected goals (actual goals where xG is missing)."""
+    recs = []
+    led = xg_ledger or {}
+    for f in fixtures_data or []:
+        if not (f.get('finished') or f.get('finished_provisional')):
+            continue
+        if f.get('team_h_score') is None or f.get('team_a_score') is None:
+            continue
+        h, a, fid = f['team_h'], f['team_a'], f.get('id')
+        hx = ax = None
+        rh = (led.get(h) or {}).get(fid)
+        ra = (led.get(a) or {}).get(fid)
+        if rh:
+            hx, ax = rh.get('xgf'), rh.get('xgc')
+        if ra:
+            hx = hx if hx is not None else ra.get('xgc')
+            ax = ax if ax is not None else ra.get('xgf')
+        recs.append({'season': 'cur', 'round': f.get('event'), 'date': _to_utc_naive(f.get('kickoff_time')),
+                     'home': h, 'away': a,
+                     'hg': float(hx) if hx is not None else float(f['team_h_score']),
+                     'ag': float(ax) if ax is not None else float(f['team_a_score'])})
+    if last_season and teams_df is not None and not teams_df.empty:
+        tmap = _map_understat_teams(last_season, teams_df)
+        for r in last_season:
+            hx = r['h_xg'] if r['h_xg'] is not None else r['h_goals']
+            ax = r['a_xg'] if r['a_xg'] is not None else r['a_goals']
+            if hx is None or ax is None:
+                continue
+            recs.append({'season': 'last', 'round': None, 'date': _to_utc_naive(r['kickoff']),
+                         'home': tmap[r['h_team']], 'away': tmap[r['a_team']],
+                         'hg': float(hx), 'ag': float(ax)})
+    return recs
+
+
+def fit_team_ratings(records, fpl_team_ids, before_round=None, as_of=None, fdr_strength=None):
+    """Weighted Poisson fit (Newton's method) of attack, defence and home
+    advantage. `before_round` / `as_of` restrict and date the fit for the
+    walk-forward backtest; live use leaves both None (all data, dated now).
+    `fdr_strength` (fpl_fdr_strength) sets each team's starting point.
+    Returns {'att', 'def' (log-scale, per team), 'home', 'mu', 'league_avg',
+    'n_cur', 'n_last', 'promoted'} or None when there is nothing to fit."""
+    recs = [r for r in records or []
+            if r['season'] == 'last' or before_round is None
+            or (r.get('round') or 0) < before_round]
+    if not recs:
+        return None
+    dates = [r['date'] for r in recs if r['date'] is not None]
+    as_of = as_of or (max(dates) if dates else datetime.utcnow())
+    n_cur = sum(1 for r in recs if r['season'] == 'cur')
+    n_last = sum(1 for r in recs if r['season'] == 'last')
+    seasons = [s for s in ('cur', 'last') if any(r['season'] == s for r in recs)]
+    fpl_ids = [int(t) for t in fpl_team_ids]
+    teams = sorted(set(fpl_ids) | {r['home'] for r in recs} | {r['away'] for r in recs}, key=str)
+    ti = {t: i for i, t in enumerate(teams)}
+    T, S = len(teams), len(seasons)
+    n_par = S + 1 + 2 * T                     # season levels, home, attack, defence
+    si = {s: i for i, s in enumerate(seasons)}
+    rows, ys, ws = [], [], []
+    for r in recs:
+        age = max((as_of - r['date']).total_seconds() / 86400.0, 0.0) if r['date'] else 0.0
+        w = 0.5 ** (age / RATING_HALF_LIFE_DAYS)
+        if r['season'] == 'last':
+            w *= RATING_LAST_SEASON_WEIGHT
+        for att, dfn, y, home in ((r['home'], r['away'], r['hg'], 1.0), (r['away'], r['home'], r['ag'], 0.0)):
+            rows.append((si[r['season']], home, ti[att], ti[dfn]))
+            ys.append(max(float(y), 0.0))
+            ws.append(w)
+    n_obs = len(rows)
+    X = np.zeros((n_obs, n_par))
+    for k, (s, home, a_i, d_i) in enumerate(rows):
+        X[k, s] = 1.0
+        X[k, S] = home
+        X[k, S + 1 + a_i] = 1.0
+        X[k, S + 1 + T + d_i] = 1.0
+    y, w = np.array(ys), np.array(ws)
+
+    # Priors: every team toward average; promoted sides toward PROMOTED_PRIOR.
+    # A promoted side = a current team with no match last season, judged only
+    # when last season is actually loaded and looks complete.
+    last_teams = {r['home'] for r in recs if r['season'] == 'last'} | \
+                 {r['away'] for r in recs if r['season'] == 'last'}
+    promoted = [t for t in fpl_ids if n_last >= 300 and t not in last_teams]
+    if len(promoted) > 4:          # mapping went wrong — don't guess
+        print(f"  Team ratings: {len(promoted)} teams missing from last season — "
+              f"promoted-side prior skipped")
+        promoted = []
+    base_rate = float(np.average(y, weights=w)) if w.sum() > 0 else 1.4
+    fdr_s = {int(k): v for k, v in (fdr_strength or {}).items()}
+    fdr_mean = float(np.mean([fdr_s[t] for t in fpl_ids if t in fdr_s])) if fdr_s else 3.0
+    beta0 = np.zeros(n_par)
+    prec = np.zeros(n_par)
+    for t in teams:
+        a_i, d_i = S + 1 + ti[t], S + 1 + T + ti[t]
+        m = PROMOTED_PRIOR_MATCHES if t in promoted else RATING_PRIOR_MATCHES
+        prec[a_i] = prec[d_i] = m * base_rate
+        if t in fdr_s:
+            # FPL's view: a stronger team scores more and concedes less
+            z = RATING_FDR_PRIOR_SCALE * (fdr_s[t] - fdr_mean)
+            beta0[a_i], beta0[d_i] = z, -z
+        elif t in promoted:
+            beta0[a_i], beta0[d_i] = PROMOTED_PRIOR['att'], PROMOTED_PRIOR['def']
+    prec[:S + 1] = 1e-6                        # season levels and home: data only
+
+    beta = beta0.copy()
+    beta[:S] = np.log(max(base_rate, 0.1))
+    beta[S] = 0.2
+
+    def objective(b):
+        eta = X @ b
+        return float(np.sum(w * (y * eta - np.exp(eta))) - 0.5 * np.sum(prec * (b - beta0) ** 2))
+
+    obj = objective(beta)
+    for _ in range(50):
+        lam = np.exp(X @ beta)
+        grad = X.T @ (w * (y - lam)) - prec * (beta - beta0)
+        hess = (X * (w * lam)[:, None]).T @ X + np.diag(prec)
+        try:
+            step = np.linalg.solve(hess, grad)
+        except np.linalg.LinAlgError:
+            step = np.linalg.lstsq(hess, grad, rcond=None)[0]
+        t_step = 1.0
+        while t_step > 1e-4:
+            cand = beta + t_step * step
+            c_obj = objective(cand)
+            if c_obj >= obj - 1e-9:
+                break
+            t_step /= 2
+        beta, obj = cand, c_obj
+        if np.max(np.abs(t_step * step)) < 1e-7:
+            break
+
+    mu = float(beta[si['cur']] if 'cur' in si else beta[si['last']])
+    home = float(beta[S])
+    att = {t: float(beta[S + 1 + ti[t]]) for t in fpl_ids}
+    dfn = {t: float(beta[S + 1 + T + ti[t]]) for t in fpl_ids}
+    return {'att': att, 'def': dfn, 'home': home, 'mu': mu,
+            'league_avg': float(np.exp(mu + home / 2)),
+            'n_cur': n_cur, 'n_last': n_last, 'promoted': promoted}
+
+
+def rating_lambda(ratings, attacker, defender, attacker_venue):
+    """Expected goals for `attacker` against `defender`. attacker_venue is
+    'home', 'away' or 'neutral'; either team may be None for 'average'."""
+    venue = {'home': 1.0, 'away': 0.0}.get(attacker_venue, 0.5) * ratings['home']
+    return float(np.exp(ratings['mu'] + venue
+                        + (ratings['att'].get(attacker, 0.0) if attacker is not None else 0.0)
+                        + (ratings['def'].get(defender, 0.0) if defender is not None else 0.0)))
+
+
+def compute_team_ratings(fixtures_data, teams_df, xg_ledger=None):
+    """Live ratings: this season's ledger + last season's Understat xG.
+    Returns (ratings or None, records) — records are kept for the backtest."""
+    last = load_last_season_team_xg()
+    records = build_team_match_records(fixtures_data, xg_ledger, last, teams_df)
+    try:
+        ratings = fit_team_ratings(records, list(teams_df['id']),
+                                   fdr_strength=fpl_fdr_strength(fixtures_data))
+    except Exception as e:
+        print(f"  Team ratings fit failed ({e}) — falling back to strength ratings / form")
+        ratings = None
+    if ratings:
+        print(f"  Team ratings fitted from {ratings['n_cur']} matches this season and "
+              f"{ratings['n_last']} last season; home advantage x{np.exp(ratings['home']):.2f}"
+              + (f"; promoted-side prior for {len(ratings['promoted'])} team(s)"
+                 if ratings['promoted'] else ''))
+    return ratings, records
 
 
 # =============================================================================
@@ -2041,9 +2377,14 @@ def calculate_team_recent_form(fixtures_data, window=6, xg_ledger=None):
 
 def calculate_expected_clean_sheets(fixtures_data, teams_df, anchor_gw,
                                     num_gws=5, form_weight=0.6, form_window=6,
-                                    odds_lambdas=None, xg_ledger=None):
+                                    odds_lambdas=None, xg_ledger=None, ratings=None):
     """
     Expected clean sheets per team over the next `num_gws` gameweeks.
+
+    With `ratings` (see fit_team_ratings — the normal case), expected goals
+    against come straight from the fitted attack/defence/home ratings. The
+    static + form blend described below is the fallback when no ratings
+    could be fitted.
 
     Per fixture, expected goals conceded is a multiplicative Poisson rate
 
@@ -2112,18 +2453,17 @@ def calculate_expected_clean_sheets(fixtures_data, teams_df, anchor_gw,
     league_avg_goals = float(np.mean(played_vals)) if played_vals else 1.40
     if not np.isfinite(league_avg_goals) or league_avg_goals <= 0:
         league_avg_goals = 1.40
+    if ratings:
+        league_avg_goals = ratings['league_avg']
 
     def _w(tid):
         """
-        Effective form weight: n / (n + k), capped at `form_weight_max`.
-
-        The old rule ramped to full weight after THREE games, which let a
-        two-match sample move a team's expected goals conceded by ~40%. That
-        is the promoted-side trap: Hull keeping two clean sheets read as an
-        elite defence when their underlying process said otherwise. Shrinkage
-        means 2 games carry ~25% weight, 6 carry ~50%, 20 carry the cap — and
-        it needs no promoted-team flag, because FPL's static strength ratings
-        already price those sides low and now stay in control early on.
+        Fallback path only. Effective form weight: n / (n + k), capped at
+        `form_weight`. The window holds `form_window` (6) games, so with k=6
+        the weight tops out at 6/12 = 50% — FPL's static strengths (or the
+        fixture-difficulty fallback) always keep at least half. The old rule
+        ramped to full weight after THREE games, which let a two-match sample
+        move a team's expected goals conceded by ~40%.
         """
         played = recent.get(tid, {}).get('played', 0)
         if played <= 0:
@@ -2154,7 +2494,9 @@ def calculate_expected_clean_sheets(fixtures_data, teams_df, anchor_gw,
     def _lam_neutral(tid):
         """Expected goals against an AVERAGE opponent at a neutral venue —
         the baseline each real fixture is compared with."""
-        if strengths_ok:
+        if ratings:
+            lam = rating_lambda(ratings, None, tid, 'neutral')
+        elif strengths_ok:
             lam = league_avg_goals * 0.5 * (_def_factor(tid, 'home') + _def_factor(tid, 'away'))
         else:
             wT = _w(tid)
@@ -2165,7 +2507,10 @@ def calculate_expected_clean_sheets(fixtures_data, teams_df, anchor_gw,
     def _add(tid, opp_id, venue, opp_venue, gw, own_difficulty):
         if tid not in result:
             return
-        if strengths_ok:
+        if ratings:
+            # Goals this team concedes = goals the opponent scores
+            lam = rating_lambda(ratings, opp_id, tid, opp_venue)
+        elif strengths_ok:
             lam = league_avg_goals * _att_factor(opp_id, opp_venue) * _def_factor(tid, venue)
         else:
             # Difficulty-based static rate, still scaled by form on both sides
@@ -2493,9 +2838,12 @@ _FDR_ENV_FALLBACK = {1: 1.40, 2: 1.18, 3: 1.00, 4: 0.85, 5: 0.72}
 
 def calculate_goal_environment(fixtures_data, teams_df, anchor_gw, num_gws=5,
                                form_weight=0.6, form_window=6, odds_lambdas=None,
-                               xg_ledger=None):
+                               xg_ledger=None, ratings=None):
     """
-    Per-team attacking environment over the next `num_gws` gameweeks.
+    Per-team attacking environment over the next `num_gws` gameweeks. With
+    `ratings` (the normal case) a fixture's expected goals come from the
+    fitted attack/defence/home ratings; otherwise from the static + form
+    blend below.
     Returns {team_id: {'att_env_next', 'att_env_avg', 'opp_next',
     'venue_next', 'n_fixtures'}} where env is expected-goals-scored divided
     by the league average (1.0 = neutral fixture, 1.5 = a fixture that
@@ -2527,9 +2875,11 @@ def calculate_goal_environment(fixtures_data, teams_df, anchor_gw, num_gws=5,
     league_avg = float(np.mean(played_vals)) if played_vals else 1.40
     if not np.isfinite(league_avg) or league_avg <= 0:
         league_avg = 1.40
+    if ratings:
+        league_avg = ratings['league_avg']
 
     def _w(tid):
-        # Same n/(n+k) shrinkage as the clean-sheet model — see _w there.
+        # Fallback path only: same n/(n+k) shrinkage as the clean-sheet model.
         played = recent.get(tid, {}).get('played', 0)
         if played <= 0:
             return 0.0
@@ -2554,6 +2904,8 @@ def calculate_goal_environment(fixtures_data, teams_df, anchor_gw, num_gws=5,
         """The team's own attacking level against an average opponent at a
         neutral venue, relative to the league average — what a player's own
         xG rate already reflects."""
+        if ratings:
+            return rating_lambda(ratings, tid, None, 'neutral') / league_avg
         if strengths_ok:
             return 0.5 * (_att_factor(tid, 'home') + _att_factor(tid, 'away'))
         w = _w(tid)
@@ -2576,7 +2928,9 @@ def calculate_goal_environment(fixtures_data, teams_df, anchor_gw, num_gws=5,
         would count that level twice. The player multiplier divides it back
         out: this fixture relative to the team's own average fixture, which
         leaves only the opponent and the venue."""
-        if strengths_ok:
+        if ratings:
+            lam = rating_lambda(ratings, tid, opp_id, venue)
+        elif strengths_ok:
             lam = league_avg * _att_factor(tid, venue) * _opp_def_weakness(opp_id, opp_venue)
         else:
             d = own_difficulty if own_difficulty in (1, 2, 3, 4, 5) else 3
@@ -2852,7 +3206,8 @@ def _fixtures_as_of(fixtures_data, upto_round):
 
 
 def run_projection_backtest(histories, meta, fixtures_data, teams_df,
-                            gws, priors=None, recent_window=6, xg_ledger=None):
+                            gws, priors=None, recent_window=6, xg_ledger=None,
+                            team_records=None):
     """
     Walk forward one gameweek at a time: rebuild the inputs, project, then
     score against what actually happened — using the SAME fixture model the
@@ -2876,7 +3231,10 @@ def run_projection_backtest(histories, meta, fixtures_data, teams_df,
     (with a Brier score against a "league-average rate" baseline).
 
     The xG ledger is safe to pass whole: team form only reads fixtures that
-    had finished before the target round (see _fixtures_as_of).
+    had finished before the target round (see _fixtures_as_of). Team
+    ratings are refitted for every gameweek from `team_records` (last
+    season + this season's matches BEFORE that round, dated at its first
+    kickoff), so they never see the result being predicted.
     Known limits: availability flags and penalty order are today's (FPL
     doesn't archive them), and market odds aren't replayed.
 
@@ -2890,11 +3248,22 @@ def run_projection_backtest(histories, meta, fixtures_data, teams_df,
             continue
 
         hist_fx = _fixtures_as_of(fixtures_data, g)
+        rat = None
+        if team_records:
+            kicks = [_to_utc_naive(f.get('kickoff_time')) for f in fixtures_data
+                     if (f.get('event') or 0) == g]
+            kicks = [k for k in kicks if k is not None]
+            try:
+                rat = fit_team_ratings(team_records, list(teams_df['id']), before_round=g,
+                                       as_of=min(kicks) if kicks else None,
+                                       fdr_strength=fpl_fdr_strength(fixtures_data))
+            except Exception as e:
+                print(f"  backtest GW{g} ratings failed: {e}")
         try:
             xcs = calculate_expected_clean_sheets(hist_fx, teams_df, g - 1, num_gws=1,
-                                                  xg_ledger=xg_ledger)
+                                                  xg_ledger=xg_ledger, ratings=rat)
             genv = calculate_goal_environment(hist_fx, teams_df, g - 1, num_gws=1,
-                                              xg_ledger=xg_ledger)
+                                              xg_ledger=xg_ledger, ratings=rat)
         except Exception as e:
             print(f"  backtest GW{g} team models failed: {e}")
             xcs, genv = {}, {}
@@ -4285,6 +4654,7 @@ _CACHE_KEYS = [
     'heavy_loaded', 'fixture_anchor_gw', 'season_started', 'season_label',
     'last_season_priors', 'calibration',
     'xg_ledger', 'odds_lambdas', 'odds_last_refresh', 'xcs_next', 'delta_basis',
+    'team_ratings', 'team_match_records',
 ]
 
 # Bump whenever the shape of cached data changes, or at a season rollover.
@@ -4422,12 +4792,6 @@ def refresh_core_data():
             lambda x: fixture_difficulty.get(x, {}).get('fixture_string'))
         df_active['fixture_count'] = df_active['team'].map(lambda x: fixture_difficulty.get(x, {}).get('fixture_count'))
 
-        # Attack/defence-specific FDR from team strength ratings (next 5 GWs)
-        custom_fdr = calculate_custom_fdr(fixtures_data, teams_df, fixture_anchor_gw, num_gameweeks=5)
-        for col, key in [('att_fdr_5', 'att_fdr'), ('def_fdr_5', 'def_fdr'),
-                         ('next_att_fdr', 'next_att_fdr'), ('next_def_fdr', 'next_def_fdr')]:
-            df_active[col] = df_active['team'].map(lambda x, k=key: custom_fdr.get(x, {}).get(k))
-        print(f"  Attack/defence FDR computed for {len(custom_fdr)} teams")
 
         # Market-implied goal expectations (no-op without ODDS_API_KEY).
         # Only actually calls the API when ODDS_REFRESH_INTERVAL has
@@ -4456,15 +4820,34 @@ def refresh_core_data():
         with DATA_LOCK:
             DATA['xg_ledger'] = xg_ledger
 
+        # Team ratings (attack / defence / home advantage) fitted from this
+        # season's xG and last season's — the base of every team model below.
+        try:
+            team_ratings, team_records = compute_team_ratings(fixtures_data, teams_df, xg_ledger)
+        except Exception as e:
+            print(f"  Team ratings unavailable ({e}) — using strength ratings / form")
+            team_ratings, team_records = None, []
+        with DATA_LOCK:
+            DATA['team_ratings'] = team_ratings
+            DATA['team_match_records'] = team_records
+
+        # Attack/defence-specific FDR (next 5 GWs), from the ratings
+        custom_fdr = calculate_custom_fdr(fixtures_data, teams_df, fixture_anchor_gw,
+                                          num_gameweeks=5, ratings=team_ratings)
+        for col, key in [('att_fdr_5', 'att_fdr'), ('def_fdr_5', 'def_fdr'),
+                         ('next_att_fdr', 'next_att_fdr'), ('next_def_fdr', 'next_def_fdr')]:
+            df_active[col] = df_active['team'].map(lambda x, k=key: custom_fdr.get(x, {}).get(k))
+        print(f"  Attack/defence FDR computed for {len(custom_fdr)} teams")
+
         # Team clean-sheet probabilities — ONE model, shared by the xCS page
         # and the projection engine. Previously the engine used its own linear
         # FDR ramp and the two disagreed.
         xcs_next = calculate_expected_clean_sheets(
             fixtures_data, teams_df, fixture_anchor_gw, num_gws=1,
-            odds_lambdas=odds_lambdas, xg_ledger=xg_ledger)
+            odds_lambdas=odds_lambdas, xg_ledger=xg_ledger, ratings=team_ratings)
         xcs_5 = calculate_expected_clean_sheets(
             fixtures_data, teams_df, fixture_anchor_gw, num_gws=5,
-            odds_lambdas=odds_lambdas, xg_ledger=xg_ledger)
+            odds_lambdas=odds_lambdas, xg_ledger=xg_ledger, ratings=team_ratings)
         df_active['cs_prob_next'] = df_active['team'].map(
             lambda t: (xcs_next.get(t, {}).get('avg_cs_prob') or 0) / 100.0 or np.nan)
         df_active['cs_prob_5'] = df_active['team'].map(
@@ -4479,10 +4862,10 @@ def refresh_core_data():
         # Fixture-specific goal environments (form + strengths + market)
         goal_env_next = calculate_goal_environment(
             fixtures_data, teams_df, fixture_anchor_gw, num_gws=1,
-            odds_lambdas=odds_lambdas, xg_ledger=xg_ledger)
+            odds_lambdas=odds_lambdas, xg_ledger=xg_ledger, ratings=team_ratings)
         goal_env_5 = calculate_goal_environment(
             fixtures_data, teams_df, fixture_anchor_gw, num_gws=5,
-            odds_lambdas=odds_lambdas, xg_ledger=xg_ledger)
+            odds_lambdas=odds_lambdas, xg_ledger=xg_ledger, ratings=team_ratings)
         df_active['att_env_next'] = df_active['team'].map(
             lambda t: goal_env_next.get(t, {}).get('att_env_next'))
         df_active['att_env_5'] = df_active['team'].map(
@@ -9644,8 +10027,9 @@ def update_fixture_swings(_n):
         anchor = cur['id'] if cur else 0
     if teams_df.empty or not fixtures_data:
         return []
-    near = calculate_custom_fdr(fixtures_data, teams_df, anchor, num_gameweeks=3)
-    far = calculate_custom_fdr(fixtures_data, teams_df, anchor + 3, num_gameweeks=3)
+    ratings = data.get('team_ratings')
+    near = calculate_custom_fdr(fixtures_data, teams_df, anchor, num_gameweeks=3, ratings=ratings)
+    far = calculate_custom_fdr(fixtures_data, teams_df, anchor + 3, num_gameweeks=3, ratings=ratings)
     name_map = dict(zip(teams_df['id'], teams_df['name']))
     rows = []
     for tid in name_map:
@@ -9900,7 +10284,7 @@ def update_fixture_outlook(page, n_gws, view, sort_by):
     if view == 'defence':
         model = calculate_expected_clean_sheets(fixtures, teams_df, anchor_gw,
                                                 num_gws=n_gws, odds_lambdas=odds,
-                                                xg_ledger=ledger)
+                                                xg_ledger=ledger, ratings=data.get('team_ratings'))
         # fixtures: (gw, opp, venue, p_cs) — p_cs already a probability
         cell_fn = lambda v: v * 100
         fmt, unit = '{:.0f}%', 'Clean sheet %'
@@ -9909,7 +10293,7 @@ def update_fixture_outlook(page, n_gws, view, sort_by):
     else:
         genv = calculate_goal_environment(fixtures, teams_df, anchor_gw,
                                           num_gws=n_gws, odds_lambdas=odds,
-                                          xg_ledger=ledger)
+                                          xg_ledger=ledger, ratings=data.get('team_ratings'))
         model = genv
         # fixtures: (gw, opp, venue, env_ratio) — convert ratio to goals
         cell_fn = None
@@ -10145,7 +10529,8 @@ def _render_backtest_inner():
 
     rows, player_rows, calib = run_projection_backtest(usable, meta, fixtures, teams_df,
                                                        gws, priors=priors,
-                                                       xg_ledger=data.get('xg_ledger'))
+                                                       xg_ledger=data.get('xg_ledger'),
+                                                       team_records=data.get('team_match_records'))
     print(f"[backtest] done in {time.time() - t_start:.0f}s, "
           f"{len(rows)} gameweeks scored")
     if not rows:
@@ -10772,7 +11157,8 @@ def build_squad(n_clicks, budget, objective, must_include, must_exclude, chip_gw
                 lookup = build_gw_fixture_lookup(
                     data.get('fixtures_data', []), data.get('teams_df', pd.DataFrame()),
                     [int(chip_gw)], xg_ledger=data.get('xg_ledger'),
-                    odds_lambdas=data.get('odds_lambdas')).get(int(chip_gw), {})
+                    odds_lambdas=data.get('odds_lambdas'),
+                    ratings=data.get('team_ratings')).get(int(chip_gw), {})
                 df_now['chip_gw_proj'] = project_pool_for_gw(df_now, lookup).values
                 base_obj = objective if objective in df_now.columns else 'ppg'
                 df_now['chip_weighted'] = (
@@ -11579,7 +11965,8 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
 
     gw_lookup = build_gw_fixture_lookup(fixtures_data, teams_df, future_gws,
                                         xg_ledger=data.get('xg_ledger'),
-                                        odds_lambdas=data.get('odds_lambdas'))
+                                        odds_lambdas=data.get('odds_lambdas'),
+                                        ratings=data.get('team_ratings'))
 
     # --- Free Hit needs a priced pool and a budget -----------------------
     # Budget is squad selling value + bank, NOT £100m — the Free Hit team is
@@ -12385,7 +12772,8 @@ def update_expected_clean_sheets(horizon, n):
 
     xcs = calculate_expected_clean_sheets(fixtures_data, teams_df, anchor, num_gws=horizon,
                                           odds_lambdas=data.get('odds_lambdas'),
-                                          xg_ledger=data.get('xg_ledger'))
+                                          xg_ledger=data.get('xg_ledger'),
+                                          ratings=data.get('team_ratings'))
     if not xcs:
         return _empty("Team strength data unavailable.")
 
