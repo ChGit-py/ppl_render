@@ -824,7 +824,7 @@ def build_gw_fixture_lookup(fixtures_data, teams_df, gws, xg_ledger=None, odds_l
             e = env_gw.get(tid, {})
             c = cs_gw.get(tid, {})
             cs_n = c.get('cs_prob_neutral') or 0
-            lam_n = c.get('lam_neutral') or 0
+            gp_n = c.get('gc_pen_neutral') or 0
             lookup[gw][tid] = {
                 'count': counts.get(tid, 0),
                 'att_fdr': (v.get('att_fdr') if v.get('att_fdr') is not None else 3.0),
@@ -833,7 +833,7 @@ def build_gw_fixture_lookup(fixtures_data, teams_df, gws, xg_ledger=None, odds_l
                 'fix_mult': e.get('fix_mult_avg', 1.0),
                 # This week's defensive outlook relative to an average opponent
                 'cs_ratio': ((c.get('avg_cs_prob') or 0) / 100.0 / cs_n) if cs_n > 0 and c.get('count') else 1.0,
-                'gc_ratio': (c['lam_avg'] / lam_n) if lam_n > 0 and c.get('lam_avg') else 1.0,
+                'gc_ratio': (c['gc_pen_avg'] / gp_n) if gp_n > 0 and c.get('gc_pen_avg') else 1.0,
                 'opp': (f"{e.get('opp_next', '')} ({e.get('venue_next', '')})"
                         if e.get('opp_next') else ''),
             }
@@ -1269,7 +1269,9 @@ def compute_captain_distribution(df, n_sims=4000, seed=17):
     gpts = pos.map(GOAL_POINTS).fillna(4).values.astype(float)
     cpts = pos.map(CS_POINTS).fillna(0).values.astype(float)
 
-    # Invert expected component points (per match) back into rates
+    # Invert expected component points (per match) back into rates. Goals
+    # conceded and saves are scored with floors (1 per 2 / 1 per 3), so they
+    # can't be inverted; the engine supplies their rates directly.
     lam_g = np.clip(num('xp_goals') * per / np.maximum(gpts, 1e-9), 0, 5)
     lam_a = np.clip(num('xp_assists') * per / ASSIST_POINTS, 0, 5)
     p_cs = np.clip(np.where(cpts > 0, num('xp_cs') * per / np.maximum(cpts, 1e-9), 0.0), 0, 1)
@@ -1297,8 +1299,8 @@ def compute_captain_distribution(df, n_sims=4000, seed=17):
     m_bon_c = np.clip(m_bon / p_played, 0, 3)
     p_cs_c = np.clip(p_cs / p_st, 0, 1)
     p_dc_c = np.clip(p_dc / p_st, 0, 1)
-    lam_sv_c = lam_sv / p_st
-    lam_gc_c = lam_gc / p_st
+    lam_sv_c = (num('xp_lam_saves') if 'xp_lam_saves' in df.columns else lam_sv / p_st)
+    lam_gc_c = (num('xp_lam_gc') if 'xp_lam_gc' in df.columns else lam_gc / p_st)
 
     N, P = n_sims, len(idx)
     pts = np.zeros((N, P))
@@ -1432,6 +1434,30 @@ def _fdr_mult(fdr_series, index, invert=False):
     return pd.Series(np.power(FDR_STEP_RATIO, delta), index=fdr.index).reindex(index).fillna(1.0)
 
 
+def expected_conceded_deduction(lam):
+    """E[floor(G / 2)] for G ~ Poisson(lam): the expected goals-conceded
+    deduction for a keeper or defender who plays the whole match (FPL takes
+    1 point per FULL two goals). Closed form: (lam - P(G odd)) / 2, with
+    P(G odd) = (1 - exp(-2 lam)) / 2. The old linear 0.5 x lam overstated it
+    by ~0.2-0.25 points a match."""
+    lam = np.clip(np.asarray(lam, dtype=float), 0, None)
+    return lam / 2.0 - (1.0 - np.exp(-2.0 * lam)) / 4.0
+
+
+_SAVE_GRID = np.arange(0, 41)
+
+
+def expected_save_points(mu):
+    """E[floor(S / 3)] for S ~ Poisson(mu) saves in a full match (FPL gives
+    1 point per FULL three saves). The old saves / 3 overstated it by ~0.33
+    points a match."""
+    mu = np.clip(np.asarray(mu, dtype=float), 1e-9, 30.0)
+    k = _SAVE_GRID
+    logf = np.cumsum(np.r_[0.0, np.log(k[1:])])
+    pmf = np.exp(np.multiply.outer(np.log(mu), k) - mu[..., None] - logf)
+    return (pmf * (k // 3)).sum(axis=-1)
+
+
 def _shrink_per90(obs90, minutes, prior90, k=None):
     """
     Empirical-Bayes shrinkage of a per-90 rate toward a prior:
@@ -1554,7 +1580,8 @@ def compute_expected_points(df, gw_elapsed=38, priors=None, components_out=None)
     appearance_pts = 2 * p60 + 1 * (p_any - p60)
 
     # --- Per-GW component model ------------------------------------------
-    def per_gw(att_fdr_col, def_fdr_col, att_env_cols=(), cs_prob_col=None, neutral=False):
+    def per_gw(att_fdr_col, def_fdr_col, att_env_cols=(), cs_prob_col=None, gc_pen_col=None,
+               neutral=False):
         """One match's expected points, and its parts.
 
         Attacking side: the PLAYER fixture multiplier (this opponent and
@@ -1610,7 +1637,18 @@ def compute_expected_points(df, gw_elapsed=38, priors=None, components_out=None)
         cs_pts = cs_prob * p60 * pos.map(CS_POINTS).fillna(0)
 
         is_def_unit = pos.isin(['GKP', 'DEF'])
-        gc_pts = (-0.5 * gc90s * exp90 * def_mult_gc).where(is_def_unit, 0)
+        # Goals conceded: the team model's expected deduction for this
+        # fixture (E[floor(goals against / 2)], from the same expected goals
+        # against as the clean-sheet chance), taken when he plays the match.
+        # Frames without it (older replay logs) use his own conceded rate.
+        gc_pen = None
+        if gc_pen_col and gc_pen_col in df.columns:
+            _gp = pd.to_numeric(df[gc_pen_col], errors='coerce')
+            if _gp.notna().any():
+                gc_pen = _gp
+        fallback_pen = pd.Series(expected_conceded_deduction(gc90s * def_mult_gc), index=idx)
+        gc_pen = fallback_pen if gc_pen is None else gc_pen.fillna(fallback_pen)
+        gc_pts = (-gc_pen * p60).where(is_def_unit, 0)
 
         # --- DEFCON: modelled as a COUNT, not a coin flip --------------
         # Defensive contribution is a tally of tackles, blocks, clearances,
@@ -1676,7 +1714,7 @@ def compute_expected_points(df, gw_elapsed=38, priors=None, components_out=None)
 
         defcon_pts = DEFCON_POINTS * p_hit * p60
 
-        save_pts = (saves90s / 3 * exp90).where(pos == 'GKP', 0)
+        save_pts = (pd.Series(expected_save_points(saves90s), index=idx) * p60).where(pos == 'GKP', 0)
         bonus_pts = (bonus90s * exp90).clip(0, 3)
 
         total = (appearance_pts + goal_pts + assist_pts + cs_pts +
@@ -1685,6 +1723,11 @@ def compute_expected_points(df, gw_elapsed=38, priors=None, components_out=None)
                  'cs': cs_pts, 'gc': gc_pts, 'defcon': defcon_pts, 'saves': save_pts,
                  'bonus': bonus_pts, 'att_mult': pd.Series(att_mult, index=idx),
                  'cs_prob': cs_prob}
+        # Underlying per-match rates for the captain simulation (it draws
+        # goals conceded and saves itself, so it needs rates, not points)
+        lam_gc = -np.log(cs_prob.clip(1e-6, 1.0))
+        parts['lam_gc'] = lam_gc.where(is_def_unit, 0.0)
+        parts['lam_saves'] = saves90s.where(pos == 'GKP', 0.0)
         return total, parts
 
     # Next GW. A blank (0 fixtures) projects nothing and a double projects
@@ -1695,7 +1738,7 @@ def compute_expected_points(df, gw_elapsed=38, priors=None, components_out=None)
     next_count = n('next_fixture_count').fillna(1.0).clip(0, 3)
     per_match_next, parts = per_gw('next_att_fdr', 'next_def_fdr',
                                    att_env_cols=('fix_mult_next', 'att_env_next'),
-                                   cs_prob_col='cs_prob_next')
+                                   cs_prob_col='cs_prob_next', gc_pen_col='gc_pen_next')
     proj_next = (per_match_next * next_count).round(2)
 
     # The eight components are summed and thrown away otherwise, which makes
@@ -1712,11 +1755,14 @@ def compute_expected_points(df, gw_elapsed=38, priors=None, components_out=None)
             'xp_att_mult': parts['att_mult'].round(3),
             'xp_cs_prob_used': parts['cs_prob'].round(3),
             'xp_p60': p60.round(3),
+            'xp_lam_gc': parts['lam_gc'].round(3),
+            'xp_lam_saves': parts['lam_saves'].round(3),
         })
         # Neutral per-match base (average opponent, neutral venue, one
         # fixture), kept in the parts that fixtures actually move so the
         # chip planner can scale each one by a future week's opponent.
-        neutral_total, nb = per_gw(None, None, cs_prob_col='cs_prob_neutral', neutral=True)
+        neutral_total, nb = per_gw(None, None, cs_prob_col='cs_prob_neutral',
+                                   gc_pen_col='gc_pen_neutral', neutral=True)
         components_out.update({
             'nb_att': (nb['goals'] + nb['assists']).round(3),
             'nb_cs': nb['cs'].round(3),
@@ -1727,7 +1773,7 @@ def compute_expected_points(df, gw_elapsed=38, priors=None, components_out=None)
 
     horizon_per_gw, _ = per_gw('att_fdr_5', 'def_fdr_5',
                                att_env_cols=('fix_mult_5', 'att_env_5'),
-                               cs_prob_col='cs_prob_5')
+                               cs_prob_col='cs_prob_5', gc_pen_col='gc_pen_5')
     fixture_count = n('fixture_count').fillna(5).clip(0, 10)
     proj_5 = (horizon_per_gw * fixture_count).round(1)
     fixture_count_8 = n('fixture_count_8').fillna(8).clip(0, 16)
@@ -2489,7 +2535,8 @@ def calculate_expected_clean_sheets(fixtures_data, teams_df, anchor_gw,
     upcoming = sorted([f for f in fixtures_data if f.get('event') in upcoming_gws],
                       key=lambda f: (f.get('event') or 0, f.get('kickoff_time') or ''))
 
-    result = {tid: {'xcs': 0.0, 'fixtures': [], 'count': 0, 'lams': []} for tid in all_ids}
+    result = {tid: {'xcs': 0.0, 'fixtures': [], 'count': 0, 'lams': [], 'gc_pens': []}
+              for tid in all_ids}
 
     def _lam_neutral(tid):
         """Expected goals against an AVERAGE opponent at a neutral venue —
@@ -2537,6 +2584,7 @@ def calculate_expected_clean_sheets(fixtures_data, teams_df, anchor_gw,
         result[tid]['xcs'] += p_cs
         result[tid]['count'] += 1
         result[tid]['lams'].append(lam)
+        result[tid]['gc_pens'].append(float(expected_conceded_deduction(lam)))
         result[tid]['fixtures'].append((gw, short.get(opp_id, '???'),
                                         'H' if venue == 'home' else 'A', p_cs))
 
@@ -2552,6 +2600,9 @@ def calculate_expected_clean_sheets(fixtures_data, teams_df, anchor_gw,
         v['lam_avg'] = round(float(np.mean(v['lams'])), 3) if v['lams'] else None
         v['lam_neutral'] = round(_lam_neutral(tid), 3)
         v['cs_prob_neutral'] = round(float(np.exp(-v['lam_neutral'])), 4)
+        # Expected goals-conceded deduction (full match), per fixture average
+        v['gc_pen_avg'] = round(float(np.mean(v['gc_pens'])), 4) if v['gc_pens'] else None
+        v['gc_pen_neutral'] = round(float(expected_conceded_deduction(v['lam_neutral'])), 4)
         v['fixture_string'] = ', '.join(
             f"{opp} ({ven}) {p * 100:.0f}%" for _gw, opp, ven, p in v['fixtures'])
         rec = recent.get(tid, {})
@@ -3355,6 +3406,8 @@ def run_projection_backtest(histories, meta, fixtures_data, teams_df,
             lambda t: ((xcs.get(t, {}) or {}).get('avg_cs_prob') or 0) / 100.0).replace(0, np.nan)
         frame['cs_prob_neutral'] = frame['team'].map(
             lambda t: (xcs.get(t, {}) or {}).get('cs_prob_neutral'))
+        frame['gc_pen_next'] = frame['team'].map(lambda t: (xcs.get(t, {}) or {}).get('gc_pen_avg'))
+        frame['gc_pen_neutral'] = frame['team'].map(lambda t: (xcs.get(t, {}) or {}).get('gc_pen_neutral'))
         frame['next_fixture_count'] = frame['team'].map(counts).fillna(0)
         frame['fixture_count'] = frame['next_fixture_count']
         for c in ('att_fdr_5', 'def_fdr_5'):
@@ -3502,6 +3555,7 @@ FEATURE_COLS = ['id', 'position', 'minutes', 'avail_pct', 'recent_minutes_pct',
                 'cs_prob_next', 'cs_prob_5',
                 'saves', 'bonus_per_90', 'next_att_fdr', 'next_def_fdr',
                 'att_env_next', 'fix_mult_next', 'next_fixture_count', 'cs_prob_neutral',
+                'gc_pen_next', 'gc_pen_neutral',
                 'pen_rank', 'expected_goals', 'expected_assists',
                 'clean_sheets', 'goals_conceded', 'bonus', 'defensive_contribution']
 
@@ -4924,6 +4978,11 @@ def refresh_core_data():
         # Against an average opponent — the neutral base the chip planner scales
         df_active['cs_prob_neutral'] = df_active['team'].map(
             lambda t: xcs_next.get(t, {}).get('cs_prob_neutral'))
+        # Expected goals-conceded deduction (keepers/defenders), same model
+        df_active['gc_pen_next'] = df_active['team'].map(lambda t: xcs_next.get(t, {}).get('gc_pen_avg'))
+        df_active['gc_pen_5'] = df_active['team'].map(lambda t: xcs_5.get(t, {}).get('gc_pen_avg'))
+        df_active['gc_pen_neutral'] = df_active['team'].map(
+            lambda t: xcs_next.get(t, {}).get('gc_pen_neutral'))
         with DATA_LOCK:
             DATA['xcs_next'] = xcs_next
         print(f"  Clean-sheet probabilities computed for {len(xcs_next)} teams")
