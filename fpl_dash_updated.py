@@ -2701,7 +2701,7 @@ def calculate_expected_clean_sheets(fixtures_data, teams_df, anchor_gw,
 
     valid_teams = int(st.notna().all(axis=1).sum())
     strengths_ok = valid_teams >= max(2, len(teams_df) // 2)
-    if not strengths_ok:
+    if not strengths_ok and not ratings:
         print(f"  xCS: only {valid_teams}/{len(teams_df)} teams have usable strength "
               f"ratings — falling back to fixture difficulty ratings")
 
@@ -6796,6 +6796,155 @@ def build_optimal_squad(df, budget, objective='ppg', must_include=None,
     return eligible.loc[selected_idx].copy()
 
 
+# =============================================================================
+# MULTI-WEEK TRANSFER PLANNER
+# =============================================================================
+# Plans the next few gameweeks' transfers together, the way you'd actually
+# play them: free transfers roll over (up to MAX_FREE_TRANSFERS), a -4 hit is
+# only taken when the extra points over the horizon repay it, and every week
+# is scored on its best XI plus captain under that week's fixtures (blanks,
+# doubles and injury returns included).
+MAX_FREE_TRANSFERS = int(os.environ.get('FPL_MAX_FREE_TRANSFERS', '5'))
+HIT_COST = 4
+# Each week counts a little less than the one before (projections further
+# out are less certain), and free transfers still banked at the end are
+# worth something — otherwise the plan would spend them for nothing in the
+# last week.
+PLANNER_DECAY = float(os.environ.get('FPL_PLANNER_DECAY', '0.9'))
+PLANNER_FT_VALUE = float(os.environ.get('FPL_PLANNER_FT_VALUE', '1.5'))
+PLANNER_BENCH_WEIGHT = 0.1
+PLANNER_POOL = {'GKP': 8, 'DEF': 22, 'MID': 22, 'FWD': 14}
+
+
+def _lp_var(prob, name, lo=0, hi=1, cat=None):
+    """PuLP 3 / 4 compatible variable (see build_optimal_squad)."""
+    cat = cat or pulp.LpBinary
+    if hasattr(prob, 'add_variable'):
+        return prob.add_variable(name, lo, hi, cat=cat)
+    return pulp.LpVariable(name, lo, hi, cat)
+
+
+def best_xi_points(proj_by_id, positions):
+    """Best XI + captain for one week from {id: points}: (total, xi ids,
+    captain id)."""
+    players = [{'id': i, 'position': positions[i], 'proj': float(v)} for i, v in proj_by_id.items()]
+    xi, _ = pick_best_xi(players)
+    if not xi:
+        return 0.0, [], None
+    cap = max(xi, key=lambda q: q['proj'])
+    return sum(q['proj'] for q in xi) + cap['proj'], [q['id'] for q in xi], cap['id']
+
+
+def plan_transfers(proj, info, squad_ids, sell_price, bank, free_transfers, max_hits=2,
+                   time_limit=25):
+    """
+    Best transfers for the gameweeks in `proj` (a DataFrame: one row per
+    player id, one column per gameweek, projected points incl. availability
+    and doubles/blanks). info: DataFrame indexed by id with position, team,
+    price. squad_ids: the 15 you own; sell_price: {id: selling price} for
+    them; bank in £m; free_transfers available for the first gameweek;
+    max_hits: most -4s in any one week.
+
+    Maximises sum over weeks of decay^w x (XI points + captain + 0.1 x bench
+    - 4 x hits), plus PLANNER_FT_VALUE per free transfer still banked.
+    Returns {'weeks': [...], 'status'} or None when no plan is possible.
+    """
+    gws = list(proj.columns)
+    ids = list(proj.index)
+    owned = set(int(i) for i in squad_ids)
+    pos = info['position'].to_dict()
+    team = info['team'].to_dict()
+    price = info['price'].astype(float).to_dict()
+    sp = {i: float(sell_price.get(i, price[i])) if i in owned else price[i] for i in ids}
+
+    prob = pulp.LpProblem("FPL_Transfer_Plan", pulp.LpMaximize)
+    x, s, c, buy, sell = {}, {}, {}, {}, {}
+    for i in ids:
+        for w in range(len(gws)):
+            x[i, w] = _lp_var(prob, f"x_{i}_{w}")
+            s[i, w] = _lp_var(prob, f"s_{i}_{w}")
+            c[i, w] = _lp_var(prob, f"c_{i}_{w}")
+            buy[i, w] = _lp_var(prob, f"b_{i}_{w}")
+            sell[i, w] = _lp_var(prob, f"o_{i}_{w}")
+    hits = {w: _lp_var(prob, f"h_{w}", 0, max_hits, pulp.LpInteger) for w in range(len(gws))}
+    ft = {w: _lp_var(prob, f"ft_{w}", 0, MAX_FREE_TRANSFERS, pulp.LpContinuous)
+          for w in range(len(gws) + 1)}
+    money = {w: _lp_var(prob, f"bank_{w}", 0, 200, pulp.LpContinuous) for w in range(len(gws))}
+
+    obj = []
+    prob += ft[0] == min(max(int(free_transfers), 0), MAX_FREE_TRANSFERS)
+    for w, g in enumerate(gws):
+        pts = proj[g].to_dict()
+        wt = PLANNER_DECAY ** w
+        for i in ids:
+            before = x[i, w - 1] if w else (1 if i in owned else 0)
+            prob += x[i, w] == before + buy[i, w] - sell[i, w]
+            prob += buy[i, w] + sell[i, w] <= 1
+            prob += s[i, w] <= x[i, w]
+            prob += c[i, w] <= s[i, w]
+            p = float(pts.get(i, 0.0) or 0.0)
+            obj.append(wt * p * (s[i, w] + c[i, w] + PLANNER_BENCH_WEIGHT * (x[i, w] - s[i, w])))
+        prob += pulp.lpSum(x[i, w] for i in ids) == 15
+        prob += pulp.lpSum(s[i, w] for i in ids) == 11
+        prob += pulp.lpSum(c[i, w] for i in ids) == 1
+        for ps, quota, lo, hi in (('GKP', 2, 1, 1), ('DEF', 5, 3, 5), ('MID', 5, 2, 5), ('FWD', 3, 1, 3)):
+            grp = [i for i in ids if pos[i] == ps]
+            prob += pulp.lpSum(x[i, w] for i in grp) == quota
+            prob += pulp.lpSum(s[i, w] for i in grp) >= lo
+            prob += pulp.lpSum(s[i, w] for i in grp) <= hi
+        for t in set(team.values()):
+            prob += pulp.lpSum(x[i, w] for i in ids if team[i] == t) <= 3
+        prev_bank = money[w - 1] if w else float(bank)
+        prob += money[w] == (prev_bank + pulp.lpSum(sell[i, w] * sp[i] for i in ids)
+                             - pulp.lpSum(buy[i, w] * price[i] for i in ids))
+        n_in = pulp.lpSum(buy[i, w] for i in ids)
+        # Hits cover whatever the free transfers don't; the unused free
+        # transfers roll over, plus one new one, up to the cap. A week with
+        # a hit has no unused free transfers (so a hit can't buy one).
+        took_hit = _lp_var(prob, f"z_{w}")
+        unused = ft[w] - n_in + hits[w]
+        prob += unused >= 0
+        prob += hits[w] <= max_hits * took_hit
+        prob += unused <= MAX_FREE_TRANSFERS * (1 - took_hit)
+        prob += ft[w + 1] <= unused + 1
+        obj.append(-wt * HIT_COST * hits[w])
+    obj.append(PLANNER_FT_VALUE * ft[len(gws)])
+    prob += pulp.lpSum(obj)
+    prob.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=time_limit, gapRel=0.002))
+    status = pulp.LpStatus[prob.status]
+    if status not in ('Optimal',) and (x[ids[0], 0].value() is None):
+        return None
+
+    v = lambda var: float(var.value() or 0.0)
+    weeks = []
+    for w, g in enumerate(gws):
+        ins = [i for i in ids if v(buy[i, w]) > 0.5]
+        outs = [i for i in ids if v(sell[i, w]) > 0.5]
+        squad = [i for i in ids if v(x[i, w]) > 0.5]
+        xi = [i for i in squad if v(s[i, w]) > 0.5]
+        cap = next((i for i in xi if v(c[i, w]) > 0.5), None)
+        pts = proj[g]
+        weeks.append({'gw': g, 'in': ins, 'out': outs, 'hits': int(round(v(hits[w]))),
+                      'ft_before': int(round(v(ft[w]))), 'squad': squad, 'xi': xi, 'captain': cap,
+                      'points': float(sum(pts.get(i, 0) for i in xi) + (pts.get(cap, 0) if cap else 0)),
+                      'bank': round(v(money[w]), 1)})
+    return {'weeks': weeks, 'status': status, 'ft_end': int(round(v(ft[len(gws)])))}
+
+
+def planner_pool(info, proj, squad_ids):
+    """The players worth considering: the squad plus the best by horizon
+    points (and by points per £m) in each position."""
+    total = proj.sum(axis=1)
+    per_m = total / info.loc[proj.index, 'price'].astype(float).clip(lower=3.5)
+    keep = set(int(i) for i in squad_ids)
+    posn = info.loc[proj.index, 'position']
+    for ps, k in PLANNER_POOL.items():
+        ids = posn[posn == ps].index
+        keep |= set(total.loc[ids].nlargest(k).index)
+        keep |= set(per_m.loc[ids].nlargest(max(k // 3, 3)).index)
+    return [i for i in proj.index if i in keep]
+
+
 # Home page table columns (used by callback)
 home_value_cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'total_points', 'points_per_million',
                    'form', 'ownership']
@@ -9110,7 +9259,57 @@ app.layout = html.Div([
                         ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-end'})
                     ], style=CARD_STYLE),
 
-                    html.Div(id='tp-result')
+                    html.Div(id='tp-result'),
+
+                    html.Div([
+                        html.H3("Multi-Week Transfer Plan", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
+                        html.P([
+                            "Plans your next few gameweeks of transfers together: when to make one, when to ",
+                            html.Strong("roll"), " the free transfer, and when a ", html.Strong("-4 hit"),
+                            " pays for itself over the horizon. Each week is scored on its best XI plus "
+                            "captain for that week's fixtures, so doubles, blanks and injury returns count."
+                        ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
+                        html.Div([
+                            html.Div([
+                                html.Label("FPL Team ID", style={'fontWeight': '600', 'marginBottom': '6px',
+                                                                 'display': 'block'}),
+                                dcc.Input(id='tp-team-id', type='number', placeholder='e.g. 1234567',
+                                          persistence=True, persistence_type='local',
+                                          style={'padding': '8px', 'borderRadius': '4px', 'width': '100%',
+                                                 'border': '1px solid #ccc'}),
+                            ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Free transfers you have now",
+                                           style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                                dcc.Dropdown(id='tp-ft', options=[{'label': str(i), 'value': i} for i in range(0, 6)],
+                                             value=1, clearable=False, persistence=True, persistence_type='local'),
+                            ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Gameweeks to plan", style={'fontWeight': '600', 'marginBottom': '6px',
+                                                                       'display': 'block'}),
+                                dcc.RadioItems(id='tp-plan-gws', options=[{'label': f' {i}', 'value': i}
+                                                                          for i in (3, 4, 5, 6)],
+                                               value=5, inline=True,
+                                               inputStyle={'marginRight': '4px', 'marginLeft': '10px'}),
+                            ], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Label("Most hits in a week", style={'fontWeight': '600', 'marginBottom': '6px',
+                                                                         'display': 'block'}),
+                                dcc.RadioItems(id='tp-max-hits', options=[{'label': ' None', 'value': 0},
+                                                                          {'label': ' 1', 'value': 1},
+                                                                          {'label': ' 2', 'value': 2}],
+                                               value=1, inline=True,
+                                               inputStyle={'marginRight': '4px', 'marginLeft': '10px'}),
+                            ], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
+                            html.Div([
+                                html.Button("Plan my transfers", id='tp-plan-btn', n_clicks=0, style={
+                                    'backgroundColor': COLORS['primary'], 'color': 'white', 'border': 'none',
+                                    'padding': '10px 22px', 'borderRadius': '6px', 'fontSize': '15px',
+                                    'fontWeight': '700', 'cursor': 'pointer', 'marginTop': '8px'}),
+                            ], style={'padding': '0 10px'}),
+                        ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-end', 'gap': '8px'}),
+                    ], style=CARD_STYLE),
+                    dcc.Loading(html.Div(id='tp-plan-result'), type='circle', color=COLORS['primary']),
                 ], style={'padding': '20px 0'})
             ]),
 
@@ -12901,6 +13100,187 @@ def update_transfer_gain(out_id, in_id, horizon, hit):
                    style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginTop': '14px'})
         ], style=CARD_STYLE)
     ])
+
+
+def planner_projections(data, gws, extra_ids=()):
+    """(proj, info): projected points per player (rows, by id) per gameweek
+    (columns), and position/team/price/names. The gameweek being planned
+    uses the main projection (bookmaker odds included); later ones scale
+    each player's neutral base by that week's fixtures and availability."""
+    dfa = data.get('df_active', pd.DataFrame()).copy()
+    df_all = data.get('df', pd.DataFrame())
+    next_gw = data.get('next_gw_num') or gws[0]
+    if not (all(c in dfa.columns for c in NB_PARTS) and dfa['nb_other'].notna().any()):
+        _parts = {}
+        cur = data.get('current_gw') or {}
+        compute_expected_points(dfa, gw_elapsed=max(cur.get('id', 1), 1),
+                                priors=data.get('last_season_priors', {}), components_out=_parts)
+        for c in NB_PARTS:
+            dfa[c] = _parts[c].values
+    lookup = build_gw_fixture_lookup(data.get('fixtures_data', []), data.get('teams_df', pd.DataFrame()),
+                                     gws, xg_ledger=data.get('xg_ledger'),
+                                     odds_lambdas=data.get('odds_lambdas'),
+                                     ratings=data.get('team_ratings'))
+    cols = {}
+    for g in gws:
+        if g == next_gw and 'proj_pts_next' in dfa.columns:
+            col = dfa['proj_pts_next']
+        else:
+            col = project_pool_for_gw(dfa, lookup.get(g, {}), avail_col_for_week(g - next_gw + 1))
+        cols[g] = pd.to_numeric(col, errors='coerce').fillna(0.0).clip(lower=0).values
+    proj = pd.DataFrame(cols, index=dfa['id'].astype(int).values)
+    # Squad players who haven't played this season yet project nothing
+    missing = [int(i) for i in extra_ids if int(i) not in proj.index]
+    if missing:
+        proj = pd.concat([proj, pd.DataFrame(0.0, index=missing, columns=gws)])
+    info = df_all.drop_duplicates('id').set_index('id')
+    info.index = info.index.astype(int)
+    proj = proj[proj.index.isin(info.index)]
+    info = info.loc[proj.index, ['position', 'team', 'price', 'web_name', 'team_name']]
+    return proj, info
+
+
+def _load_entry_squad(team_id, data):
+    """(squad ids, {id: selling price}, bank £m, gw) for a team, or an error
+    message string."""
+    cur = data.get('current_gw')
+    if not cur:
+        return (f"The season hasn't started yet — squads become available after the "
+                f"GW{data.get('next_gw_num', 1)} deadline.")
+    picks_data = fetch_team_picks(int(team_id), cur['id'])
+    if not picks_data or not picks_data.get('picks'):
+        return "Could not load that squad — check the team ID."
+    ids = [int(pk['element']) for pk in picks_data['picks']]
+    df_all = data.get('df', pd.DataFrame())
+    squad_df = df_all[df_all['id'].isin(ids)].copy()
+    try:
+        prices = estimate_selling_prices(squad_df, fetch_entry_transfers(int(team_id)),
+                                         fetch_entry_chips(int(team_id)))
+    except Exception as e:
+        print(f"  Selling prices unavailable (non-fatal): {e}")
+        prices = {}
+    now = dict(zip(squad_df['id'].astype(int), squad_df['price'].astype(float)))
+    sell = {i: float((prices.get(i) or (None,))[0] or now.get(i, 0.0)) for i in ids}
+    eh = picks_data.get('entry_history') or {}
+    return ids, sell, float(eh.get('bank', 0) or 0) / 10.0, cur['id']
+
+
+@callback(
+    Output('tp-plan-result', 'children'),
+    Input('tp-plan-btn', 'n_clicks'),
+    [State('tp-team-id', 'value'), State('tp-ft', 'value'), State('tp-plan-gws', 'value'),
+     State('tp-max-hits', 'value')],
+    prevent_initial_call=True
+)
+def run_transfer_plan(n_clicks, team_id, free_transfers, n_gws, max_hits):
+    def note(msg, colour=None):
+        return html.Div([html.P(msg, style={'color': colour or COLORS['text_light'], 'fontWeight': '600',
+                                            'textAlign': 'center', 'padding': '20px 0', 'margin': 0})],
+                        style=CARD_STYLE)
+    if not team_id:
+        return note("Enter your FPL team ID to plan your transfers.")
+    data = get_data()
+    loaded = _load_entry_squad(team_id, data)
+    if isinstance(loaded, str):
+        return note(loaded, COLORS['danger_text'])
+    squad_ids, sell, bank, _cur = loaded
+    first = int(data.get('next_gw_num') or (_cur + 1))
+    gws = [g for g in range(first, first + int(n_gws or 5)) if g <= 38]
+    if not gws:
+        return note("No gameweeks left to plan this season.")
+    try:
+        proj, info = planner_projections(data, gws, extra_ids=squad_ids)
+        pool = planner_pool(info, proj, squad_ids)
+        plan = plan_transfers(proj.loc[pool], info.loc[pool], squad_ids, sell, bank,
+                              int(free_transfers if free_transfers is not None else 1),
+                              max_hits=int(max_hits or 0))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return note(f"The planner hit an error: {e}", COLORS['danger_text'])
+    if not plan:
+        return note("No legal plan found for this squad (check the team ID).", COLORS['danger_text'])
+
+    positions = info['position'].to_dict()
+    name = info['web_name'].to_dict()
+    club = dict(zip(info.index, info['team_name']))
+    owned = [i for i in squad_ids if i in proj.index]
+
+    base_weeks = [best_xi_points({i: proj.at[i, g] for i in owned}, positions) for g in gws]
+    base_total = sum(b[0] for b in base_weeks)
+    plan_total = sum(w['points'] for w in plan['weeks'])
+    total_hits = sum(w['hits'] for w in plan['weeks'])
+    net = plan_total - HIT_COST * total_hits
+    gain = net - base_total
+    n_moves = sum(len(w['in']) for w in plan['weeks'])
+
+    span = f"GW{gws[0]}–GW{gws[-1]}" if len(gws) > 1 else f"GW{gws[0]}"
+    if n_moves == 0:
+        headline = f"Hold: no transfer beats rolling over {span}"
+        colour = COLORS['secondary']
+    else:
+        headline = f"Plan: +{gain:.1f} projected points over {span} vs no transfers"
+        colour = COLORS['success'] if gain >= 2 else COLORS['warning']
+
+    head = html.Div(headline, style={'backgroundColor': colour, 'color': COLORS['primary'],
+                                     'padding': '14px 20px', 'borderRadius': '8px', 'fontSize': '18px',
+                                     'fontWeight': '700', 'textAlign': 'center', 'marginBottom': '8px'})
+    sub = html.P(
+        f"This plan: {net:.1f} points after hits ({plan_total:.1f} before, {total_hits} hit"
+        f"{'s' if total_hits != 1 else ''}). Keeping your squad: {base_total:.1f}. "
+        f"Free transfers left at the end: {plan['ft_end']}.",
+        style={'color': COLORS['text_light'], 'textAlign': 'center', 'marginBottom': '14px'})
+
+    # One block per gameweek (stacks cleanly on a phone, unlike a wide table)
+    pill = {'display': 'inline-block', 'padding': '3px 10px', 'borderRadius': '20px', 'fontSize': '13px',
+            'fontWeight': '600', 'lineHeight': '1.35', 'maxWidth': '100%', 'margin': '0 6px 6px 0',
+            'backgroundColor': '#f0f0f0', 'color': COLORS['text_dark']}
+    blocks = []
+    for w, (bpts, _bxi, _bcap) in zip(plan['weeks'], base_weeks):
+        used = len(w['in'])
+        free_used = min(used, w['ft_before'])
+        moves = []
+        for o, i in zip(sorted(w['out'], key=lambda q: positions.get(q, '')),
+                        sorted(w['in'], key=lambda q: positions.get(q, ''))):
+            moves.append(html.Div([
+                html.Span(f"{name.get(o, o)}", style={'color': COLORS['danger_text'], 'fontWeight': '600'}),
+                html.Span(f" (\u00a3{sell.get(o, info.at[o, 'price']):.1f}m) \u2192 ",
+                          style={'color': COLORS['text_light']}),
+                html.Span(f"{name.get(i, i)}", style={'color': COLORS['success_text'], 'fontWeight': '600'}),
+                html.Span(f" ({club.get(i, '')}, \u00a3{info.at[i, 'price']:.1f}m)",
+                          style={'color': COLORS['text_light']}),
+            ], style={'marginBottom': '4px'}))
+        if used:
+            xfer = (f"{used} transfer{'s' if used != 1 else ''}: {free_used} free"
+                    + (f" + {w['hits']} hit (\u2212{HIT_COST * w['hits']})" if w['hits'] else ''))
+        else:
+            nxt = min(w['ft_before'] + 1, MAX_FREE_TRANSFERS)
+            xfer = (f"Roll: {nxt} free transfers next week" if w['ft_before'] < MAX_FREE_TRANSFERS
+                    else "No transfer (free transfers at the cap)")
+        diff = w['points'] - bpts
+        blocks.append(html.Div([
+            html.Div([
+                html.Span(f"GW{w['gw']}", style={**pill, 'backgroundColor': COLORS['primary'],
+                                                 'color': 'white'}),
+                html.Span(f"{w['points']:.1f} pts", style=pill),
+                html.Span(f"{diff:+.1f} vs keeping", style={**pill, 'color': COLORS['success_text']
+                                                             if diff > 0.05 else COLORS['text_light']}),
+                html.Span("C: " + str(name.get(w['captain'], '\u2014')), style=pill),
+                html.Span(f"Bank \u00a3{w['bank']:.1f}m", style=pill),
+            ]),
+            html.Div(xfer, style={'fontWeight': '600', 'marginBottom': '6px',
+                                  'color': COLORS['danger_text'] if w['hits'] else COLORS['text_dark']}),
+            html.Div(moves),
+        ], style={'borderTop': '1px solid #eee', 'padding': '12px 0'}))
+    table = html.Div(blocks)
+    caveat = html.P(
+        "Weeks further out count a little less (their projections are less certain), and free "
+        f"transfers still banked at the end are valued at {PLANNER_FT_VALUE:g} points each. Doesn't "
+        "plan Wildcard or Free Hit, and assumes today's prices. Transfers you've already made for "
+        f"GW{gws[0]} don't show in FPL's public data until the deadline. Re-run each week: the plan "
+        "changes as news and odds come in, and only the first week's moves need acting on now.",
+        style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginTop': '14px'})
+    return html.Div([head, sub, table, caveat], style=CARD_STYLE)
 
 
 # =============================================================================
