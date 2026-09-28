@@ -1717,7 +1717,7 @@ def compute_expected_points(df, gw_elapsed=38, priors=None, components_out=None)
 
     # --- Per-GW component model ------------------------------------------
     def per_gw(att_fdr_col, def_fdr_col, att_env_cols=(), cs_prob_col=None, gc_pen_col=None,
-               neutral=False, fit=False):
+               neutral=False, fit=False, goal_lam_mkt=None):
         """One match's expected points, and its parts.
 
         Attacking side: the PLAYER fixture multiplier (this opponent and
@@ -1727,7 +1727,9 @@ def compute_expected_points(df, gw_elapsed=38, priors=None, components_out=None)
         it double-counts the team's own attacking level. neutral=True prices
         an average opponent: the base the chip planner scales week by week.
         fit=True prices him as fully available (multi-week horizons apply
-        availability week by week instead).
+        availability week by week instead). goal_lam_mkt: the scorer
+        market's expected goals for this match (NaN where unpriced), blended
+        in at PLAYER_ODDS_WEIGHT.
         """
         p60, p_any, exp90 = ((p60_fit, p_any_fit, exp90_fit) if fit
                              else (p60_avail, p_any_avail, exp90_avail))
@@ -1750,7 +1752,13 @@ def compute_expected_points(df, gw_elapsed=38, priors=None, components_out=None)
         def_mult_cs = _fdr_mult(def_fdr, idx)
         def_mult_gc = _fdr_mult(def_fdr, idx, invert=True)
 
-        goal_pts = xg90s * exp90 * att_mult * pos.map(GOAL_POINTS).fillna(4)
+        goal_lam = xg90s * exp90 * att_mult
+        goal_lam_model = goal_lam
+        if goal_lam_mkt is not None:
+            goal_lam = goal_lam.where(goal_lam_mkt.isna(),
+                                      (1 - PLAYER_ODDS_WEIGHT) * goal_lam
+                                      + PLAYER_ODDS_WEIGHT * goal_lam_mkt)
+        goal_pts = goal_lam * pos.map(GOAL_POINTS).fillna(4)
         assist_pts = xa90s * exp90 * att_mult * ASSIST_POINTS
 
         # Clean sheets: prefer the team-level Poisson probability
@@ -1863,7 +1871,7 @@ def compute_expected_points(df, gw_elapsed=38, priors=None, components_out=None)
         parts = {'appear': appearance_pts, 'goals': goal_pts, 'assists': assist_pts,
                  'cs': cs_pts, 'gc': gc_pts, 'defcon': defcon_pts, 'saves': save_pts,
                  'bonus': bonus_pts, 'att_mult': pd.Series(att_mult, index=idx),
-                 'cs_prob': cs_prob}
+                 'cs_prob': cs_prob, 'goal_lam': goal_lam, 'goal_lam_model': goal_lam_model}
         # Underlying per-match rates for the captain simulation (it draws
         # goals conceded and saves itself, so it needs rates, not points)
         lam_gc = -np.log(cs_prob.clip(1e-6, 1.0))
@@ -1877,9 +1885,13 @@ def compute_expected_points(df, gw_elapsed=38, priors=None, components_out=None)
     # the two fixtures. Frames without the count (older replay logs) are
     # treated as single-fixture weeks, as before.
     next_count = n('next_fixture_count').fillna(1.0).clip(0, 3)
+    # Anytime-scorer market (gameweek total -> per match), where priced
+    mkt_goals = (n('mkt_goal_lam') / next_count.where(next_count > 0)
+                 if 'mkt_goal_lam' in df.columns else None)
     per_match_next, parts = per_gw('next_att_fdr', 'next_def_fdr',
                                    att_env_cols=('fix_mult_next', 'att_env_next'),
-                                   cs_prob_col='cs_prob_next', gc_pen_col='gc_pen_next')
+                                   cs_prob_col='cs_prob_next', gc_pen_col='gc_pen_next',
+                                   goal_lam_mkt=mkt_goals)
     proj_next = (per_match_next * next_count).round(2)
 
     # The eight components are summed and thrown away otherwise, which makes
@@ -1898,6 +1910,9 @@ def compute_expected_points(df, gw_elapsed=38, priors=None, components_out=None)
             'xp_p60': p60.round(3),
             'xp_lam_gc': parts['lam_gc'].round(3),
             'xp_lam_saves': parts['lam_saves'].round(3),
+            # Chance of scoring next GW: the model's own, and the bookmakers'
+            'goal_pct_model': ((1 - np.exp(-parts['goal_lam_model'] * next_count)) * 100).round(0),
+            'goal_pct_mkt': ((1 - np.exp(-n('mkt_goal_lam'))) * 100).round(0),
         })
         # Neutral per-match base (average opponent, neutral venue, one
         # fixture), kept in the parts that fixtures actually move so the
@@ -1936,7 +1951,7 @@ def compute_expected_points(df, gw_elapsed=38, priors=None, components_out=None)
     # --- Haul probability: P(2+ goal involvements) next GW ----------------
     att_mult_next = parts['att_mult']
     lam_neutral = ((xg90s + xa90s) * exp90).clip(lower=0)
-    lam_i = (lam_neutral * att_mult_next * next_count).clip(lower=0)
+    lam_i = ((parts['goal_lam'] + xa90s * exp90 * att_mult_next) * next_count).clip(lower=0)
     haul_pct = ((1 - np.exp(-lam_i) * (1 + lam_i)) * 100).round(1)
 
     return exp_mins, proj_next, proj_5, proj_8, haul_pct, lam_neutral.round(3)
@@ -3354,6 +3369,171 @@ def load_market_records(fixtures_data, teams_df):
             recs.append({'season': 'last', 'round': None, 'date': date, 'home': h, 'away': a,
                          'hg': float(lam_h), 'ag': float(lam_a), 'market': True, 'played': True})
     return recs
+
+
+# -----------------------------------------------------------------------------
+# Player odds — anytime goalscorer prices (optional, needs ODDS_API_KEY)
+# -----------------------------------------------------------------------------
+# Per-player markets come one match at a time from the odds API's event
+# endpoint (1 credit per match per region), so they're pulled at most twice
+# per gameweek: once inside 3 days of the deadline and a final time inside
+# the last 30 hours, after the press conferences. A 10-match round costs ~20
+# credits a gameweek on top of the team odds. If the plan or region doesn't
+# carry the market, the pulls stop for a week and projections carry on
+# without it.
+ODDS_EVENTS_URL = "https://api.the-odds-api.com/v4/sports/soccer_epl/events"
+ODDS_EVENT_ODDS_URL = ("https://api.the-odds-api.com/v4/sports/soccer_epl/events/{event_id}/odds"
+                       "?regions={regions}&markets=player_goal_scorer_anytime&oddsFormat=decimal")
+PLAYER_ODDS_ENABLED = os.environ.get('PLAYER_ODDS', '1') != '0'
+PLAYER_ODDS_REGIONS = os.environ.get('PLAYER_ODDS_REGIONS', 'uk')
+# Share of next gameweek's expected goals taken from the scorer market (the
+# rest from the model). There is no free archive of player odds to test
+# this on, so it's an even split rather than a tuned number.
+PLAYER_ODDS_WEIGHT = float(os.environ.get('PLAYER_ODDS_WEIGHT', '0.5'))
+PLAYER_ODDS_MIN_CREDITS = int(os.environ.get('PLAYER_ODDS_MIN_CREDITS', '60'))
+OWN_GOAL_SHARE = 0.03   # of a team's goals, not credited to any scorer
+
+
+def scorer_odds_due(state, gw, deadline, now=None):
+    """Whether to pull scorer prices now for gameweek `gw` (deadline: naive
+    UTC). First pull inside 72h of the deadline, final pull inside 30h."""
+    now = now or datetime.utcnow()
+    state = state or {}
+    if deadline is None or state.get('blocked_until', 0) > time.time():
+        return False
+    hours_left = (deadline - now).total_seconds() / 3600
+    if hours_left <= 0 or hours_left > 72:
+        return False
+    if state.get('gw') != gw or not state.get('fetched_at'):
+        return True
+    last = _to_utc_naive(state['fetched_at'])
+    last_left = (deadline - last).total_seconds() / 3600 if last else 999
+    return hours_left <= 30 < last_left
+
+
+def _scorer_prices(event_odds):
+    """Event-odds payload -> {player name: median decimal price}."""
+    prices, books = {}, set()
+    for bm in event_odds.get('bookmakers') or []:
+        for mk in bm.get('markets') or []:
+            if mk.get('key') != 'player_goal_scorer_anytime':
+                continue
+            books.add(bm.get('key'))
+            for o in mk.get('outcomes') or []:
+                label = str(o.get('name') or '')
+                if label.lower() == 'no':
+                    continue
+                name = o.get('description') or (label if label.lower() != 'yes' else None)
+                price = o.get('price')
+                if name and price and float(price) > 1.0:
+                    prices.setdefault(name, []).append(float(price))
+    return {n: float(np.median(v)) for n, v in prices.items()}, books
+
+
+def scorer_goal_lambdas(prices, home_id, away_id, df_players, team_lams):
+    """Anytime-scorer prices for one match -> {fpl id: expected goals}.
+    Each price becomes an expected-goals figure (P(scores) = 1 - e^-x), then
+    each side's figures are scaled so they add up to the market's expected
+    goals for that side, less own goals — which strips out the bookmaker's
+    margin. team_lams: {team id: market expected goals} (may be empty)."""
+    cands = _person_candidates(df_players[df_players['team'].isin([home_id, away_id])])
+    raw = {home_id: {}, away_id: {}}
+    unmatched = 0
+    for nm, price in prices.items():
+        # The price doesn't say which side he plays for: try both squads and
+        # keep the clearly better match (a tie is left out)
+        found = sorted((lvl, tid, pid) for tid in (home_id, away_id)
+                       for pid, lvl in [_match_person(nm, cands.get(tid, []))] if pid is not None)
+        if not found or (len(found) > 1 and found[0][0] == found[1][0]):
+            unmatched += 1
+            continue
+        _, tid, pid = found[0]
+        p = min(1.0 / price, 0.95)
+        raw[tid][int(pid)] = -np.log(1.0 - p)
+    out = {}
+    for tid, lams in raw.items():
+        total = sum(lams.values())
+        if total <= 0:
+            continue
+        target = team_lams.get(tid)
+        scale = (float(np.clip(target * (1 - OWN_GOAL_SHARE) / total, 0.5, 1.0))
+                 if target else 0.8)
+        for pid, lam in lams.items():
+            out[pid] = lam * scale
+    return out, unmatched
+
+
+def fetch_scorer_odds(df_players, teams_df, fixtures_data, gw, odds_lambdas):
+    """Pull anytime-scorer prices for gameweek `gw`. Returns a state dict:
+    {'gw', 'fetched_at', 'lams' {fpl id: expected goals, summed over the
+    gameweek}, 'matches', 'books', 'unmatched', 'remaining'} — or one with
+    'blocked_until' and 'error' when the plan/region doesn't carry it."""
+    now_iso = datetime.utcnow().isoformat(timespec='seconds')
+    state = {'gw': gw, 'fetched_at': now_iso, 'lams': {}, 'matches': 0, 'books': [],
+             'unmatched': 0, 'remaining': None}
+    try:
+        r = requests.get(f"{ODDS_EVENTS_URL}?apiKey={ODDS_API_KEY}", timeout=15)
+        r.raise_for_status()
+        events = r.json()
+    except Exception as e:
+        print(f"  Scorer odds: event list unavailable ({type(e).__name__}: {e})")
+        return None
+    teams = {}
+    fx_pairs = {(f['team_h'], f['team_a']) for f in fixtures_data or [] if f.get('event') == gw}
+    names = dict(zip(teams_df['id'], teams_df['name']))
+    for ev in events:
+        h = match_odds_team_to_fpl(ev.get('home_team'), names)
+        a = match_odds_team_to_fpl(ev.get('away_team'), names)
+        if (h, a) in fx_pairs:
+            teams[ev['id']] = (h, a)
+    books = set()
+    for ev_id, (h, a) in teams.items():
+        if state['remaining'] is not None and state['remaining'] < PLAYER_ODDS_MIN_CREDITS:
+            print(f"  Scorer odds: stopping, {state['remaining']} credits left")
+            break
+        try:
+            rr = requests.get(ODDS_EVENT_ODDS_URL.format(event_id=ev_id, regions=PLAYER_ODDS_REGIONS)
+                              + f"&apiKey={ODDS_API_KEY}", timeout=15)
+        except Exception as e:
+            print(f"  Scorer odds: request failed ({type(e).__name__}: {e})")
+            continue
+        if rr.status_code in (401, 403, 422):
+            msg = (rr.text or '')[:200]
+            print(f"  Scorer odds not available on this odds API plan/region "
+                  f"(HTTP {rr.status_code}: {msg}) — retrying in a week")
+            return {**state, 'blocked_until': time.time() + 7 * 86400,
+                    'error': f"HTTP {rr.status_code}: {msg}"}
+        if rr.status_code != 200:
+            print(f"  Scorer odds: HTTP {rr.status_code} for one match")
+            continue
+        rem = rr.headers.get('x-requests-remaining')
+        if rem is not None:
+            try:
+                state['remaining'] = int(float(rem))
+            except ValueError:
+                pass
+        prices, bks = _scorer_prices(rr.json())
+        if not prices:
+            continue
+        books |= bks
+        mk_h = (odds_lambdas or {}).get(h, {}).get(a) or {}
+        team_lams = {h: mk_h.get('lam_for'), a: mk_h.get('lam_against')} if mk_h else {}
+        lams, unmatched = scorer_goal_lambdas(prices, h, a, df_players, team_lams)
+        for pid, lam in lams.items():
+            state['lams'][pid] = state['lams'].get(pid, 0.0) + lam
+        state['matches'] += 1
+        state['unmatched'] += unmatched
+    state['books'] = sorted(b for b in books if b)
+    if teams and not state['matches']:
+        # Nothing priced in this region: once per gameweek is enough
+        state['blocked_until'] = time.time() + 3 * 86400
+        state['error'] = f"no anytime-scorer prices from '{PLAYER_ODDS_REGIONS}' bookmakers"
+        print(f"  Scorer odds: {state['error']} — next try in 3 days")
+    else:
+        print(f"  Scorer odds for GW{gw}: {len(state['lams'])} players in {state['matches']} "
+              f"matches from {len(state['books'])} bookmakers ({state['unmatched']} names "
+              f"unmatched); credits left: {state['remaining']}")
+    return state
 
 
 # =============================================================================
@@ -4988,13 +5168,8 @@ def _norm_person(s):
     return ' '.join(s.split())
 
 
-def _map_players_to_fpl(us_players, df_fpl):
-    """Understat player -> FPL element id, matched within the same club.
-    Returns {understat_player_id: fpl_id}. Ambiguous matches are left out
-    rather than guessed."""
-    import difflib
-    if df_fpl is None or df_fpl.empty:
-        return {}
+def _person_candidates(df_fpl):
+    """{team id: [(fpl id, full name, web name, first, second)]}, normalised."""
     cands = {}
     for r in df_fpl.itertuples(index=False):
         first = _norm_person(getattr(r, 'first_name', '') or '')
@@ -5002,35 +5177,50 @@ def _map_players_to_fpl(us_players, df_fpl):
         web = _norm_person(r.web_name)
         full = f"{first} {second}".strip() or web
         cands.setdefault(r.team, []).append((r.id, full, web, first, second))
+    return cands
+
+
+def _match_person(name, pool):
+    """(fpl id, level) for a name within one club's candidates — level 0 is
+    an exact full-name match, higher is looser — or (None, None). Ambiguous
+    matches are left out rather than guessed."""
+    import difflib
+    nm = _norm_person(name)
+    toks = set(nm.split())
+    if not nm or not pool:
+        return None, None
+    strategies = (
+        lambda c: c[1] == nm,
+        lambda c: c[2] == nm,
+        lambda c: toks <= set(c[1].split()) or set(c[1].split()) <= toks,
+        lambda c: bool(c[4]) and nm.split()[-1] == c[4].split()[-1]
+                  and c[3][:1] == nm[:1],
+        lambda c: bool(c[2]) and set(c[2].split()) <= toks,
+    )
+    for level, test in enumerate(strategies):
+        m = [c for c in pool if test(c)]
+        if len(m) == 1:
+            return m[0][0], level
+        if len(m) > 1:
+            return None, None   # ambiguous at this level — don't guess
+    best = difflib.get_close_matches(nm, [c[1] for c in pool], n=2, cutoff=0.85)
+    if len(best) == 1:
+        return next(c[0] for c in pool if c[1] == best[0]), len(strategies)
+    return None, None
+
+
+def _map_players_to_fpl(us_players, df_fpl):
+    """Understat player -> FPL element id, matched within the same club.
+    Returns {understat_player_id: fpl_id}. Ambiguous matches are left out
+    rather than guessed."""
+    if df_fpl is None or df_fpl.empty:
+        return {}
+    cands = _person_candidates(df_fpl)
     out = {}
     for pid, name, tid in us_players[['player_id', 'player', 'team_id']].itertuples(index=False):
         if pd.isna(tid):
             continue
-        pool = cands.get(int(tid), [])
-        nm = _norm_person(name)
-        toks = set(nm.split())
-        if not nm or not pool:
-            continue
-        strategies = (
-            lambda c: c[1] == nm,
-            lambda c: c[2] == nm,
-            lambda c: toks <= set(c[1].split()) or set(c[1].split()) <= toks,
-            lambda c: bool(c[4]) and nm.split()[-1] == c[4].split()[-1]
-                      and c[3][:1] == nm[:1],
-            lambda c: bool(c[2]) and set(c[2].split()) <= toks,
-        )
-        hit = None
-        for test in strategies:
-            m = [c for c in pool if test(c)]
-            if len(m) == 1:
-                hit = m[0][0]
-                break
-            if len(m) > 1:
-                break   # ambiguous at this level — don't guess
-        if hit is None:
-            best = difflib.get_close_matches(nm, [c[1] for c in pool], n=2, cutoff=0.85)
-            if len(best) == 1:
-                hit = next(c[0] for c in pool if c[1] == best[0])
+        hit, _ = _match_person(name, cands.get(int(tid), []))
         if hit is not None:
             out[int(pid)] = int(hit)
     return out
@@ -5204,7 +5394,7 @@ _CACHE_KEYS = [
     'player_histories', 'sorted_teams', 'next_gw_num', 'last_refresh',
     'heavy_loaded', 'fixture_anchor_gw', 'season_started', 'season_label',
     'last_season_priors', 'calibration',
-    'xg_ledger', 'odds_lambdas', 'odds_last_refresh', 'football_data_last_sync',
+    'xg_ledger', 'odds_lambdas', 'odds_last_refresh', 'football_data_last_sync', 'scorer_odds',
     'xcs_next', 'delta_basis',
     'team_ratings', 'team_match_records',
 ]
@@ -5360,6 +5550,31 @@ def refresh_core_data():
             if ODDS_API_KEY:
                 print(f"  Odds cache is {odds_age / 3600:.1f}h old "
                       f"(refreshes every {ODDS_REFRESH_INTERVAL / 3600:.0f}h) — reusing")
+
+        # Anytime-scorer prices for the gameweek being planned (optional;
+        # at most two pulls per gameweek — see scorer_odds_due)
+        scorer = DATA.get('scorer_odds') or {}
+        if ODDS_API_KEY and PLAYER_ODDS_ENABLED:
+            try:
+                _ev = next((e for e in bootstrap_data.get('events', [])
+                            if e.get('id') == next_gw_num), None)
+                _deadline = _to_utc_naive(_ev.get('deadline_time')) if _ev else None
+                if scorer_odds_due(scorer, next_gw_num, _deadline):
+                    fresh = fetch_scorer_odds(df_active, teams_df, fixtures_data,
+                                              next_gw_num, odds_lambdas)
+                    if fresh is not None:
+                        if not fresh.get('lams') and scorer.get('gw') == next_gw_num:
+                            # keep this gameweek's earlier prices
+                            fresh = {**scorer, **{k: v for k, v in fresh.items()
+                                                  if k in ('fetched_at', 'blocked_until', 'error')}}
+                        scorer = fresh
+                        with DATA_LOCK:
+                            DATA['scorer_odds'] = scorer
+            except Exception as e:
+                print(f"  Scorer odds skipped ({type(e).__name__}: {e})")
+        _scorer_lams = scorer.get('lams') if scorer.get('gw') == next_gw_num else None
+        df_active['mkt_goal_lam'] = (df_active['id'].map(_scorer_lams) if _scorer_lams
+                                     else np.nan)
 
         # Expected-goals ledger: team xGF/xGC per match, from keeper xGC.
         # Feeds every team-level form estimate below. Failure here is
@@ -8378,6 +8593,7 @@ app.layout = html.Div([
                                "reorders players within about 1 point of each other. Ceiling ranks by the "
                                "chance of 15+ points.",
                                style={'color': COLORS['text_light']}),
+                        html.Div(id='cap-odds-note', style={'marginBottom': '8px'}),
                         dcc.Graph(id='cap-bar')
                     ], style=CARD_STYLE),
 
@@ -8404,6 +8620,10 @@ app.layout = html.Div([
                                 {'name': 'P(10+)', 'id': 'p_10', 'type': 'numeric',
                                  'format': {'specifier': '.0f'}},
                                 {'name': 'P(15+)', 'id': 'p_15', 'type': 'numeric',
+                                 'format': {'specifier': '.0f'}},
+                                {'name': 'Goal % (model)', 'id': 'goal_pct_model', 'type': 'numeric',
+                                 'format': {'specifier': '.0f'}},
+                                {'name': 'Goal % (bookies)', 'id': 'goal_pct_mkt', 'type': 'numeric',
                                  'format': {'specifier': '.0f'}},
                                 {'name': 'Composite', 'id': 'captain_score', 'type': 'numeric',
                                  'format': {'specifier': '.1f'}},
@@ -10654,7 +10874,8 @@ def update_fixture_swings(_n):
 
 # --- CAPTAIN Optimiser ---
 @callback(
-    [Output('cap-bar', 'figure'), Output('cap-ha-scatter', 'figure'), Output('cap-table', 'data')],
+    [Output('cap-bar', 'figure'), Output('cap-ha-scatter', 'figure'), Output('cap-table', 'data'),
+     Output('cap-odds-note', 'children')],
     [Input('cap-position', 'value'), Input('cap-team', 'value'), Input('cap-price', 'value'),
      Input('cap-minutes', 'value'), Input('cap-mode', 'value'),
      Input('visit-captain', 'data')],
@@ -10706,7 +10927,7 @@ def update_captain(position, team, max_price, min_minutes, mode, _n):
                                      xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
                                      font=dict(size=14, color=COLORS['text_light']))
             empty_fig.update_layout(template='plotly_white', height=400)
-            return empty_fig, empty_fig, []
+            return empty_fig, empty_fig, [], _scorer_odds_note()
 
         top_20 = filtered.nlargest(20, '_order')
         env_series = pd.to_numeric(top_20.get('fix_mult_next'), errors='coerce').fillna(1.0) \
@@ -10756,7 +10977,7 @@ def update_captain(position, team, max_price, min_minutes, mode, _n):
                                  xaxis_title='Away PPG', yaxis_title='Home PPG')
 
         cols = ['web_name', 'team_name', 'position', 'price', 'proj_pts_next',
-                'p_10', 'p_15', 'captain_score',
+                'p_10', 'p_15', 'goal_pct_model', 'goal_pct_mkt', 'captain_score',
                 'haul_pct', 'fix_mult_next', 'ep_next', 'form', 'ppg',
                 'xgi_per_90', 'next_att_fdr', 'venue_ppg', 'start_rate', 'avail_pct',
                 'set_pieces', 'top_eo',
@@ -10765,7 +10986,7 @@ def update_captain(position, team, max_price, min_minutes, mode, _n):
         cols = [c for c in cols if c in filtered.columns]
         table_data = prepare_table_data(filtered.nlargest(50, '_order'), cols)
 
-        return bar_fig, ha_scatter, table_data
+        return bar_fig, ha_scatter, table_data, _scorer_odds_note()
 
     except Exception as e:
         import traceback
@@ -10775,7 +10996,37 @@ def update_captain(position, team, max_price, min_minutes, mode, _n):
                                x=0.5, y=0.5, showarrow=False,
                                font=dict(size=13, color=COLORS['danger_text']))
         err_fig.update_layout(template='plotly_white', height=400)
-        return err_fig, err_fig, []
+        return err_fig, err_fig, [], None
+
+
+def _scorer_odds_note():
+    """One line on whether bookmakers' scorer odds are in this week's
+    projections."""
+    data = DATA
+    st = data.get('scorer_odds') or {}
+    gw = data.get('next_gw_num')
+    if not ODDS_API_KEY:
+        msg = ("Goal % (bookies) needs an odds API key (ODDS_API_KEY); projections use the "
+               "model's goal chances alone.")
+    elif not PLAYER_ODDS_ENABLED:
+        msg = "Bookmakers' scorer odds are switched off (PLAYER_ODDS=0)."
+    elif st.get('gw') == gw and st.get('lams'):
+        when = _to_utc_naive(st.get('fetched_at'))
+        ago = f"{(datetime.utcnow() - when).total_seconds() / 3600:.0f}h ago" if when else ''
+        msg = (f"Bookmakers' anytime-scorer odds are in for {len(st['lams'])} players across "
+               f"{st.get('matches', 0)} GW{gw} matches (pulled {ago}): projected goals are half "
+               f"the model, half the market. Where Goal % (model) and Goal % (bookies) disagree, "
+               f"the market may know something the numbers don't (team news, a role change).")
+    elif st.get('error'):
+        msg = (f"Bookmakers' scorer odds aren't available ({st['error']}); projections use the "
+               f"model's goal chances alone.")
+    else:
+        msg = ("Bookmakers' scorer odds are pulled within 3 days of the deadline (and again in "
+               "the last 30 hours); until then projections use the model's goal chances alone.")
+    return html.Span(msg, style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
+                                 'padding': '8px 16px', 'borderRadius': '20px', 'display': 'inline-block',
+                                 'lineHeight': '1.35', 'maxWidth': '100%', 'fontWeight': '600',
+                                 'fontSize': '13px'})
 
 
 # --- TRANSFER TRENDS ---
