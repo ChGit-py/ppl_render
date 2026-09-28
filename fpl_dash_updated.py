@@ -11,8 +11,9 @@ from dash import Dash, html, dcc, dash_table, callback, Output, Input, State, ct
 from dash.exceptions import PreventUpdate
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
+import io
 import json
 import re
 import sqlite3
@@ -2174,6 +2175,17 @@ RATING_FDR_PRIOR_SCALE = float(os.environ.get('FPL_RATING_FDR_SCALE', '0.2'))
 # more (log scale); used only when FPL's difficulties are unavailable.
 PROMOTED_PRIOR = {'att': -0.25, 'def': 0.19}
 PROMOTED_PRIOR_MATCHES = 8.0
+# Bookmaker prices as extra data. Each priced match adds the market's
+# expected goals for both sides as if they were a match's xG: counted 6 times
+# for a match still to be played (the market's current view, team news
+# included) and twice for one already played (its actual xG counts as well).
+# Tested on 2025/26 with that season's real pre-match odds, rating fixtures
+# 1-5 weeks after each deadline: better goals, xG and clean-sheet forecasts
+# at every horizon than the ratings alone (about 3% better 3-5 weeks out in
+# the first ten gameweeks) — so the market's view carries past the fixtures
+# it prices, rather than fading out.
+MARKET_RATING_WEIGHT_UPCOMING = float(os.environ.get('FPL_MARKET_RATING_UPCOMING', '6'))
+MARKET_RATING_WEIGHT_PAST = float(os.environ.get('FPL_MARKET_RATING_PAST', '2'))
 
 
 def fpl_fdr_strength(fixtures_data):
@@ -2303,22 +2315,40 @@ def build_team_match_records(fixtures_data, xg_ledger=None, last_season=None, te
     return recs
 
 
+def _market_upcoming(rec, before_round=None):
+    """A bookmaker-price record for a match not yet played at fit time."""
+    if rec['season'] == 'last':
+        return False
+    if before_round is None:
+        return not rec.get('played')
+    return (rec.get('round') or 0) >= before_round
+
+
 def fit_team_ratings(records, fpl_team_ids, before_round=None, as_of=None, fdr_strength=None):
     """Weighted Poisson fit (Newton's method) of attack, defence and home
-    advantage. `before_round` / `as_of` restrict and date the fit for the
+    advantage. Records flagged 'market' are bookmaker prices (the market's
+    expected goals for each side) counted as extra matches — see
+    MARKET_RATING_WEIGHT_UPCOMING. `before_round` / `as_of` restrict and date the fit for the
     walk-forward backtest; live use leaves both None (all data, dated now).
     `fdr_strength` (fpl_fdr_strength) sets each team's starting point.
     Returns {'att', 'def' (log-scale, per team), 'home', 'mu', 'league_avg',
     'n_cur', 'n_last', 'promoted'} or None when there is nothing to fit."""
-    recs = [r for r in records or []
-            if r['season'] == 'last' or before_round is None
-            or (r.get('round') or 0) < before_round]
-    if not recs:
+    def known(r):
+        if r['season'] == 'last' or before_round is None:
+            return True
+        rnd = r.get('round') or 0
+        # A round's bookmaker prices are known at its deadline
+        return rnd < before_round or (r.get('market') and rnd == before_round)
+
+    recs = [r for r in records or [] if known(r)]
+    if not any(not r.get('market') for r in recs):
         return None
-    dates = [r['date'] for r in recs if r['date'] is not None]
+    dates = [r['date'] for r in recs if r['date'] is not None and not r.get('market')]
     as_of = as_of or (max(dates) if dates else datetime.utcnow())
-    n_cur = sum(1 for r in recs if r['season'] == 'cur')
-    n_last = sum(1 for r in recs if r['season'] == 'last')
+    n_cur = sum(1 for r in recs if r['season'] == 'cur' and not r.get('market'))
+    n_last = sum(1 for r in recs if r['season'] == 'last' and not r.get('market'))
+    n_mkt_up = sum(1 for r in recs if r.get('market') and _market_upcoming(r, before_round))
+    n_mkt_past = sum(1 for r in recs if r.get('market')) - n_mkt_up
     seasons = [s for s in ('cur', 'last') if any(r['season'] == s for r in recs)]
     fpl_ids = [int(t) for t in fpl_team_ids]
     teams = sorted(set(fpl_ids) | {r['home'] for r in recs} | {r['away'] for r in recs}, key=str)
@@ -2332,6 +2362,9 @@ def fit_team_ratings(records, fpl_team_ids, before_round=None, as_of=None, fdr_s
         w = 0.5 ** (age / RATING_HALF_LIFE_DAYS)
         if r['season'] == 'last':
             w *= RATING_LAST_SEASON_WEIGHT
+        if r.get('market'):
+            w *= (MARKET_RATING_WEIGHT_UPCOMING if _market_upcoming(r, before_round)
+                  else MARKET_RATING_WEIGHT_PAST)
         for att, dfn, y, home in ((r['home'], r['away'], r['hg'], 1.0), (r['away'], r['home'], r['ag'], 0.0)):
             rows.append((si[r['season']], home, ti[att], ti[dfn]))
             ys.append(max(float(y), 0.0))
@@ -2348,8 +2381,8 @@ def fit_team_ratings(records, fpl_team_ids, before_round=None, as_of=None, fdr_s
     # Priors: every team toward average; promoted sides toward PROMOTED_PRIOR.
     # A promoted side = a current team with no match last season, judged only
     # when last season is actually loaded and looks complete.
-    last_teams = {r['home'] for r in recs if r['season'] == 'last'} | \
-                 {r['away'] for r in recs if r['season'] == 'last'}
+    last_teams = {r['home'] for r in recs if r['season'] == 'last' and not r.get('market')} | \
+                 {r['away'] for r in recs if r['season'] == 'last' and not r.get('market')}
     promoted = [t for t in fpl_ids if n_last >= 300 and t not in last_teams]
     if len(promoted) > 4:          # mapping went wrong — don't guess
         print(f"  Team ratings: {len(promoted)} teams missing from last season — "
@@ -2406,7 +2439,8 @@ def fit_team_ratings(records, fpl_team_ids, before_round=None, as_of=None, fdr_s
     dfn = {t: float(beta[S + 1 + T + ti[t]]) for t in fpl_ids}
     return {'att': att, 'def': dfn, 'home': home, 'mu': mu,
             'league_avg': float(np.exp(mu + home / 2)),
-            'n_cur': n_cur, 'n_last': n_last, 'promoted': promoted}
+            'n_cur': n_cur, 'n_last': n_last, 'promoted': promoted,
+            'n_market_upcoming': n_mkt_up, 'n_market_past': n_mkt_past}
 
 
 def rating_lambda(ratings, attacker, defender, attacker_venue):
@@ -2419,10 +2453,12 @@ def rating_lambda(ratings, attacker, defender, attacker_venue):
 
 
 def compute_team_ratings(fixtures_data, teams_df, xg_ledger=None):
-    """Live ratings: this season's ledger + last season's Understat xG.
-    Returns (ratings or None, records) — records are kept for the backtest."""
+    """Live ratings: this season's ledger + last season's Understat xG +
+    stored bookmaker prices. Returns (ratings or None, records) — records
+    are kept for the backtest."""
     last = load_last_season_team_xg()
     records = build_team_match_records(fixtures_data, xg_ledger, last, teams_df)
+    records += load_market_records(fixtures_data, teams_df)
     try:
         ratings = fit_team_ratings(records, list(teams_df['id']),
                                    fdr_strength=fpl_fdr_strength(fixtures_data))
@@ -2433,7 +2469,9 @@ def compute_team_ratings(fixtures_data, teams_df, xg_ledger=None):
         print(f"  Team ratings fitted from {ratings['n_cur']} matches this season and "
               f"{ratings['n_last']} last season; home advantage x{np.exp(ratings['home']):.2f}"
               + (f"; promoted-side prior for {len(ratings['promoted'])} team(s)"
-                 if ratings['promoted'] else ''))
+                 if ratings['promoted'] else '')
+              + f"; bookmaker prices for {ratings['n_market_upcoming']} upcoming and "
+                f"{ratings['n_market_past']} past matches")
     return ratings, records
 
 
@@ -2745,13 +2783,14 @@ def calculate_expected_clean_sheets(fixtures_data, teams_df, anchor_gw,
         # Market blend: when the bookmakers have priced THIS specific
         # fixture (this team vs this opponent — could be next GW or a
         # couple out, whatever fetch_market_lambdas found priced), blend our
-        # model with the market's goals-against rate (MARKET_WEIGHT to the
-        # market) — the market prices in team news hours before any stats
-        # feed does.
+        # model with the market's goals-against rate (market_blend_weight to
+        # the market) — the market prices in team news hours before any
+        # stats feed does.
         if odds_lambdas:
             mk = odds_lambdas.get(tid, {}).get(opp_id)
             if mk:
-                lam = (1 - MARKET_WEIGHT) * lam + MARKET_WEIGHT * mk['lam_against']
+                mw = market_blend_weight(ratings)
+                lam = (1 - mw) * lam + mw * mk['lam_against']
         lam = float(np.clip(lam, 0.25, 3.5))
         p_cs = float(np.exp(-lam))
         result[tid]['xcs'] += p_cs
@@ -2891,7 +2930,7 @@ ODDS_API_URL = ("https://api.the-odds-api.com/v4/sports/soccer_epl/odds"
 
 _ODDS_TEAM_ALIASES = {
     'spurs': 'tottenham', 'tottenham hotspur': 'tottenham',
-    'manchester united': 'man utd', 'manchester utd': 'man utd',
+    'manchester united': 'man utd', 'manchester utd': 'man utd', 'man united': 'man utd',
     'manchester city': 'man city',
     'nottingham forest': "nott'm forest",
     'wolverhampton wanderers': 'wolves', 'wolverhampton': 'wolves',
@@ -2932,6 +2971,20 @@ def match_odds_team_to_fpl(odds_name, fpl_names_by_id):
 # rest from the team ratings). Betting markets price team news within hours
 # and are usually the sharpest single-match forecast available.
 MARKET_WEIGHT = float(os.environ.get('MARKET_WEIGHT', '0.7'))
+# Once the team ratings already carry the market's prices (see
+# MARKET_RATING_WEIGHT_UPCOMING), blending the same prices in again at 0.7
+# double-counts them: on 2025/26 the anchored ratings alone forecast a priced
+# match as well as any blend. A light 0.3 keeps the market's last word on
+# late team news.
+MARKET_WEIGHT_ANCHORED = float(os.environ.get('MARKET_WEIGHT_ANCHORED', '0.3'))
+
+
+def market_blend_weight(ratings):
+    """Weight on a priced fixture's market expected goals in the xCS and
+    goal-environment models."""
+    if ratings and ratings.get('n_market_upcoming'):
+        return MARKET_WEIGHT_ANCHORED
+    return MARKET_WEIGHT
 
 _GOAL_GRID = np.arange(0, 16)
 
@@ -3055,7 +3108,13 @@ def fetch_market_lambdas(teams_df):
     fpl_names = dict(zip(teams_df['id'], teams_df['name']))
     out = {}
     n_fixtures = 0
+    priced = []
+    now = datetime.utcnow()
     for ev in events:
+        # In-play prices already carry the score so far — not a forecast
+        ko = _to_utc_naive(ev.get('commence_time'))
+        if ko is not None and ko <= now:
+            continue
         home_id = match_odds_team_to_fpl(ev.get('home_team'), fpl_names)
         away_id = match_odds_team_to_fpl(ev.get('away_team'), fpl_names)
         # Dedup by the (team, opponent) PAIR, not by team alone — this is
@@ -3097,10 +3156,204 @@ def fetch_market_lambdas(teams_df):
         out.setdefault(home_id, {})[away_id] = {'lam_for': lam_h, 'lam_against': lam_a}
         out.setdefault(away_id, {})[home_id] = {'lam_for': lam_a, 'lam_against': lam_h}
         n_fixtures += 1
+        priced.append((fpl_names[home_id], fpl_names[away_id], ev.get('commence_time'), lam_h, lam_a))
     if out:
         print(f"  Market lambdas derived for {n_fixtures} fixtures "
               f"across {len(out)} teams")
+    save_market_prices(priced, _season_start_year(), 'odds-api')
     return out
+
+
+# -----------------------------------------------------------------------------
+# Stored bookmaker prices — the team ratings' market data
+# -----------------------------------------------------------------------------
+# Every priced match is kept (one row per match: the last price before
+# kick-off), so the ratings can learn from the market's view of every past
+# round, not just the next one. Sources: the odds API above (when a key is
+# set) and football-data.co.uk, which publishes pre-match odds for every
+# Premier League match (this season and last) and for the coming round —
+# free, no key, one small CSV each.
+FOOTBALL_DATA_SEASON_URL = 'https://www.football-data.co.uk/mmz4281/{code}/E0.csv'
+FOOTBALL_DATA_FIXTURES_URL = 'https://www.football-data.co.uk/fixtures.csv'
+FOOTBALL_DATA_REFRESH = float(os.environ.get('FOOTBALL_DATA_REFRESH_HOURS', '12')) * 3600
+_FD_1X2 = (('AvgH', 'AvgD', 'AvgA'), ('B365H', 'B365D', 'B365A'), ('PSH', 'PSD', 'PSA'),
+           ('BbAvH', 'BbAvD', 'BbAvA'))
+_FD_OU = (('Avg>2.5', 'Avg<2.5'), ('B365>2.5', 'B365<2.5'), ('P>2.5', 'P<2.5'),
+          ('BbAv>2.5', 'BbAv<2.5'))
+
+
+def _market_prices_conn():
+    conn = sqlite3.connect(SNAPSHOT_DB_PATH, timeout=30)
+    conn.execute("""CREATE TABLE IF NOT EXISTS market_prices (
+        season INTEGER, home TEXT, away TEXT, kickoff TEXT,
+        lam_h REAL, lam_a REAL, source TEXT, fetched_at TEXT,
+        PRIMARY KEY (season, home, away))""")
+    return conn
+
+
+def save_market_prices(rows, season, source):
+    """Store (home, away, kickoff, lam_h, lam_a) rows. A newer price replaces
+    an older one for the same match, except that a football-data price never
+    replaces the odds API's (the API's is the later, sharper one)."""
+    if not rows:
+        return
+    now = datetime.utcnow().isoformat(timespec='seconds')
+    try:
+        conn = _market_prices_conn()
+        with conn:
+            conn.executemany(
+                """INSERT INTO market_prices VALUES (?,?,?,?,?,?,?,?)
+                   ON CONFLICT(season, home, away) DO UPDATE SET
+                     kickoff = excluded.kickoff, lam_h = excluded.lam_h, lam_a = excluded.lam_a,
+                     source = excluded.source, fetched_at = excluded.fetched_at
+                   WHERE excluded.source = 'odds-api' OR market_prices.source != 'odds-api'""",
+                [(int(season), h, a, str(ko or ''), float(lh), float(la), source, now)
+                 for h, a, ko, lh, la in rows])
+        conn.close()
+    except Exception as e:
+        print(f"  Market prices not stored ({type(e).__name__}: {e})")
+
+
+def _fd_float(v):
+    try:
+        f = float(v)
+        return f if np.isfinite(f) and f > 1.0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_football_data_csv(text):
+    """football-data.co.uk CSV -> [(home, away, kickoff, lam_h, lam_a)] for
+    Premier League rows with 1X2 and over/under 2.5 prices (the market
+    average where given, else Bet365 / Pinnacle). Pre-match prices only."""
+    import csv
+    out = []
+    for r in csv.DictReader(io.StringIO(text.lstrip('\ufeff'))):
+        r = {(k or '').strip(): (v or '').strip() for k, v in r.items()}
+        if r.get('Div', 'E0') != 'E0' or not r.get('HomeTeam') or not r.get('AwayTeam'):
+            continue
+        h2h = ou = None
+        for cols in _FD_1X2:
+            prices = [_fd_float(r.get(c)) for c in cols]
+            if all(prices):
+                h2h = _devig(prices)
+                break
+        for cols in _FD_OU:
+            prices = [_fd_float(r.get(c)) for c in cols]
+            if all(prices):
+                ou = _devig(prices)
+                break
+        if not h2h or not ou:
+            continue
+        ko = None
+        stamp = f"{r.get('Date', '')} {r.get('Time') or '15:00'}"
+        for fmt in ('%d/%m/%Y %H:%M', '%d/%m/%y %H:%M'):
+            try:
+                ko = datetime.strptime(stamp, fmt)
+                break
+            except ValueError:
+                continue
+        if ko is None:
+            continue
+        lam_h, lam_a = derive_match_lambdas(tuple(h2h), 2.5, ou[0])
+        # UK local time; the ratings only need the day
+        out.append((r['HomeTeam'], r['AwayTeam'], ko.isoformat(timespec='minutes'), lam_h, lam_a))
+    return out
+
+
+def _fd_get(url):
+    r = requests.get(url, timeout=20, headers={'User-Agent': 'Mozilla/5.0 (fpl-dashboard)'})
+    r.raise_for_status()
+    return r.content.decode('utf-8-sig', errors='replace')
+
+
+def sync_football_data_prices():
+    """Pull football-data.co.uk's odds: this season's played matches, the
+    coming round, and last season once. At most every
+    FOOTBALL_DATA_REFRESH; fails soft (the ratings just use fewer prices)."""
+    last = DATA.get('football_data_last_sync', 0)
+    if time.time() - last < FOOTBALL_DATA_REFRESH:
+        return
+    season = _season_start_year()
+    code = lambda y: f"{y % 100:02d}{(y + 1) % 100:02d}"
+    counts = {}
+    try:
+        conn = _market_prices_conn()
+        have_last = conn.execute("SELECT COUNT(*) FROM market_prices WHERE season = ?",
+                                 (season - 1,)).fetchone()[0]
+        conn.close()
+        jobs = [(season, FOOTBALL_DATA_SEASON_URL.format(code=code(season))),
+                (season, FOOTBALL_DATA_FIXTURES_URL)]
+        if have_last < 300:
+            jobs.append((season - 1, FOOTBALL_DATA_SEASON_URL.format(code=code(season - 1))))
+        for yr, url in jobs:
+            try:
+                rows = parse_football_data_csv(_fd_get(url))
+            except Exception as e:
+                print(f"  {url} unavailable ({type(e).__name__}: {e})")
+                continue
+            save_market_prices(rows, yr, 'football-data')
+            counts[url.rsplit('/', 1)[-1] if 'fixtures' in url else code(yr)] = len(rows)
+    except Exception as e:
+        print(f"  football-data.co.uk sync failed ({type(e).__name__}: {e})")
+        return
+    # Nothing came back: try again in an hour rather than in 12
+    DATA['football_data_last_sync'] = (time.time() if counts
+                                       else time.time() - FOOTBALL_DATA_REFRESH + 3600)
+    if counts:
+        print("  Bookmaker prices from football-data.co.uk: "
+              + ', '.join(f"{k}: {v}" for k, v in counts.items()))
+
+
+def _market_team_id(name, lookup):
+    """Bookmaker team name -> FPL team id: exact (with the usual aliases),
+    or the only FPL name it's a whole-word prefix of ('Hull' -> 'Hull
+    City'). No fuzzy matching: a relegated side must not land on a current
+    team."""
+    n = _norm_team_name(name)
+    if n in lookup:
+        return lookup[n]
+    hits = {t for nm, t in lookup.items() if nm.startswith(n + ' ') or n.startswith(nm + ' ')}
+    return hits.pop() if len(hits) == 1 else None
+
+
+def load_market_records(fixtures_data, teams_df):
+    """Stored prices -> rating records flagged 'market' (the market's expected
+    goals for each side, in place of xG). This season's are matched to FPL
+    fixtures (for their round and whether they've been played); last
+    season's are kept where both sides are current Premier League teams."""
+    season = _season_start_year()
+    try:
+        conn = _market_prices_conn()
+        rows = conn.execute("SELECT season, home, away, kickoff, lam_h, lam_a FROM market_prices "
+                            "WHERE season IN (?, ?)", (season, season - 1)).fetchall()
+        conn.close()
+    except Exception as e:
+        print(f"  Market prices unavailable ({type(e).__name__}: {e})")
+        return []
+    lookup = {_norm_team_name(n): int(t) for t, n in zip(teams_df['id'], teams_df['name'])}
+    by_pair = {(f['team_h'], f['team_a']): f for f in fixtures_data or []}
+    now = datetime.utcnow()
+    recs = []
+    for yr, home, away, ko, lam_h, lam_a in rows:
+        h, a = _market_team_id(home, lookup), _market_team_id(away, lookup)
+        if h is None or a is None or h == a or lam_h is None or lam_a is None:
+            continue
+        date = _to_utc_naive(ko)
+        if yr == season:
+            f = by_pair.get((h, a))
+            if f is None:
+                continue
+            fdate = _to_utc_naive(f.get('kickoff_time')) or date
+            played = bool(f.get('finished') or f.get('finished_provisional')
+                          or (fdate is not None and fdate < now - timedelta(hours=3)))
+            recs.append({'season': 'cur', 'round': f.get('event'), 'date': fdate,
+                         'home': h, 'away': a, 'hg': float(lam_h), 'ag': float(lam_a),
+                         'market': True, 'played': played})
+        else:
+            recs.append({'season': 'last', 'round': None, 'date': date, 'home': h, 'away': a,
+                         'hg': float(lam_h), 'ag': float(lam_a), 'market': True, 'played': True})
+    return recs
 
 
 # =============================================================================
@@ -3229,7 +3482,8 @@ def calculate_goal_environment(fixtures_data, teams_df, anchor_gw, num_gws=5,
         if odds_lambdas:
             mk = odds_lambdas.get(tid, {}).get(opp_id)
             if mk:
-                lam = (1 - MARKET_WEIGHT) * lam + MARKET_WEIGHT * mk['lam_for']
+                mw = market_blend_weight(ratings)
+                lam = (1 - mw) * lam + mw * mk['lam_for']
         if not np.isfinite(lam):
             lam = league_avg
         own = _own_attack_neutral(tid)
@@ -4950,14 +5204,15 @@ _CACHE_KEYS = [
     'player_histories', 'sorted_teams', 'next_gw_num', 'last_refresh',
     'heavy_loaded', 'fixture_anchor_gw', 'season_started', 'season_label',
     'last_season_priors', 'calibration',
-    'xg_ledger', 'odds_lambdas', 'odds_last_refresh', 'xcs_next', 'delta_basis',
+    'xg_ledger', 'odds_lambdas', 'odds_last_refresh', 'football_data_last_sync',
+    'xcs_next', 'delta_basis',
     'team_ratings', 'team_match_records',
 ]
 
 # Bump whenever the shape of cached data changes, or at a season rollover.
 # A mismatch (or an over-age cache) forces a clean fetch instead of serving
 # last season's teams and players from disk.
-CACHE_VERSION = 11
+CACHE_VERSION = 12
 # Render sets RENDER_GIT_COMMIT on every deploy. Stamping the cache with it
 # means a new deploy never reuses data pickled by an older build (or a local
 # run that ended up in the repo), so "Updated" always resets on deploy.
@@ -5118,7 +5373,12 @@ def refresh_core_data():
             DATA['xg_ledger'] = xg_ledger
 
         # Team ratings (attack / defence / home advantage) fitted from this
-        # season's xG and last season's — the base of every team model below.
+        # season's xG and last season's, plus bookmaker prices — the base of
+        # every team model below.
+        try:
+            sync_football_data_prices()
+        except Exception as e:
+            print(f"  football-data.co.uk sync skipped ({e})")
         try:
             team_ratings, team_records = compute_team_ratings(fixtures_data, teams_df, xg_ledger)
         except Exception as e:
@@ -8495,7 +8755,8 @@ app.layout = html.Div([
                             "your team's defensive strength and home advantage. Both strengths are ",
                             html.Strong("team ratings fitted from xG"),
                             " (this season and last, recent matches counting most, adjusted for who each team "
-                            "has played), blended with bookmaker odds for fixtures the market has priced. ",
+                            "has played) and from bookmaker prices for every match the market has priced, "
+                            "past and upcoming, so the market's view reaches fixtures weeks away. ",
                             "P(clean sheet) = e",
                             html.Sup("\u2212\u03bb"),
                             " per fixture; the horizon total simply sums them, so doubles count twice and blanks count zero."
@@ -10687,7 +10948,9 @@ def _outlook_why(row, gw, fx, view, fmt, ratings, names, id_by_short, season_gx,
         else:
             own = float(np.exp(ratings['att'].get(tid, 0.0)))
             lines.append(f"{team} attack \u00d7{own:.2f} ({_rating_word(own, 'attack')})")
-        lines.append("  (\u00d71.00 = league average, from xG this season + last)")
+        n_mkt = (ratings.get('n_market_upcoming') or 0) + (ratings.get('n_market_past') or 0)
+        lines.append("  (\u00d71.00 = league average, from xG this season + last"
+                     + (" and bookmaker prices" if n_mkt else "") + ")")
     lines += _goals_vs_xg_line(team, season_gx.get(tid), view)
     return '<br>'.join(lines)
 
@@ -11082,8 +11345,9 @@ def _render_backtest_inner():
         ]
     calib_blocks.append(html.P(
         "Limits: FPL doesn't archive injury flags or penalty order, so the test uses "
-        "today's penalty order and treats everyone as available; bookmaker odds aren't "
-        "replayed. Small samples early in the season are noisy.",
+        "today's penalty order and treats everyone as available; stored bookmaker prices feed "
+        "the team ratings, but the final odds blend for each fixture isn't replayed. Small "
+        "samples early in the season are noisy.",
         style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginTop': '12px'}))
 
     return html.Div([
@@ -13316,9 +13580,11 @@ def update_expected_clean_sheets(horizon, n):
     ratings = data.get('team_ratings')
     if ratings:
         last = " and last season" if ratings.get('n_last') else ""
+        n_mkt = (ratings.get('n_market_upcoming') or 0) + (ratings.get('n_market_past') or 0)
         msg = (f"Team ratings from xG: {ratings.get('n_cur', 0)} matches this season{last}, "
-               f"recent matches counting most" + (", plus bookmaker odds where priced"
-                                                   if data.get('odds_lambdas') else "") + ".")
+               f"recent matches counting most"
+               + (f", plus bookmaker prices for {n_mkt} matches" if n_mkt else "")
+               + (" and live odds where priced" if data.get('odds_lambdas') else "") + ".")
     elif max_played == 0:
         msg = ("Pre-season: no results yet, so projections are 100% team-strength "
                "based. Form blends in automatically from the first finished fixture.")
