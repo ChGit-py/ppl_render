@@ -1436,10 +1436,9 @@ FDR_STEP_RATIO = float(os.environ.get('FPL_FDR_RATIO', '1.18'))
 SHRINK_K = float(os.environ.get('FPL_SHRINK_K', '450'))
 FDR_SENSITIVITY = FDR_STEP_RATIO - 1.0  # legacy alias
 
-# Team-level form shrinkage (matches, not minutes): the weight given to a
-# team's observed recent rate is n / (n + k), so k is the number of matches
-# at which form and the static strength rating carry equal weight. k=6 gives
-# 2 games ~25%, 6 games 50%, 20 games ~77% (capped by form_weight). Replaces
+# Team-level form shrinkage for the FALLBACK team model (used only when no
+# team ratings can be fitted): the weight given to a team's recent rate is
+# n / (n + k) over a 6-game window, so it tops out at 6 / 12 = 50%. Replaces
 # a ramp that hit full weight after three games and let tiny samples swing
 # expected goals conceded by ~40%.
 TEAM_FORM_SHRINK_K = float(os.environ.get('FPL_TEAM_FORM_K', '6'))
@@ -6194,7 +6193,7 @@ def build_player_spotlight(player, title, metric_label, metric_value,
                 'backgroundColor': COLORS['secondary'],
                 'color': COLORS['primary'],
                 'padding': '4px 12px',
-                'borderRadius': '20px',
+                'borderRadius': '20px', 'display': 'inline-block', 'lineHeight': '1.35', 'maxWidth': '100%',
                 'fontSize': '12px',
                 'fontWeight': '600',
                 'textTransform': 'uppercase'
@@ -6825,7 +6824,7 @@ app.layout = html.Div([
                         html.Div([html.Span(f"Target: {DEF_THR} DEFCON/90 (DEF) | {MID_THR} DEFCON/90 (MID/FWD)",
                                             style={'backgroundColor': COLORS['secondary'],
                                                    'color': COLORS['primary'], 'padding': '8px 16px',
-                                                   'borderRadius': '20px', 'fontWeight': '600'})])
+                                                   'borderRadius': '20px', 'display': 'inline-block', 'lineHeight': '1.35', 'maxWidth': '100%', 'fontWeight': '600'})])
                     ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
                     html.Div([
@@ -6935,7 +6934,7 @@ app.layout = html.Div([
                         html.Div([
                             html.Span("Based on games with a minimum of 60 minutes played",
                                       style={'backgroundColor': COLORS['secondary'],
-                                             'color': COLORS['primary'], 'padding': '8px 16px', 'borderRadius': '20px',
+                                             'color': COLORS['primary'], 'padding': '8px 16px', 'borderRadius': '20px', 'display': 'inline-block', 'lineHeight': '1.35', 'maxWidth': '100%',
                                              'fontWeight': '600'})
                         ])
                     ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
@@ -7240,7 +7239,7 @@ app.layout = html.Div([
                         html.Div([
                             html.Span("All stats normalised per 90 minutes for fair comparison",
                                       style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
-                                             'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
+                                             'padding': '8px 16px', 'borderRadius': '20px', 'display': 'inline-block', 'lineHeight': '1.35', 'maxWidth': '100%', 'fontWeight': '600'})
                         ])
                     ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
@@ -7768,7 +7767,7 @@ app.layout = html.Div([
                         html.Div([
                             html.Span("Next 5 Gameweeks", style={'backgroundColor': COLORS['secondary'],
                                                                  'color': COLORS['primary'], 'padding': '8px 16px',
-                                                                 'borderRadius': '20px', 'fontWeight': '600'})
+                                                                 'borderRadius': '20px', 'display': 'inline-block', 'lineHeight': '1.35', 'maxWidth': '100%', 'fontWeight': '600'})
                         ])
                     ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
@@ -7923,7 +7922,7 @@ app.layout = html.Div([
                         html.Div([
                             html.Span("Target: <10% ownership with above average output",
                                       style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
-                                             'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
+                                             'padding': '8px 16px', 'borderRadius': '20px', 'display': 'inline-block', 'lineHeight': '1.35', 'maxWidth': '100%', 'fontWeight': '600'})
                         ])
                     ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
@@ -8058,7 +8057,7 @@ app.layout = html.Div([
                         html.Div([
                             html.Span(f"Next fixture: GW{next_gw_num}",
                                       style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
-                                             'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
+                                             'padding': '8px 16px', 'borderRadius': '20px', 'display': 'inline-block', 'lineHeight': '1.35', 'maxWidth': '100%', 'fontWeight': '600'})
                         ])
                     ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
@@ -8218,7 +8217,7 @@ app.layout = html.Div([
                         html.Div([
                             html.Span("Price changes happen overnight based on transfer activity",
                                       style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
-                                             'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
+                                             'padding': '8px 16px', 'borderRadius': '20px', 'display': 'inline-block', 'lineHeight': '1.35', 'maxWidth': '100%', 'fontWeight': '600'})
                         ])
                     ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
 
@@ -8492,10 +8491,11 @@ app.layout = html.Div([
                         html.H3("Expected Clean Sheets", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
                         html.P([
                             "Projected clean sheets per team over your chosen horizon, from a Poisson model: ",
-                            "each fixture's expected goals conceded comes from the opponent's attacking strength ",
-                            "and your team's defensive strength, both blended with ",
-                            html.Strong("actual recent results (last 6 games)"),
-                            " so the numbers move with form, not just reputation. ",
+                            "each fixture's expected goals conceded comes from the opponent's attacking strength, ",
+                            "your team's defensive strength and home advantage. Both strengths are ",
+                            html.Strong("team ratings fitted from xG"),
+                            " (this season and last, recent matches counting most, adjusted for who each team "
+                            "has played), blended with bookmaker odds for fixtures the market has priced. ",
                             "P(clean sheet) = e",
                             html.Sup("\u2212\u03bb"),
                             " per fixture; the horizon total simply sums them, so doubles count twice and blanks count zero."
@@ -9020,7 +9020,7 @@ def render_stale_stats_banner(_n):
     return html.Div([
         html.Span("Pre-season", style={
             'backgroundColor': COLORS['warning'], 'color': '#3a2c00',
-            'padding': '4px 12px', 'borderRadius': '20px',
+            'padding': '4px 12px', 'borderRadius': '20px', 'display': 'inline-block', 'lineHeight': '1.35', 'maxWidth': '100%',
             'fontSize': '12px', 'fontWeight': '700',
             'textTransform': 'uppercase', 'letterSpacing': '0.5px',
             'marginRight': '12px', 'whiteSpace': 'nowrap', 'flexShrink': '0'
@@ -13310,19 +13310,23 @@ def update_expected_clean_sheets(horizon, n):
                 'proj_pts_5', 'cs_per_90', 'minutes', 'ownership']
         player_rows = prepare_table_data(picks, cols)
 
-    # Form-blend status note: how much of the number is form vs reputation
+    # Status note: what the clean-sheet numbers are built from right now
     played = [v['recent_played'] for v in xcs.values()]
     max_played = max(played) if played else 0
-    if max_played == 0:
-        note = html.Span("Pre-season: no results yet, so projections are 100% team-strength "
-                         "based. Form blends in automatically from the first finished fixture.",
-                         style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
-                                'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
+    ratings = data.get('team_ratings')
+    if ratings:
+        last = " and last season" if ratings.get('n_last') else ""
+        msg = (f"Team ratings from xG: {ratings.get('n_cur', 0)} matches this season{last}, "
+               f"recent matches counting most" + (", plus bookmaker odds where priced"
+                                                   if data.get('odds_lambdas') else "") + ".")
+    elif max_played == 0:
+        msg = ("Pre-season: no results yet, so projections are 100% team-strength "
+               "based. Form blends in automatically from the first finished fixture.")
     else:
-        note = html.Span(f"Form-aware: blending last-{min(max_played, 6)}-game results with team "
-                         f"strengths (up to 60% form weight).",
-                         style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
-                                'padding': '8px 16px', 'borderRadius': '20px', 'fontWeight': '600'})
+        msg = (f"Blending last-{min(max_played, 6)}-game results with team strengths "
+               f"(up to 50% form weight).")
+    note = html.Span(msg, style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
+                                 'padding': '8px 16px', 'borderRadius': '20px', 'display': 'inline-block', 'lineHeight': '1.35', 'maxWidth': '100%', 'fontWeight': '600'})
 
     title = f"Expected Clean Sheets \u2014 Next {horizon} Gameweek{'s' if horizon > 1 else ''}"
     return [bar_fig, rows, player_rows, title, note]
