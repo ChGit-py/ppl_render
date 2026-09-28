@@ -7655,9 +7655,12 @@ app.layout = html.Div([
                                 dcc.Graph(id='fo-heatmap', config={'displayModeBar': False}),
                                 className='chart-scroll'),
                             type='circle', color=COLORS['primary']),
-                        html.P("If needed, swipe sideways to see the rest of the window",
+                        html.P("Tap any cell to see why it rates where it does. If needed, swipe "
+                               "sideways to see the rest of the window.",
                                style={'color': COLORS['text_light'], 'fontSize': '12px',
                                       'margin': '6px 0 0 0'}),
+                        dcc.Store(id='fo-why-store'),
+                        html.Div(id='fo-why', style={'marginTop': '12px'}),
                     ], style=CARD_STYLE),
 
                     html.Div([
@@ -10596,9 +10599,103 @@ def update_transfers(position, team, max_price, min_minutes, _visit=None):
     return risers_fig, fallers_fig, scatter_fig, table_data, note
 
 
+def _team_goals_vs_xg(fixtures, ledger):
+    """Season-to-date goals and xG for and against per team, over the
+    matches the xG ledger covers (so the two are like for like)."""
+    out = {}
+    for f in fixtures or []:
+        if not (f.get('finished') or f.get('finished_provisional')):
+            continue
+        if f.get('team_h_score') is None or f.get('team_a_score') is None:
+            continue
+        for tid, gf, ga in ((f['team_h'], f['team_h_score'], f['team_a_score']),
+                            (f['team_a'], f['team_a_score'], f['team_h_score'])):
+            rec = ((ledger or {}).get(tid) or {}).get(f.get('id')) or {}
+            if rec.get('xgc') is None or rec.get('xgf') is None:
+                continue
+            s_ = out.setdefault(tid, {'n': 0, 'gf': 0, 'ga': 0, 'xgf': 0.0, 'xga': 0.0})
+            s_['n'] += 1
+            s_['gf'] += gf
+            s_['ga'] += ga
+            s_['xgf'] += float(rec['xgf'])
+            s_['xga'] += float(rec['xgc'])
+    return out
+
+
+def _rating_word(mult, higher_is):
+    """'strong' / 'average' / 'weak' for an attack multiplier, or 'leaky' /
+    'average' / 'tight' for a goals-against one."""
+    if higher_is == 'attack':
+        return 'strong' if mult >= 1.1 else 'weak' if mult <= 0.9 else 'average'
+    return 'leaky' if mult >= 1.1 else 'tight' if mult <= 0.9 else 'average'
+
+
+def _goals_vs_xg_line(team, stats, view):
+    """'Chelsea so far: conceded 12 from 8.8 xG' plus what it suggests.
+    Goals running well ahead of or behind the chances rarely lasts."""
+    if not stats or not stats.get('n'):
+        return []
+    if view == 'defence':
+        g, x = stats['ga'], stats['xga']
+        line = f"{team} so far: conceded {g} from {x:.1f} xG ({stats['n']} games)"
+        if g >= x + 1.5:
+            verdict = "more than their chances allowed: bad luck or keeper"
+        elif g <= x - 1.5:
+            verdict = "fewer than their chances allowed: lucky, may not last"
+        else:
+            verdict = "in line with the chances they allow"
+    else:
+        g, x = stats['gf'], stats['xgf']
+        line = f"{team} so far: scored {g} from {x:.1f} xG ({stats['n']} games)"
+        if g >= x + 1.5:
+            verdict = "more than their chances: hot finishing, may not last"
+        elif g <= x - 1.5:
+            verdict = "fewer than their chances: should pick up"
+        else:
+            verdict = "in line with the chances they create"
+    return [line, f"  \u2192 {verdict}"]
+
+
+def _outlook_why(row, gw, fx, view, fmt, ratings, names, id_by_short, season_gx, odds):
+    """Tap/hover text for one Fixture Outlook cell: the number, then what
+    drives it — the opponent's rating, this team's rating, the venue, the
+    team's goals against its xG so far, and whether market odds are in."""
+    tid, team = row['tid'], row['name']
+    lines = [f"<b>{team} \u00b7 GW{gw}</b>"]
+    for opp_short, venue, val, exp_goals in fx:
+        opp_id = id_by_short.get(opp_short)
+        opp = names.get(opp_id, opp_short)
+        where = 'home' if venue == 'H' else 'away'
+        if view == 'defence':
+            lines.append(f"v {opp} ({where}): clean sheet {val:.0f}%")
+            lines.append(f"  {opp} expected to score {exp_goals:.2f}")
+        else:
+            lines.append(f"v {opp} ({where}): expected goals {exp_goals:.2f}")
+        if ratings and opp_id is not None:
+            if view == 'defence':
+                o = float(np.exp(ratings['att'].get(opp_id, 0.0)))
+                lines.append(f"  {opp} attack \u00d7{o:.2f} ({_rating_word(o, 'attack')})")
+            else:
+                o = float(np.exp(ratings['def'].get(opp_id, 0.0)))
+                lines.append(f"  {opp} defence \u00d7{o:.2f} ({_rating_word(o, 'against')})")
+        if odds and opp_id is not None and (odds.get(tid) or {}).get(opp_id):
+            lines.append("  bookmaker odds included")
+    if ratings:
+        if view == 'defence':
+            own = float(np.exp(ratings['def'].get(tid, 0.0)))
+            lines.append(f"{team} defence \u00d7{own:.2f} ({_rating_word(own, 'against')})")
+        else:
+            own = float(np.exp(ratings['att'].get(tid, 0.0)))
+            lines.append(f"{team} attack \u00d7{own:.2f} ({_rating_word(own, 'attack')})")
+        lines.append("  (\u00d71.00 = league average, from xG this season + last)")
+    lines += _goals_vs_xg_line(team, season_gx.get(tid), view)
+    return '<br>'.join(lines)
+
+
 # --- FIXTURE OUTLOOK: modelled grid, not FDR integers ---
 @callback(
-    [Output('fo-heatmap', 'figure'), Output('fo-table', 'children')],
+    [Output('fo-heatmap', 'figure'), Output('fo-table', 'children'),
+     Output('fo-why-store', 'data')],
     [Input('visit-fixture-outlook', 'data'), Input('fo-gws', 'value'),
      Input('fo-view', 'value'), Input('fo-sort', 'value')],
     prevent_initial_call=True
@@ -10610,7 +10707,7 @@ def update_fixture_outlook(page, n_gws, view, sort_by):
     data = get_data()
     fixtures, teams_df = data.get('fixtures_data'), data.get('teams_df')
     if not fixtures or teams_df is None or teams_df.empty:
-        return blank, html.P("Data not loaded yet.", style={'color': COLORS['text_light']})
+        return blank, html.P("Data not loaded yet.", style={'color': COLORS['text_light']}), {}
 
     try:
         n_gws = max(1, min(38, int(n_gws or 6)))
@@ -10649,18 +10746,24 @@ def update_fixture_outlook(page, n_gws, view, sort_by):
 
     short = dict(zip(teams_df['id'], teams_df['short_name']))
     names = dict(zip(teams_df['id'], teams_df['name']))
+    id_by_short = {v: k for k, v in short.items()}
+    ratings = data.get('team_ratings')
+    season_gx = _team_goals_vs_xg(fixtures, ledger)
     gws = sorted({gw for v in model.values()
                   for (gw, *_rest) in (v.get('fixtures') or []) if gw})[:n_gws]
     if not gws:
         return blank, html.P("No upcoming fixtures in range.",
-                             style={'color': COLORS['text_light']})
+                             style={'color': COLORS['text_light']}), {}
 
     rows = []
     for tid, v in model.items():
         cells = {g: [] for g in gws}
         for (gw, opp, ven, val) in (v.get('fixtures') or []):
             if gw in cells:
-                cells[gw].append((opp, ven, val * 100 if view == 'defence' else val * lg_avg))
+                # (opponent, venue, cell value, expected goals: against for
+                # the defence view, for the attack view)
+                exp_goals = (-np.log(max(val, 1e-6)) if view == 'defence' else val * lg_avg)
+                cells[gw].append((opp, ven, val * 100 if view == 'defence' else val * lg_avg, exp_goals))
         vals = [x[2] for g in gws for x in cells[g]]
         if not vals:
             continue
@@ -10669,7 +10772,7 @@ def update_fixture_outlook(page, n_gws, view, sort_by):
             'total': sum(vals), 'worst': min(vals), 'n': len(vals),
         })
     if not rows:
-        return blank, html.P("No fixtures to show.", style={'color': COLORS['text_light']})
+        return blank, html.P("No fixtures to show.", style={'color': COLORS['text_light']}), {}
 
     if sort_by == 'name':
         rows.sort(key=lambda r: r['name'])
@@ -10684,6 +10787,7 @@ def update_fixture_outlook(page, n_gws, view, sort_by):
     fig_w = 132 + cell_w * len(gws) + 96   # labels + cells + colourbar
 
     z, text, hover = [], [], []
+    why = {}      # "Team|GWn" -> full explanation, shown under the grid on tap
     for r in rows:
         zr, tr, hr = [], [], []
         for g in gws:
@@ -10693,7 +10797,7 @@ def update_fixture_outlook(page, n_gws, view, sort_by):
             else:
                 tot = sum(x[2] for x in fx)
                 zr.append(tot)
-                label = ' + '.join(f"{o} ({vn})" for o, vn, _ in fx)
+                label = ' + '.join(f"{o} ({vn})" for o, vn, *_ in fx)
                 if len(fx) > 1:
                     tr.append(f"DGW<br>{fmt.format(tot)}")
                 elif compact:
@@ -10702,7 +10806,12 @@ def update_fixture_outlook(page, n_gws, view, sort_by):
                     tr.append(f"{fx[0][0]}<br>{fmt.format(tot)}")
                 else:
                     tr.append(f"{label}<br>{fmt.format(tot)}")
-                hr.append(f"{r['name']} GW{g}<br>{label}<br>{unit}: {fmt.format(tot)}")
+                why[f"{r['name']}|GW{g}"] = _outlook_why(r, g, fx, view, fmt, ratings, names,
+                                                          id_by_short, season_gx, odds)
+                # Short label: a long one is clipped at the edge of a phone
+                # screen; the full reasons appear under the grid on tap.
+                hr.append(f"{r['name']} \u00b7 GW{g}<br>{label}: {fmt.format(tot)}"
+                          f"<br><i>tap for why</i>")
         z.append(zr); text.append(tr); hover.append(hr)
 
     fig = go.Figure(go.Heatmap(
@@ -10710,6 +10819,7 @@ def update_fixture_outlook(page, n_gws, view, sort_by):
         text=text, texttemplate='%{text}',
         textfont={'size': 9 if compact else 11, 'family': FONT_FAMILY},
         hovertext=hover, hoverinfo='text',
+        hoverlabel=dict(align='left', font=dict(size=12, family=FONT_FAMILY)),
         colorscale=[[0, '#dc3545'], [0.35, '#ff7043'], [0.55, '#ffc107'],
                     [0.75, '#7dde9e'], [1, '#00ff87']],
         showscale=True,
@@ -10744,7 +10854,37 @@ def update_fixture_outlook(page, n_gws, view, sort_by):
         style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
         style_data=TABLE_STYLE_DATA,
         style_data_conditional=[{'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'}])
-    return fig, table
+    return fig, table, why
+
+
+@callback(
+    Output('fo-why', 'children'),
+    [Input('fo-heatmap', 'clickData'), Input('fo-why-store', 'data')],
+    prevent_initial_call=True
+)
+def show_outlook_why(click, why):
+    """The reasons behind a tapped Fixture Outlook cell, in a panel under
+    the grid (readable on a phone, unlike a hover label). A redrawn grid
+    (new view, window or sort) clears the panel."""
+    if ctx.triggered_id != 'fo-heatmap' or not click or not why:
+        return None
+    pt = (click.get('points') or [{}])[0]
+    text = why.get(f"{pt.get('y')}|{pt.get('x')}")
+    if not text:
+        return None
+    lines = text.split('<br>')
+    body = []
+    for i, ln in enumerate(lines):
+        plain = ln.replace('<b>', '').replace('</b>', '')
+        indent = plain.startswith('  ')
+        body.append(html.Div(plain.strip(), style={
+            'fontWeight': '700' if i == 0 else '400',
+            'fontSize': '16px' if i == 0 else '14px',
+            'marginLeft': '14px' if indent else '0',
+            'color': COLORS['text_light'] if indent else COLORS['text_dark'],
+            'marginBottom': '6px' if i == 0 else '2px'}))
+    return html.Div(body, style={'backgroundColor': '#f8f9fa', 'border': '1px solid #e0e0e0',
+                                 'borderRadius': '10px', 'padding': '12px 14px'})
 
 
 # --- MODEL LAB: WALK-FORWARD BACKTEST ---
