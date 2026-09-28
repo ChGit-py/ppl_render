@@ -6836,14 +6836,16 @@ def best_xi_points(proj_by_id, positions):
 
 
 def plan_transfers(proj, info, squad_ids, sell_price, bank, free_transfers, max_hits=2,
-                   time_limit=25):
+                   time_limit=25, now_only=False, move_cost=0.0):
     """
     Best transfers for the gameweeks in `proj` (a DataFrame: one row per
     player id, one column per gameweek, projected points incl. availability
     and doubles/blanks). info: DataFrame indexed by id with position, team,
     price. squad_ids: the 15 you own; sell_price: {id: selling price} for
     them; bank in £m; free_transfers available for the first gameweek;
-    max_hits: most -4s in any one week.
+    max_hits: most -4s in any one week. now_only: transfers this week only
+    (the squad is then held for the rest of the horizon); move_cost: points
+    a move must beat to be made this week.
 
     Maximises sum over weeks of decay^w x (XI points + captain + 0.1 x bench
     - 4 x hits), plus PLANNER_FT_VALUE per free transfer still banked.
@@ -6879,7 +6881,7 @@ def plan_transfers(proj, info, squad_ids, sell_price, bank, free_transfers, max_
         for i in ids:
             before = x[i, w - 1] if w else (1 if i in owned else 0)
             prob += x[i, w] == before + buy[i, w] - sell[i, w]
-            prob += buy[i, w] + sell[i, w] <= 1
+            prob += buy[i, w] + sell[i, w] <= (0 if now_only and w else 1)
             prob += s[i, w] <= x[i, w]
             prob += c[i, w] <= s[i, w]
             p = float(pts.get(i, 0.0) or 0.0)
@@ -6908,6 +6910,8 @@ def plan_transfers(proj, info, squad_ids, sell_price, bank, free_transfers, max_
         prob += unused <= MAX_FREE_TRANSFERS * (1 - took_hit)
         prob += ft[w + 1] <= unused + 1
         obj.append(-wt * HIT_COST * hits[w])
+        if w == 0 and move_cost:
+            obj.append(-move_cost * n_in)
     obj.append(PLANNER_FT_VALUE * ft[len(gws)])
     prob += pulp.lpSum(obj)
     prob.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=time_limit, gapRel=0.002))
@@ -9449,7 +9453,8 @@ app.layout = html.Div([
                         html.H3("My Squad Analyser", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
                         html.P(
                             "Enter your FPL team ID to see your current squad with form, fixture difficulty, "
-                            "and injury flags.",
+                            "and injury flags. Set your free transfers to get suggested moves that use only "
+                            "those (never a hit).",
                             style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '16px'}
                         ),
                         html.Div([
@@ -9470,6 +9475,15 @@ app.layout = html.Div([
                                         'marginRight': '12px',
                                     }
                                 ),
+                                html.Div([
+                                    html.Span("Free transfers", style={'fontSize': '13px', 'fontWeight': '600',
+                                                                       'marginRight': '6px'}),
+                                    dcc.Dropdown(id='squad-ft', options=[{'label': str(i), 'value': i}
+                                                                         for i in range(0, 6)],
+                                                 value=1, clearable=False, searchable=False,
+                                                 persistence=True, persistence_type='local',
+                                                 style={'width': '70px'}),
+                                ], style={'display': 'flex', 'alignItems': 'center', 'marginRight': '12px'}),
                                 html.Button(
                                     "Load My Squad",
                                     id='squad-load-btn',
@@ -12618,10 +12632,10 @@ STATUS_LABELS = {
 @callback(
     Output('my-squad-content', 'children'),
     Input('squad-load-btn', 'n_clicks'),
-    State('squad-team-id-input', 'value'),
+    [State('squad-team-id-input', 'value'), State('squad-ft', 'value')],
     prevent_initial_call=True
 )
-def load_my_squad(n_clicks, team_id):
+def load_my_squad(n_clicks, team_id, free_transfers=1):
     if not team_id:
         return html.P("Please enter your FPL team ID above.",
                       style={'color': COLORS['text_light'], 'textAlign': 'center', 'padding': '40px 0'})
@@ -12704,6 +12718,17 @@ def load_my_squad(n_clicks, team_id):
     )
     squad_df = squad_df.sort_values('pick_position').reset_index(drop=True)
 
+    # --- Suggested transfers, within your free transfers only ---
+    sugg = None
+    try:
+        _bank_now = entry_history.get('bank', entry.get('last_deadline_bank', 0)) / 10
+        _sell_now = {int(i): float(v) for i, v in zip(squad_df['id'], squad_df['selling_price'])}
+        sugg = suggest_free_transfers(data, [int(i) for i in player_ids], _sell_now, _bank_now,
+                                      1 if free_transfers is None else free_transfers)
+    except Exception as _e:
+        print(f"  Transfer suggestions failed (non-fatal): {_e}")
+    sell_map = {mv['out']: mv for mv in (sugg or {}).get('moves', [])}
+
     # --- Manager info card ---
     mgr_name     = (entry.get('player_first_name', '') + ' ' + entry.get('player_last_name', '')).strip()
     team_name_e  = entry.get('name', 'My Team')
@@ -12770,6 +12795,13 @@ def load_my_squad(n_clicks, team_id):
 
             bgw_dgw = r.get('bgw_dgw', '')
             bgw_cell = []
+            _mv = sell_map.get(int(r.get('id', 0)))
+            if _mv:
+                bgw_cell.append(html.Span(f"SELL \u2192 {_mv['in_name']}", style={
+                    'backgroundColor': COLORS['danger'], 'color': 'white',
+                    'padding': '2px 8px', 'borderRadius': '10px', 'display': 'inline-block',
+                    'fontSize': '11px', 'fontWeight': '700', 'marginRight': '4px', 'whiteSpace': 'nowrap'
+                }))
             if 'BGW' in bgw_dgw:
                 bgw_cell.append(html.Span('BGW', style={
                     'backgroundColor': '#d0d0d0', 'color': '#555',
@@ -12824,7 +12856,8 @@ def load_my_squad(n_clicks, team_id):
                 html.Td(html.Div(bgw_cell), style={'padding': '10px 12px'}),
             ], style={
                 'borderBottom': '1px solid #e0e0e0',
-                'backgroundColor': '#fff8e1' if r.get('pick_position', 0) > 11 else 'white'
+                'backgroundColor': ('#fde8ef' if _mv else
+                                    '#fff8e1' if r.get('pick_position', 0) > 11 else 'white')
             }))
 
         header = html.Tr([
@@ -12938,9 +12971,53 @@ def load_my_squad(n_clicks, team_id):
         print(f"  Rank card failed (non-fatal): {_e}")
         rank_card = html.Div()
 
+    # --- Suggested transfers card ---
+    transfers_section = html.Div()
+    if sugg is not None:
+        ft = sugg['ft']
+        span = (f"GW{sugg['gws'][0]}\u2013GW{sugg['gws'][-1]}" if len(sugg['gws']) > 1
+                else f"GW{sugg['gws'][0]}" if sugg['gws'] else '')
+        if ft == 0:
+            body = [html.P("You have no free transfers, so any move this week costs 4 points. The "
+                           "Multi-Week Transfer Plan on the Transfer Planner page shows whether a hit pays back.",
+                           style={'color': COLORS['text_dark'], 'margin': 0})]
+        elif not sugg['moves']:
+            body = [html.P(f"Hold: no move within your {ft} free transfer{'s' if ft != 1 else ''} gains "
+                           f"enough over {span} to beat rolling it. Roll the transfer.",
+                           style={'color': COLORS['text_dark'], 'fontWeight': '600', 'margin': 0})]
+        else:
+            n = len(sugg['moves'])
+            body = [
+                html.P(f"Using {n} of your {ft} free transfer{'s' if ft != 1 else ''}: "
+                       f"+{sugg['gain']:.1f} projected points over {span} (best XI + captain each week).",
+                       style={'color': COLORS['success_text'], 'fontWeight': '700', 'marginBottom': '10px'}),
+                html.Ul([html.Li([
+                    html.Span(mv['out_name'], style={'color': COLORS['danger_text'], 'fontWeight': '700'}),
+                    html.Span(f" (\u00a3{mv['out_price']:.1f}m) \u2192 ", style={'color': COLORS['text_light']}),
+                    html.Span(mv['in_name'], style={'color': COLORS['success_text'], 'fontWeight': '700'}),
+                    html.Span(f" ({mv['in_club']}, \u00a3{mv['in_price']:.1f}m) \u00b7 "
+                              f"{mv['diff']:+.1f} pts over {span}", style={'color': COLORS['text_light']}),
+                ], style={'marginBottom': '6px'}) for mv in sugg['moves']],
+                    style={'paddingLeft': '20px', 'margin': '0 0 8px 0'}),
+                html.P(f"Bank after: \u00a3{sugg['bank']:.1f}m.", style={'color': COLORS['text_light'],
+                                                                         'fontSize': '13px', 'margin': 0}),
+            ]
+        transfers_section = html.Div([
+            html.H3("Suggested Transfers", style={'color': COLORS['primary'], 'marginBottom': '10px'}),
+            *body,
+            html.P(f"Only your free transfers are used, never a hit. A move is suggested only when it "
+                   f"beats rolling the transfer (worth about {PLANNER_FT_VALUE:g} points), unless you're at "
+                   f"{MAX_FREE_TRANSFERS} and an unused one would be lost. Players to sell are highlighted "
+                   f"in red below. Uses selling prices and your bank; transfers already made for this "
+                   f"gameweek aren't visible until the deadline.",
+                   style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginTop': '10px',
+                          'marginBottom': 0}),
+        ], style={**CARD_STYLE, 'borderLeft': f"4px solid {COLORS['success']}"})
+
     return html.Div([
         rank_card,
         manager_card,
+        transfers_section,
         lineup_section,
         starters_section,
         bench_section,
@@ -13135,6 +13212,41 @@ def planner_projections(data, gws, extra_ids=()):
     proj = proj[proj.index.isin(info.index)]
     info = info.loc[proj.index, ['position', 'team', 'price', 'web_name', 'team_name']]
     return proj, info
+
+
+FREE_TRANSFER_HORIZON = 5
+
+
+def suggest_free_transfers(data, squad_ids, sell, bank, free_transfers):
+    """Best transfers to make now using only your free transfers (never a
+    hit), judged on the next FREE_TRANSFER_HORIZON gameweeks with the squad
+    then held. A move has to beat PLANNER_FT_VALUE (what rolling the
+    transfer is worth) unless you're at the free-transfer cap, where an
+    unused one is lost. Returns a dict, or None if nothing can be planned."""
+    ft = min(max(int(free_transfers or 0), 0), MAX_FREE_TRANSFERS)
+    first = int(data.get('next_gw_num') or 1)
+    gws = [g for g in range(first, first + FREE_TRANSFER_HORIZON) if g <= 38]
+    if not gws or ft == 0:
+        return {'ft': ft, 'gws': gws, 'moves': [], 'gain': 0.0}
+    proj, info = planner_projections(data, gws, extra_ids=squad_ids)
+    pool = planner_pool(info, proj, squad_ids)
+    plan = plan_transfers(proj.loc[pool], info.loc[pool], squad_ids, sell, bank, ft, max_hits=0,
+                          now_only=True,
+                          move_cost=0.0 if ft >= MAX_FREE_TRANSFERS else PLANNER_FT_VALUE)
+    if not plan:
+        return None
+    wk = plan['weeks'][0]
+    positions = info['position'].to_dict()
+    outs = sorted(wk['out'], key=lambda q: positions.get(q, ''))
+    ins = sorted(wk['in'], key=lambda q: positions.get(q, ''))
+    owned = [i for i in squad_ids if i in proj.index]
+    keep = sum(best_xi_points({i: proj.at[i, g] for i in owned}, positions)[0] for g in gws)
+    new = sum(w['points'] for w in plan['weeks'])
+    moves = [{'out': o, 'in': i, 'out_name': info.at[o, 'web_name'], 'in_name': info.at[i, 'web_name'],
+              'in_club': info.at[i, 'team_name'], 'out_price': float(sell.get(o, info.at[o, 'price'])),
+              'in_price': float(info.at[i, 'price']),
+              'diff': float(proj.loc[i].sum() - proj.loc[o].sum())} for o, i in zip(outs, ins)]
+    return {'ft': ft, 'gws': gws, 'moves': moves, 'gain': new - keep, 'bank': wk['bank']}
 
 
 def _load_entry_squad(team_id, data):
