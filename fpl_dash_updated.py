@@ -13833,6 +13833,197 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
 # MINI-LEAGUE RIVALS CALLBACK
 # =============================================================================
 
+# Spread of the points gap between two managers in one gameweek (roughly:
+# they share much of their team, so it's less than a single manager's
+# spread). Used to judge whether a gap needs risk to close.
+LEAGUE_GAP_SD_PER_GW = float(os.environ.get('FPL_LEAGUE_GAP_SD', '12'))
+LEAGUE_TARGETS = 4
+
+
+def _likely_captain(snap, proj):
+    """A rival's probable captain next gameweek: last week's captain if he's
+    still within 1.5 points of the best in their XI, otherwise that best."""
+    xi = [pk['element'] for pk in snap['picks'] if pk.get('multiplier', 1) > 0] or \
+         [pk['element'] for pk in snap['picks']]
+    if not xi:
+        return None
+    best = max(xi, key=lambda pid: proj.get(pid, 0.0))
+    last = next((pk['element'] for pk in snap['picks'] if pk.get('is_captain')), None)
+    if last in xi and proj.get(last, 0.0) >= proj.get(best, 0.0) - 1.5:
+        return last
+    return best
+
+
+def league_game_plan(entries, snapshots, my_id, my_snapshot, dfa, name_map, next_gw, gws_left):
+    """Captain and transfer advice aimed at the rivals that matter: the
+    managers just above you (or, when you lead, just below).
+
+    In expectation the best captain and transfers are the same whoever owns
+    them — rivals' points don't depend on your picks. What league ownership
+    changes is RISK: matching your rivals keeps the gap steady (good when
+    ahead), picking what they don't own makes it swing (what you need when
+    behind). So ownership only decides between picks that project close
+    together, and how close depends on the gap and the weeks left."""
+    proj = dict(zip(dfa['id'], pd.to_numeric(dfa['proj_pts_next'], errors='coerce').fillna(0.0)))
+    proj5 = dict(zip(dfa['id'], pd.to_numeric(dfa.get('proj_pts_5'), errors='coerce').fillna(0.0)))
+    names = {e['entry']: e['player_name'] for e in entries}
+    totals = {e['entry']: float(e.get('total') or 0) for e in entries}
+    if my_id not in totals:
+        totals[my_id] = float((my_snapshot.get('entry_history') or {}).get('total_points') or 0)
+    my_total = totals[my_id]
+    others = [(eid, t) for eid, t in totals.items() if eid != my_id and eid in snapshots]
+    above = sorted([o for o in others if o[1] > my_total], key=lambda o: o[1] - my_total)
+    below = sorted([o for o in others if o[1] <= my_total], key=lambda o: my_total - o[1])
+    if not others:
+        return None
+    leading = not above
+    targets = [eid for eid, _ in (below if leading else above)[:LEAGUE_TARGETS]]
+    if not targets:
+        return None
+    spread = LEAGUE_GAP_SD_PER_GW * np.sqrt(max(gws_left, 1))
+    if leading:
+        gap = my_total - below[0][1]
+        z = gap / spread
+        posture = 'protect'
+        situation = (f"You lead by {gap:.0f} over {names.get(below[0][0], 'second')} with {gws_left} "
+                     f"gameweeks left. Protect: match what your chasers own and captain, so their big "
+                     f"weeks are your big weeks.")
+    else:
+        gap = above[0][1] - my_total
+        lead_gap = max(t for _, t in above) - my_total
+        z = lead_gap / spread
+        posture = 'chase'
+        close = z < 0.5
+        situation = (f"You're {gap:.0f} behind {names.get(above[0][0], 'the next manager')}"
+                     + (f" and {lead_gap:.0f} behind the leader" if lead_gap > gap else "")
+                     + f", with {gws_left} gameweeks left. "
+                     + ("That's close: back the best expected picks and let differentials settle "
+                        "near-ties." if close else
+                        "That needs some risk: when picks are close, take the one the managers above "
+                        "you don't have — if it comes off, you gain on all of them at once."))
+    strength = CAPTAIN_TIEBREAK_PTS * float(np.clip(z, 0.25, 2.0))
+
+    # Rivals' likely multipliers for each player next gameweek
+    mult = {}
+    for eid in targets:
+        snap = snapshots[eid]
+        cap = _likely_captain(snap, proj)
+        for pk in snap['picks']:
+            mult.setdefault(pk['element'], []).append(2.0 if pk['element'] == cap else 1.0)
+    n_t = len(targets)
+    avg_mult = {pid: sum(v) / n_t for pid, v in mult.items()}
+    owners = {pid: len(v) for pid, v in mult.items()}
+    capped = {pid: sum(1 for x in v if x > 1) for pid, v in mult.items()}
+    who = "chasers" if leading else "managers above you"
+
+    # --- Captain ---
+    mine = [pk['element'] for pk in my_snapshot['picks']]
+    sign = 1.0 if posture == 'protect' else -1.0
+    rows = []
+    for pid in mine:
+        x = proj.get(pid, 0.0)
+        share = avg_mult.get(pid, 0.0) / 2.0
+        rows.append({'pid': pid, 'proj': x, 'order': x + sign * strength * (share - 0.5),
+                     'swing': 10.0 * (2.0 - avg_mult.get(pid, 0.0))})
+    rows.sort(key=lambda r: -r['order'])
+    best_ev = max(rows, key=lambda r: r['proj'])
+    pick = rows[0]
+    nm = lambda pid: name_map.get(pid, f"#{pid}")
+    if pick['pid'] == best_ev['pid']:
+        k = capped.get(pick['pid'], 0)
+        if posture == 'protect':
+            tail = ("none of your chasers look likely to captain him, so a haul stretches your lead."
+                    if k == 0 else
+                    f"all {n_t} of your chasers are likely to captain him too, so his score can't cost you."
+                    if k == n_t else
+                    f"{k} of your {n_t} chasers are likely to captain him too.")
+        else:
+            tail = (f"none of the {who} look likely to captain him, so every 10 he scores gains you "
+                    f"{pick['swing']:.0f} on them." if k == 0 else
+                    f"all {n_t} of the {who} are likely to captain him too, so he keeps you level at best."
+                    if k == n_t else
+                    f"{k} of the {n_t} {who} are likely to captain him, so every 10 he scores gains you "
+                    f"{pick['swing']:.0f} on them on average.")
+        cap_line = (f"Captain {nm(pick['pid'])}: the best projection in your squad "
+                    f"({pick['proj']:.1f}), and " + tail)
+    else:
+        diff = best_ev['proj'] - pick['proj']
+        if posture == 'protect':
+            cap_line = (f"Captain {nm(pick['pid'])} over {nm(best_ev['pid'])}: only {diff:.1f} lower on "
+                        f"projection, but {capped.get(pick['pid'], 0)} of your {n_t} chasers are likely to "
+                        f"captain him — if he hauls and you don't have the armband on him, your lead goes.")
+        else:
+            cap_line = (f"Captain {nm(pick['pid'])} over {nm(best_ev['pid'])}: only {diff:.1f} lower on "
+                        f"projection, but {capped.get(best_ev['pid'], 0)} of the {n_t} managers above you "
+                        f"are likely to captain {nm(best_ev['pid'])} — a haul from him keeps you level, "
+                        f"while one from {nm(pick['pid'])} gains you {pick['swing']:.0f} points on them "
+                        f"per 10 he scores.")
+    cap_table = dash_table.DataTable(
+        data=[{'player': nm(r['pid']), 'proj': round(r['proj'], 2),
+               'owners': f"{owners.get(r['pid'], 0)}/{n_t}",
+               'capped': f"{capped.get(r['pid'], 0)}/{n_t}",
+               'swing': round(r['swing'], 1),
+               'pick': '\u2605' if r['pid'] == pick['pid'] else ''} for r in rows[:6]],
+        columns=[{'name': '', 'id': 'pick'}, {'name': 'Captain', 'id': 'player'},
+                 {'name': 'Proj', 'id': 'proj', 'type': 'numeric'},
+                 {'name': 'Own', 'id': 'owners'},
+                 {'name': 'Likely C', 'id': 'capped'},
+                 {'name': 'Gain per 10', 'id': 'swing', 'type': 'numeric'}],
+        style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER, style_data=TABLE_STYLE_DATA,
+        style_table={'overflowX': 'auto'})
+
+    # --- Transfers (next 5 gameweeks) ---
+    pool = dfa[~dfa['id'].isin(mine)].copy()
+    pool['p5'] = pool['id'].map(proj5).fillna(0.0)
+    pool = pool[pool['p5'] > 0].nlargest(80, 'p5')
+    pool['own_t'] = pool['id'].map(lambda pid: owners.get(pid, 0))
+    cover = pool[pool['own_t'] >= max(1, int(np.ceil(n_t / 2)))].copy()
+    cover['risk'] = cover['p5'] * cover['own_t'] / n_t
+    cover = cover.nlargest(6, 'risk')
+    diffs = pool[pool['own_t'] == 0].nlargest(6, 'p5')
+    cover_items = [f"{r.web_name} ({r.team_name}, \u00a3{r.price:.1f}m) \u2014 {r.own_t}/{n_t} {who} "
+                   f"own him, proj {r.p5:.1f} over 5 GWs" for r in cover.itertuples()]
+    diff_items = [f"{r.web_name} ({r.team_name}, \u00a3{r.price:.1f}m) \u2014 none of the {who} own "
+                  f"him, proj {r.p5:.1f} over 5 GWs" for r in diffs.itertuples()]
+    if leading:
+        lists = [
+            _rv_list_card("Cover", "Your chasers own these and you don't \u2014 every point they score "
+                          "cuts your lead", cover_items, COLORS['danger']),
+            _rv_list_card("Nobody below you has", "Only worth it if they out-project what you'd sell "
+                          "\u2014 when you lead, matching beats gambling", diff_items, COLORS['info']),
+        ]
+    else:
+        lists = [
+            _rv_list_card("Close the gap", "Strong picks none of the managers above you own \u2014 "
+                          "points from these gain on all of them at once", diff_items, COLORS['success']),
+            _rv_list_card("They own, you don't", "Every point these score widens the gap \u2014 cover "
+                          "the biggest if the projection justifies it", cover_items, COLORS['danger']),
+        ]
+    target_names = ', '.join(names.get(t, str(t)) for t in targets)
+    return html.Div([
+        html.H3(f"Your League Game Plan \u2014 GW{next_gw}", style={'color': COLORS['primary'],
+                                                                 'marginBottom': '8px'}),
+        html.P(situation, style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '6px'}),
+        html.P(f"Measured against: {target_names}.", style={'color': COLORS['text_light'],
+                                                            'fontSize': '13px', 'marginBottom': '14px'}),
+        html.H4("Captain", style={'color': COLORS['primary'], 'marginBottom': '6px'}),
+        html.P(cap_line, style={'color': COLORS['text_dark'], 'fontWeight': '600', 'marginBottom': '10px'}),
+        cap_table,
+        html.P(f"Own / Likely C: how many of the {n_t} {who} own him / are likely to captain him. "
+               "Rivals' captains are a guess (last week's captain if still close to their best option, "
+               "otherwise their best-projected player); their picks for next week stay hidden until "
+               "the deadline. 'Gain per 10' is how far you'd move on them, on average, for every 10 "
+               "points he scores as your captain.",
+               style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginTop': '10px'}),
+        html.H4("Transfers", style={'color': COLORS['primary'], 'margin': '18px 0 6px 0'}),
+        html.P("Rival ownership never changes a player's expected points \u2014 it changes the risk. "
+               "Use these to break ties between transfers that project close together (the "
+               "Multi-Week Transfer Plan on the Transfer Planner page finds those).",
+               style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginBottom': '10px'}),
+        html.Div(lists, style={'display': 'flex', 'flexWrap': 'wrap', 'gap': '20px'}),
+    ], style=CARD_STYLE)
+
+
 def _rv_list_card(title, subtitle, items, accent):
     return html.Div([
         html.H4(title, style={'color': COLORS['primary'], 'marginBottom': '4px',
@@ -14010,6 +14201,18 @@ def load_rivals(n_clicks, league_id, my_id):
                    style={'color': COLORS['text_light'], 'textAlign': 'center', 'padding': '20px 0'})
         ], style=CARD_STYLE)
 
+    # --- League game plan: captain and transfers aimed at the rivals that matter ---
+    plan_section = html.Div()
+    if my_snapshot and my_id:
+        try:
+            plan_section = league_game_plan(
+                entries, snapshots, my_id, my_snapshot, dfa, name_map,
+                data.get('next_gw_num') or gw_num + 1, max(38 - gw_num, 1)) or html.Div()
+        except Exception as _e:
+            import traceback
+            traceback.print_exc()
+            print(f"  League game plan failed (non-fatal): {_e}")
+
     # --- League EO table ---
     eo_rows = []
     for pid, eo_val in sorted(eo_pct.items(), key=lambda kv: -kv[1])[:25]:
@@ -14057,6 +14260,8 @@ def load_rivals(n_clicks, league_id, my_id):
             html.P(loaded_note, style={'color': COLORS['text_light'], 'marginBottom': '16px'}),
             league_table
         ], style=CARD_STYLE),
+
+        plan_section,
 
         versus_section,
 
