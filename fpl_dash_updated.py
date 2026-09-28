@@ -9652,16 +9652,14 @@ app.layout = html.Div([
 
     ], id='app-body'),  # end app-body (sidebar + content)
 
-    # Footer
+    # Footer: one small line (the live commit is the quickest check a deploy took)
     html.Div([
-        html.P(["Built for analytical Fantasy Premier League decision making  Data from ",
-                html.A("Official FPL API", href="https://fantasy.premierleague.com/api/bootstrap-static/", target="_blank",
-                       style={'color': COLORS['secondary']})],
-               style={'color': 'rgba(255,255,255,0.7)', 'fontSize': '13px', 'margin': '0'}),
-        # Which commit is actually live — the quickest check that a deploy took
-        html.P(f"Version {BUILD_ID[:7]}",
-               style={'color': 'rgba(255,255,255,0.45)', 'fontSize': '11px', 'margin': '6px 0 0'}),
-    ], style={'backgroundColor': COLORS['primary'], 'padding': '20px', 'textAlign': 'center'})
+        html.Span(["Data from ",
+                   html.A("Official FPL API", href="https://fantasy.premierleague.com/api/bootstrap-static/",
+                          target="_blank", style={'color': COLORS['secondary']}),
+                   f" \u00b7 v{BUILD_ID[:7]}"]),
+    ], id='app-footer', style={'backgroundColor': COLORS['primary'], 'padding': '3px 8px', 'textAlign': 'center',
+                               'color': 'rgba(255,255,255,0.55)', 'fontSize': '10px', 'lineHeight': '1.3'})
 
 ], style={'fontFamily': FONT_FAMILY, 'backgroundColor': COLORS['background'], 'margin': '0', 'padding': '0'})
 
