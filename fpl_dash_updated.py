@@ -9652,12 +9652,11 @@ app.layout = html.Div([
 
     ], id='app-body'),  # end app-body (sidebar + content)
 
-    # Footer: one small line (the live commit is the quickest check a deploy took)
+    # Footer: Very small footer showing the link to the data source
     html.Div([
         html.Span(["Data from ",
                    html.A("Official FPL API", href="https://fantasy.premierleague.com/api/bootstrap-static/",
-                          target="_blank", style={'color': COLORS['secondary']}),
-                   f" \u00b7 v{BUILD_ID[:7]}"]),
+                          target="_blank", style={'color': COLORS['secondary']})]),
     ], id='app-footer', style={'backgroundColor': COLORS['primary'], 'padding': '3px 8px', 'textAlign': 'center',
                                'color': 'rgba(255,255,255,0.55)', 'fontSize': '10px', 'lineHeight': '1.3'})
 
