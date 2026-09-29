@@ -6541,8 +6541,9 @@ app.index_string = '''
                     font-size: 10px !important;
                 }
 
-                .js-plotly-plot { max-height: 300px !important; }
-                .chart-scroll .js-plotly-plot { max-height: none !important; }
+                /* No height cap on charts: squeezing a 380-500px figure into a
+                   shorter box flattens it (Chrome redraws to fit) or spills its
+                   axis labels over the next card (Safari doesn't). */
             }
             /* Player headshots — keep the box stable while fallbacks resolve */
             .player-photo {
