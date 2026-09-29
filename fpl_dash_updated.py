@@ -8745,7 +8745,9 @@ app.layout = html.Div([
                                 style={'color': COLORS['primary'], 'marginBottom': '8px'}),
                         html.P("Protect and Chase rank by projected points; top-manager ownership only "
                                "reorders players within about 1 point of each other. Ceiling ranks by the "
-                               "chance of 15+ points.",
+                               "chance of 15+ points. Bars run highest first; \u2605 (outlined bar) marks the top-ranked "
+                               "captain after the ownership tiebreak (full order in the table below). "
+                               "Green = home, blue = away.",
                                style={'color': COLORS['text_light']}),
                         html.Div(id='cap-odds-note', style={'marginBottom': '8px'}),
                         dcc.Graph(id='cap-bar')
@@ -11140,17 +11142,26 @@ def update_captain(position, team, max_price, min_minutes, mode, _n):
             empty_fig.update_layout(template='plotly_white', height=400)
             return empty_fig, empty_fig, [], _scorer_odds_note()
 
-        top_20 = filtered.nlargest(20, '_order')
+        # The top 20 by the mode's ranking, drawn tallest first. In Protect /
+        # Chase the ranking nudges near-ties by ownership, so it can differ
+        # from bar height: the ranking's top pick is starred instead.
+        top_20 = filtered.nlargest(20, '_order').copy()
+        top_20['_rank'] = np.arange(1, len(top_20) + 1)
+        top_20 = top_20.sort_values(rank_col, ascending=False, kind='mergesort')
         env_series = pd.to_numeric(top_20.get('fix_mult_next'), errors='coerce').fillna(1.0) \
             if 'fix_mult_next' in top_20.columns else pd.Series(1.0, index=top_20.index)
         bar_fig = go.Figure()
         bar_fig.add_trace(go.Bar(
-            x=top_20['web_name'], y=top_20[rank_col],
+            x=[("\u2605 " if rk == 1 else "") + nm for nm, rk in zip(top_20['web_name'], top_20['_rank'])],
+            y=top_20[rank_col],
             marker_color=[COLORS['success'] if v == 'H' else COLORS['info']
                           for v in top_20['next_venue']],
+            marker_line=dict(color=[COLORS['primary'] if rk == 1 else 'rgba(0,0,0,0)'
+                                    for rk in top_20['_rank']], width=2),
             text=[f"{v:.1f}" for v in top_20[rank_col]],
             textposition='outside',
             hovertemplate=('%{x}<br>' + rank_label + ': %{y:.2f}<br>'
+                           'Captain rank: #%{customdata[5]}<br>'
                            'vs %{customdata[0]} (%{customdata[1]})<br>'
                            'Fixture: \u00d7%{customdata[2]:.2f}<br>'
                            'Proj: %{customdata[3]:.2f}  |  Haul: %{customdata[4]:.0f}%'
@@ -11161,6 +11172,7 @@ def update_captain(position, team, max_price, min_minutes, mode, _n):
                 env_series,
                 pd.to_numeric(top_20.get('proj_pts_next'), errors='coerce').fillna(0),
                 pd.to_numeric(top_20.get('haul_pct'), errors='coerce').fillna(0),
+                top_20['_rank'],
             ]),
         ))
         bar_fig.update_layout(template='plotly_white', height=400, xaxis_tickangle=-45,
