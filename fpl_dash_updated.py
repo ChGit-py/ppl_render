@@ -7398,11 +7398,13 @@ app.layout = html.Div([
             html.Div(id='page-home', style={'display': 'block'}, children=[
                 html.Div(id='home-content'),
 
-                # RANK CONGESTION TOOL — static so interval never resets it
+                # RANK TRACKER — static so interval never resets it
                 html.Div([
-                    html.H2("Rank Congestion Tool",
+                    html.H2("Rank Tracker",
                             style={'color': COLORS['primary'], 'margin': '0 0 4px 0'}),
-                    html.P("Enter two overall ranks to see the points gap between them and how congested that band is.",
+                    html.P("Enter your overall rank to see the points of the managers around you, and a dream "
+                           "rank to see exactly how far off it you are. Every figure is read from FPL's "
+                           "overall standings.",
                            style={'color': COLORS['text_light']})
                 ], style={'marginBottom': '24px', 'padding': '20px 0 0 0'}),
 
@@ -7417,16 +7419,16 @@ app.layout = html.Div([
                                              'border': '1px solid #ccc', 'fontSize': '15px'})
                         ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                         html.Div([
-                            html.Label("Rival rank",
+                            html.Label("Dream rank (optional)",
                                        style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                             dcc.Input(id='rank-rival', type='number', value=None, min=1, step=1,
-                                      placeholder='e.g. 22000',
+                                      placeholder='e.g. 100000',
                                       style={'width': '100%', 'padding': '10px', 'borderRadius': '6px',
                                              'border': '1px solid #ccc', 'fontSize': '15px'})
                         ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                         html.Div([
                             html.Label("\u00a0", style={'display': 'block', 'marginBottom': '6px'}),
-                            html.Button("Analyse", id='rank-check-btn', n_clicks=0,
+                            html.Button("Check", id='rank-check-btn', n_clicks=0,
                                         style={
                                             'backgroundColor': COLORS['primary'], 'color': 'white',
                                             'border': 'none', 'padding': '10px 24px', 'borderRadius': '6px',
@@ -10235,16 +10237,36 @@ def update_home_tab(n):
 
 
 # RANK CONGESTION TOOL
-def get_congestion_divisor(rank_gap: int) -> int:
-    """Pick a scale so 'pts per N ranks' stays in a readable range."""
-    if rank_gap < 1_000:
-        return 100
-    elif rank_gap < 10_000:
-        return 1_000
-    elif rank_gap < 100_000:
-        return 10_000
-    else:
-        return 100_000
+OVERALL_PAGE_SIZE = 50                  # managers per overall-standings page
+RANK_LADDER_STEPS = (0.02, 0.05, 0.10, 0.20)   # distances above/below you, as a share of your rank
+
+
+def fetch_overall_position(position):
+    """(points, team name) of the manager at this position in the overall
+    standings (ties share a rank number, so the position — FPL's rank_sort —
+    is matched, falling back to the nearest one on the page). (None, None)
+    if FPL doesn't answer."""
+    try:
+        page = (int(position) - 1) // OVERALL_PAGE_SIZE + 1
+        r = requests.get(f"{FPL_BASE_URL}/leagues-classic/{OVERALL_LEAGUE_ID}/standings/",
+                         params={'page_standings': page}, timeout=10)
+        r.raise_for_status()
+        rows = (r.json().get('standings') or {}).get('results') or []
+    except Exception as e:
+        print(f"Error fetching overall position {position}: {e}")
+        return None, None
+    if not rows:
+        return None, None
+    pos = lambda e: e.get('rank_sort') or e.get('rank') or 0
+    best = min(rows, key=lambda e: abs(pos(e) - int(position)))
+    return best.get('total'), best.get('entry_name')
+
+
+def _round_step(x):
+    """A distance in places, rounded to two significant figures (min 1)."""
+    x = max(float(x), 1.0)
+    mag = 10 ** max(int(np.floor(np.log10(x))) - 1, 0)
+    return int(round(x / mag) * mag)
 
 
 @callback(
@@ -10254,92 +10276,96 @@ def get_congestion_divisor(rank_gap: int) -> int:
     State('rank-rival', 'value'),
     prevent_initial_call=True
 )
-def check_rank_gap(n_clicks, your_rank, rival_rank):
-    if not your_rank or not rival_rank:
-        return html.P("Please enter both ranks.", style={'color': COLORS['danger_text']})
+def check_rank_gap(n_clicks, your_rank, dream_rank):
+    if not your_rank:
+        return html.P("Enter your overall rank.", style={'color': COLORS['danger_text']})
+    your_rank = int(your_rank)
+    dream_rank = int(dream_rank) if dream_rank else None
+    data = get_data()
+    total = int(data.get('total_managers') or 0) or None
+    if total and (your_rank > total or (dream_rank and dream_rank > total)):
+        return html.P(f"Ranks go up to {total:,} this season.", style={'color': COLORS['danger_text']})
 
-    def fetch_rank_points(rank):
-        try:
-            page = ((rank - 1) // 50) + 1
-            url = f"https://fantasy.premierleague.com/api/leagues-classic/314/standings/?page_standings={page}"
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            standings = data.get('standings', {}).get('results', [])
-            for entry in standings:
-                if entry.get('rank') == rank:
-                    return entry.get('total', None), entry.get('entry_name', f'Rank {rank}')
-            if standings:
-                closest = min(standings, key=lambda x: abs(x.get('rank', 0) - rank))
-                return closest.get('total', None), closest.get('entry_name', f'Rank {rank}')
-            return None, None
-        except Exception as e:
-            print(f"Error fetching rank {rank}: {e}")
-            return None, None
-
-    your_points, your_name = fetch_rank_points(your_rank)
-    rival_points, rival_name = fetch_rank_points(rival_rank)
-
-    if your_points is None or rival_points is None:
-        return html.P("Could not fetch rank data. Please try again.",
+    # Positions to read: you, the ladder around you, and the dream rank
+    steps = sorted({_round_step(your_rank * f) for f in RANK_LADDER_STEPS})
+    above = [your_rank - d for d in reversed(steps) if your_rank - d >= 1]
+    below = [your_rank + d for d in steps if not total or your_rank + d <= total]
+    wanted = sorted(set(above + [your_rank] + below + ([dream_rank] if dream_rank else [])))
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        found = dict(zip(wanted, ex.map(fetch_overall_position, wanted)))
+    my_pts = found[your_rank][0]
+    if my_pts is None:
+        return html.P("Couldn't read the overall standings from FPL just now \u2014 try again shortly.",
                       style={'color': COLORS['danger_text'], 'marginTop': '12px'})
 
-    gap = abs(rival_points - your_points)
-    rank_gap = abs(your_rank - rival_rank)
-    if rank_gap > 0:
-        congestion_divisor = get_congestion_divisor(rank_gap)
-        pts_per_x_ranks = round((gap / rank_gap) * congestion_divisor, 1)
-    else:
-        congestion_divisor = 0
-        pts_per_x_ranks = 0
-    higher_rank = rival_rank if rival_rank < your_rank else your_rank
-    lower_rank = your_rank if rival_rank < your_rank else rival_rank
-    higher_pts = rival_points if rival_rank < your_rank else your_points
-    lower_pts = your_points if rival_rank < your_rank else rival_points
+    # --- Around you ---
+    cell = {'padding': '8px 10px', 'borderBottom': '1px solid #eee'}
+    rows = []
+    for rk in above + [your_rank] + below:
+        pts = found[rk][0]
+        me = rk == your_rank
+        if pts is None:
+            diff_txt, colour = '\u2014', COLORS['text_light']
+        elif me:
+            diff_txt, colour = 'you', COLORS['primary']
+        else:
+            d = pts - my_pts
+            diff_txt = f"{d:+d} pt{'s' if abs(d) != 1 else ''}" if d else "same points"
+            colour = (COLORS['danger_text'] if d > 0 else COLORS['success_text'] if d < 0
+                      else COLORS['text_light'])
+        places = ('' if me else f"{abs(rk - your_rank):,} {'above' if rk < your_rank else 'below'}")
+        rows.append(html.Tr([
+            html.Td(f"{rk:,}", style={**cell, 'fontWeight': '700' if me else '500'}),
+            html.Td(places, style={**cell, 'color': COLORS['text_light']}),
+            html.Td(f"{pts:,}" if pts is not None else '\u2014', style={**cell, 'fontWeight': '700'}),
+            html.Td(diff_txt, style={**cell, 'color': colour, 'fontWeight': '600'}),
+        ], style={'backgroundColor': '#e6fff2' if me else 'white'}))
+    head = html.Tr([html.Th(h, style={**TABLE_STYLE_HEADER, 'padding': '8px 10px'})
+                    for h in ('Rank', 'From you', 'Points', 'vs you')])
+    ladder = html.Div([
+        html.H3("Around you", style={'color': COLORS['primary'], 'margin': '0 0 6px 0'}),
+        html.P(f"You're on {my_pts:,} points at rank {your_rank:,}. The managers at these ranks right now:",
+               style={'color': COLORS['text_dark'], 'marginBottom': '10px'}),
+        html.Div(html.Table([html.Thead(head), html.Tbody(rows)],
+                            style={'width': '100%', 'borderCollapse': 'collapse', 'fontSize': '14px'}),
+                 style={'overflowX': 'auto'}),
+    ], style={**CARD_STYLE, 'marginBottom': '16px'})
 
-    return html.Div([
-        html.Div([
-            html.Div([
-                html.P("Your Points", style={'color': COLORS['text_light'], 'fontSize': '13px',
-                                             'marginBottom': '4px', 'textTransform': 'uppercase',
-                                             'letterSpacing': '0.5px', 'fontWeight': '600'}),
-                html.H3(f"{your_points:,}", style={'color': COLORS['primary'], 'margin': '0',
-                                                    'fontSize': '28px', 'fontWeight': '700'}),
-                html.P(f"Rank {your_rank:,}", style={'color': COLORS['text_light'], 'fontSize': '13px',
-                                                      'margin': '4px 0 0 0'}),
-            ], style={**STAT_CARD_STYLE, 'flex': '1', 'minWidth': '160px', 'minHeight': 'auto', 'padding': '16px'}),
+    # --- Dream rank ---
+    dream = html.Div()
+    if dream_rank and dream_rank != your_rank:
+        d_pts = found[dream_rank][0]
+        if d_pts is None:
+            body = [html.P(f"Couldn't read rank {dream_rank:,} from FPL just now.",
+                           style={'color': COLORS['danger_text'], 'margin': 0})]
+        else:
+            gap = d_pts - my_pts
+            cur = data.get('current_gw') or {}
+            left = max(38 - int(cur.get('id') or 0), 0)
+            if dream_rank < your_rank:
+                if gap > 0:
+                    head_txt = f"{gap:,} point{'s' if gap != 1 else ''} behind rank {dream_rank:,}"
+                    detail = (f"Rank {dream_rank:,} is on {d_pts:,} points; you're on {my_pts:,}. "
+                              + (f"To get there you need to outscore the managers around that rank by "
+                                 f"{gap:,} over the {left} gameweeks left \u2014 {gap / left:.1f} a week."
+                                 if left else ""))
+                else:
+                    head_txt = f"Level on points with rank {dream_rank:,}"
+                    detail = (f"Rank {dream_rank:,} is on {d_pts:,} points, the same as you \u2014 "
+                              f"the places between you are managers tied on your total.")
+            else:
+                head_txt = f"{-gap:,} point{'s' if gap != -1 else ''} ahead of rank {dream_rank:,}"
+                detail = f"Rank {dream_rank:,} is on {d_pts:,} points; you're on {my_pts:,}."
+            body = [html.Div(head_txt, style={'fontSize': '22px', 'fontWeight': '700', 'color': COLORS['primary'],
+                                              'marginBottom': '6px'}),
+                    html.P(detail, style={'color': COLORS['text_dark'], 'margin': 0})]
+        dream = html.Div([html.H3("Dream rank", style={'color': COLORS['primary'], 'margin': '0 0 8px 0'}),
+                          *body], style={**CARD_STYLE, 'marginBottom': '16px'})
 
-            html.Div([
-                html.P("Points Gap", style={'color': COLORS['text_light'], 'fontSize': '13px',
-                                            'marginBottom': '4px', 'textTransform': 'uppercase',
-                                            'letterSpacing': '0.5px', 'fontWeight': '600'}),
-                html.H3(f"{gap:,} pts", style={'color': COLORS['accent'], 'margin': '0',
-                                                'fontSize': '28px', 'fontWeight': '700'}),
-                html.P(f"across {rank_gap:,} rank places", style={'color': COLORS['text_light'],
-                                                                    'fontSize': '13px', 'margin': '4px 0 0 0'}),
-            ], style={**STAT_CARD_STYLE, 'flex': '1', 'minWidth': '160px', 'minHeight': 'auto', 'padding': '16px'}),
-
-            html.Div([
-                html.P("Congestion", style={'color': COLORS['text_light'], 'fontSize': '13px',
-                                            'marginBottom': '4px', 'textTransform': 'uppercase',
-                                            'letterSpacing': '0.5px', 'fontWeight': '600'}),
-                html.H3(f"{pts_per_x_ranks} pts", style={'color': COLORS['success_text'], 'margin': '0',
-                                                          'fontSize': '28px', 'fontWeight': '700'}),
-                html.P(f"per {congestion_divisor:,} rank places", style={'color': COLORS['text_light'],
-                                                                          'fontSize': '13px', 'margin': '4px 0 0 0'}),
-            ], style={**STAT_CARD_STYLE, 'flex': '1', 'minWidth': '160px', 'minHeight': 'auto', 'padding': '16px'}),
-
-            html.Div([
-                html.P("Rival Points", style={'color': COLORS['text_light'], 'fontSize': '13px',
-                                              'marginBottom': '4px', 'textTransform': 'uppercase',
-                                              'letterSpacing': '0.5px', 'fontWeight': '600'}),
-                html.H3(f"{rival_points:,}", style={'color': COLORS['primary'], 'margin': '0',
-                                                     'fontSize': '28px', 'fontWeight': '700'}),
-                html.P(f"Rank {rival_rank:,}", style={'color': COLORS['text_light'], 'fontSize': '13px',
-                                                       'margin': '4px 0 0 0'}),
-            ], style={**STAT_CARD_STYLE, 'flex': '1', 'minWidth': '160px', 'minHeight': 'auto', 'padding': '16px'}),
-        ], style={'display': 'flex', 'flexWrap': 'wrap', 'gap': '16px', 'marginBottom': '20px'}),
-    ])
+    note = html.P("Points and ranks are FPL's overall standings as of its latest update, so they can lag a "
+                  "live gameweek. Managers on the same total share a rank.",
+                  style={'color': COLORS['text_light'], 'fontSize': '13px', 'margin': '0'})
+    return html.Div([dream, ladder, note])
 
 
 # DEFCON BONUS
