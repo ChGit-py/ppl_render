@@ -11422,7 +11422,7 @@ def _outlook_why(row, gw, fx, view, fmt, ratings, names, id_by_short, season_gx,
     drives it — the opponent's rating, this team's rating, the venue, the
     team's goals against its xG so far, and whether market odds are in."""
     tid, team = row['tid'], row['name']
-    lines = [f"<b>{team} \u00b7 GW{gw}</b>"]
+    lines = [f"<b>{team} \u007c GW{gw}</b>"]
     for opp_short, venue, val, exp_goals in fx:
         opp_id = id_by_short.get(opp_short)
         opp = names.get(opp_id, opp_short)
