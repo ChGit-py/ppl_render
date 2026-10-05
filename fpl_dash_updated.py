@@ -8063,48 +8063,6 @@ app.layout = html.Div([
                     ], style=CARD_STYLE),
 
                     html.Div([
-                        html.H3("Regression Watchlist", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-                        html.P("The discipline tool against chasing hauls. SELL: scoring well above underlying xGI "
-                               "(the goals are borrowed — expect payback). BUY EARLY: elite underlying numbers the "
-                               "goals haven't caught up with yet — get in before the price and ownership move.",
-                               style={'color': COLORS['text_light']}),
-                        html.Div([
-                            html.Div([
-                                html.H4("Sell-High Candidates", style={'color': COLORS['danger_text'], 'marginBottom': '10px'}),
-                                dash_table.DataTable(
-                                    id='regress-sell-table', data=[],
-                                    columns=[
-                                        {'name': 'Player', 'id': 'web_name'},
-                                        {'name': 'Team', 'id': 'team_name'},
-                                        {'name': 'GI/90', 'id': 'gi_per_90', 'type': 'numeric', 'format': {'specifier': '.2f'}},
-                                        {'name': 'xGI/90', 'id': 'xgi_per_90', 'type': 'numeric', 'format': {'specifier': '.2f'}},
-                                        {'name': 'Overperf', 'id': 'xgi_diff_per_90', 'type': 'numeric', 'format': {'specifier': '+.2f'}},
-                                        {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
-                                    ],
-                                    page_size=8, style_cell=TABLE_STYLE_CELL,
-                                    style_header=TABLE_STYLE_HEADER, style_data=TABLE_STYLE_DATA,
-                                )
-                            ], style={'flex': '1', 'minWidth': '320px', 'paddingRight': '10px'}),
-                            html.Div([
-                                html.H4("Buy-Early Candidates", style={'color': COLORS['success_text'], 'marginBottom': '10px'}),
-                                dash_table.DataTable(
-                                    id='regress-buy-table', data=[],
-                                    columns=[
-                                        {'name': 'Player', 'id': 'web_name'},
-                                        {'name': 'Team', 'id': 'team_name'},
-                                        {'name': 'GI/90', 'id': 'gi_per_90', 'type': 'numeric', 'format': {'specifier': '.2f'}},
-                                        {'name': 'xGI/90', 'id': 'xgi_per_90', 'type': 'numeric', 'format': {'specifier': '.2f'}},
-                                        {'name': 'Underperf', 'id': 'xgi_diff_per_90', 'type': 'numeric', 'format': {'specifier': '+.2f'}},
-                                        {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
-                                    ],
-                                    page_size=8, style_cell=TABLE_STYLE_CELL,
-                                    style_header=TABLE_STYLE_HEADER, style_data=TABLE_STYLE_DATA,
-                                )
-                            ], style={'flex': '1', 'minWidth': '320px'}),
-                        ], style={'display': 'flex', 'flexWrap': 'wrap'})
-                    ], style=CARD_STYLE),
-
-                    html.Div([
                         html.H3("Form vs Season Average", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
                         html.P("Players trending up or down from their season average.",
                                style={'color': COLORS['text_light']}),
@@ -11044,33 +11002,6 @@ def sync_own_slider(input_val):
     if input_val is None:
         return 15
     return max(5, min(100, input_val))
-
-
-# --- REGRESSION WATCHLIST ---
-@callback(
-    [Output('regress-sell-table', 'data'), Output('regress-buy-table', 'data')],
-    Input('visit-form', 'data'),
-    prevent_initial_call=True
-)
-def update_regression_watchlist(_n):
-    _need_visit(_n)
-    data = get_data()
-    dfa = data.get('df_active', pd.DataFrame())
-    if dfa.empty or 'xgi_diff_per_90' not in dfa.columns:
-        return [], []
-    cur = data.get('current_gw')
-    thr = adaptive_min_minutes(450, cur['id'] if cur else 0)
-    pool = dfa[(dfa['minutes'] >= thr) &
-               (dfa['position'].isin(['DEF', 'MID', 'FWD']))].copy()
-    pool = pool.dropna(subset=['xgi_diff_per_90', 'xgi_per_90'])
-    cols = ['web_name', 'team_name', 'gi_per_90', 'xgi_per_90', 'xgi_diff_per_90', 'ownership']
-    # SELL: producing well above xGI, meaningfully owned (someone to sell)
-    sell = pool[(pool['xgi_diff_per_90'] >= 0.30) & (pool['ownership'] >= 5)]
-    sell = sell.nlargest(8, 'xgi_diff_per_90')
-    # BUY: elite underlying, output lagging
-    buy = pool[(pool['xgi_diff_per_90'] <= -0.20) & (pool['xgi_per_90'] >= 0.35)]
-    buy = buy.nsmallest(8, 'xgi_diff_per_90')
-    return prepare_table_data(sell, cols), prepare_table_data(buy, cols)
 
 
 # --- FIXTURE SWING DETECTOR ---
