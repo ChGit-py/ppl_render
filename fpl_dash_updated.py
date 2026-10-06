@@ -357,6 +357,53 @@ def extract_last_season_prior(summary):
         return None
 
 
+def round_owner_counts(history):
+    """{gameweek: (managers owning him at that deadline, price £m)} from a
+    player's FPL match history ('selected' and 'value'). A blank week has no
+    row, so no entry."""
+    out = {}
+    for r in history or []:
+        rnd, sel = r.get('round'), r.get('selected')
+        if rnd is None or sel is None:
+            continue
+        val = r.get('value')
+        out[int(rnd)] = (int(sel), float(val) / 10.0 if val is not None else None)
+    return out
+
+
+def apply_deadline_deltas(df_active, deadline_owners, bootstrap_data, total_managers):
+    """Ownership and price change since the last deadline (the current
+    gameweek's), as own_delta_dl / price_delta_dl, plus a short description
+    of the basis. Exact where the player's FPL history gives his owners at
+    that deadline: ownership now minus owners at the deadline over the
+    managers playing that gameweek (FPL's ranked_count, so teams created
+    since don't skew it). Otherwise net transfers since the deadline over
+    all managers, and FPL's price change this gameweek."""
+    events = (bootstrap_data or {}).get('events') or []
+    cur = next((e for e in events if e.get('is_current')), None)
+    tm = max(int(total_managers or 0), 1)
+    own_tx = (pd.to_numeric(df_active.get('net_transfers_gw'), errors='coerce').fillna(0) / tm * 100)
+    price_tx = pd.to_numeric(df_active.get('cost_change_event'), errors='coerce') / 10.0
+    df_active['own_delta_dl'] = own_tx.round(2)
+    df_active['price_delta_dl'] = price_tx.round(1)
+    if not cur:
+        return "this gameweek"
+    gw = int(cur['id'])
+    managers_then = int(cur.get('ranked_count') or 0) or tm
+    snaps = {int(pid): v for pid, v in (deadline_owners or {}).items()
+             if v and v[0] == gw}
+    if snaps:
+        sel = df_active['id'].map(lambda i: (snaps.get(int(i)) or (None, None, None))[1])
+        val = df_active['id'].map(lambda i: (snaps.get(int(i)) or (None, None, None))[2])
+        own_exact = df_active['ownership'] - pd.to_numeric(sel, errors='coerce') / managers_then * 100
+        price_exact = df_active['price'] - pd.to_numeric(val, errors='coerce')
+        df_active['own_delta_dl'] = own_exact.round(2).fillna(df_active['own_delta_dl'])
+        df_active['price_delta_dl'] = price_exact.round(1).fillna(df_active['price_delta_dl'])
+    dl = _to_utc_naive(cur.get('deadline_time'))
+    when = f" ({dl:%a %d %b})" if dl else ""
+    return f"the GW{gw} deadline{when}"
+
+
 def calculate_bonus_consistency(player_ids, player_thresholds, min_minutes=1):
     """
     Defensive-contribution hit rate: how often a player actually banks the
@@ -391,13 +438,15 @@ def calculate_bonus_consistency(player_ids, player_thresholds, min_minutes=1):
         # Start rate for every player fetched here, not just the captain
         # candidates whose histories are kept later (no extra API calls)
         mins_sec = minutes_security_one(history)
+        # Owners and price at each deadline (for "since the deadline" deltas)
+        round_owners = round_owner_counts(history)
 
         # Every appearance is an opportunity — DEFCON points carry no
         # minutes requirement, unlike clean sheets.
         qualifying_games = [g for g in history if (g.get('minutes') or 0) >= min_minutes]
 
         if not qualifying_games:
-            return player_id, ({'minutes_sec': mins_sec} if mins_sec else None), prior
+            return player_id, {'minutes_sec': mins_sec, 'round_owners': round_owners}, prior
 
         # Count games hitting bonus threshold (position-aware)
         threshold = player_thresholds.get(player_id, 10)
@@ -430,6 +479,7 @@ def calculate_bonus_consistency(player_ids, player_thresholds, min_minutes=1):
             'min_defcon': min(defcon_values) if defcon_values else 0,
             'threshold': threshold,
             'minutes_sec': mins_sec,
+            'round_owners': round_owners,
         }
         return player_id, stats, prior
 
@@ -2907,32 +2957,6 @@ def save_daily_snapshot(df_active, gw):
     print(f"  Snapshot saved for {len(rows)} players ({today})")
 
 
-def load_snapshot_baseline(days=7):
-    """
-    Oldest snapshot within the window (excluding today), per player.
-    Returns (dict of player_id -> {price, ownership}, baseline_date or None).
-    """
-    conn = _snapshot_conn()
-    row = conn.execute(
-        """SELECT MIN(snap_date) FROM player_snapshots
-           WHERE snap_date >= date('now', ?) AND snap_date < date('now')""",
-        (f'-{int(days)} days',)
-    ).fetchone()
-    baseline_date = row[0] if row else None
-    if not baseline_date:
-        conn.close()
-        return {}, None
-    baseline = {
-        pid: {'price': price, 'ownership': own}
-        for pid, price, own in conn.execute(
-            "SELECT player_id, price, ownership FROM player_snapshots WHERE snap_date = ?",
-            (baseline_date,)
-        )
-    }
-    conn.close()
-    return baseline, baseline_date
-
-
 # =============================================================================
 # BOOKMAKER ODDS — market-implied goal expectations (optional)
 # =============================================================================
@@ -5395,14 +5419,14 @@ _CACHE_KEYS = [
     'heavy_loaded', 'fixture_anchor_gw', 'season_started', 'season_label',
     'last_season_priors', 'calibration',
     'xg_ledger', 'odds_lambdas', 'odds_last_refresh', 'football_data_last_sync', 'scorer_odds',
-    'xcs_next', 'delta_basis',
+    'xcs_next', 'delta_basis', 'deadline_owners',
     'team_ratings', 'team_match_records',
 ]
 
 # Bump whenever the shape of cached data changes, or at a season rollover.
 # A mismatch (or an over-age cache) forces a clean fetch instead of serving
 # last season's teams and players from disk.
-CACHE_VERSION = 12
+CACHE_VERSION = 13
 # Render sets RENDER_GIT_COMMIT on every deploy. Stamping the cache with it
 # means a new deploy never reuses data pickled by an older build (or a local
 # run that ended up in the repo), so "Updated" always resets on deploy.
@@ -5788,9 +5812,7 @@ def refresh_core_data():
                 ((100 - df_active['ownership'].fillna(50)) / 10 * 0.2)
         ).round(2)
 
-        # --- Daily snapshot + 7-day trend deltas ---
-        # Turns "what is true now" into "what is changing": ownership momentum
-        # and realised price movement over the last week.
+        # --- Daily snapshot + calibration bookkeeping ---
         try:
             save_daily_snapshot(df_active, next_gw_num)
             # Calibration bookkeeping: log what we predict, record what happened
@@ -5805,57 +5827,22 @@ def refresh_core_data():
                 print(DATA_CAL_MSG)
             with DATA_LOCK:
                 DATA['calibration'] = cal
-            baseline, baseline_date = load_snapshot_baseline(days=7)
-            if baseline:
-                df_active['own_delta_7d'] = (
-                    df_active['ownership'] -
-                    df_active['id'].map(lambda x: baseline.get(x, {}).get('ownership'))
-                ).round(2)
-                df_active['price_delta_7d'] = (
-                    df_active['price'] -
-                    df_active['id'].map(lambda x: baseline.get(x, {}).get('price'))
-                ).round(1)
-                DATA_DELTA_BASIS = f"7 days (snapshot {baseline_date})"
-                print(f"  Trend deltas computed vs snapshot from {baseline_date}")
-            else:
-                df_active['own_delta_7d'] = np.nan
-                df_active['price_delta_7d'] = np.nan
-                DATA_DELTA_BASIS = None
-                print("  No prior snapshot yet — falling back to gameweek deltas")
         except Exception as e:
             print(f"  Snapshot store unavailable: {e}")
-            df_active['own_delta_7d'] = np.nan
-            df_active['price_delta_7d'] = np.nan
-            DATA_DELTA_BASIS = None
 
-        # --- Storage-free gameweek deltas -------------------------------
-        # The 7-day figures need a snapshot that survived to yesterday, which
-        # an ephemeral disk never provides. These two need no history at all
-        # because bootstrap-static already carries the movement:
-        #
-        #   price   cost_change_event is the realised change this gameweek.
-        #   owners  net transfers / total managers x 100 IS the ownership
-        #           change in percentage points — ownership is just a count
-        #           of squads over the same denominator, so this is exact,
-        #           not an approximation.
+        # --- Ownership and price change since the last deadline ---------
+        # Owners at the deadline come from players' FPL histories (kept from
+        # the last full refresh); the rest use net transfers since then.
         try:
-            _tm = max(int(total_managers or 0), 1)
-            df_active['own_delta_gw'] = (
-                df_active['net_transfers_gw'].fillna(0) / _tm * 100).round(3)
-            df_active['price_delta_gw'] = pd.to_numeric(
-                df_active.get('cost_change_event'), errors='coerce').round(1)
+            with DATA_LOCK:
+                _dl_owners = DATA.get('deadline_owners') or {}
+            DATA_DELTA_BASIS = apply_deadline_deltas(df_active, _dl_owners, bootstrap_data,
+                                                     total_managers)
         except Exception as e:
-            print(f"  GW deltas unavailable: {e}")
-            df_active['own_delta_gw'] = np.nan
-            df_active['price_delta_gw'] = np.nan
-
-        # Fall back so the displayed columns are never empty
-        if df_active['own_delta_7d'].isna().all():
-            df_active['own_delta_7d'] = df_active['own_delta_gw']
-        if df_active['price_delta_7d'].isna().all():
-            df_active['price_delta_7d'] = df_active['price_delta_gw']
-        if DATA_DELTA_BASIS is None:
-            DATA_DELTA_BASIS = "this gameweek (no prior snapshot)"
+            print(f"  Deadline deltas unavailable: {e}")
+            df_active['own_delta_dl'] = np.nan
+            df_active['price_delta_dl'] = np.nan
+            DATA_DELTA_BASIS = "this gameweek"
         with DATA_LOCK:
             DATA['delta_basis'] = DATA_DELTA_BASIS
 
@@ -5968,6 +5955,40 @@ def refresh_heavy_data():
         df_active['p60_rate'] = df_active['id'].map(lambda x: _ms_all.get(x, {}).get('p60_rate'))
         df_active['recent_minutes_pct'] = df_active['id'].map(
             lambda x: _ms_all.get(x, {}).get('recent_minutes_pct'))
+
+        # Owners and price at the last deadline, from the histories just
+        # fetched — plus the most-transferred players and the keepers the
+        # pass above skips, so the transfer tables are exact. (Net transfers
+        # alone miss Free Hit squads reverting: after 295k Free Hits in one
+        # 2026/27 gameweek they were out by up to 1.6 points of ownership.)
+        try:
+            with DATA_LOCK:
+                _boot = DATA.get('bootstrap_data') or {}
+                _tm = DATA.get('total_managers')
+            _cur_ev = next((e for e in _boot.get('events') or [] if e.get('is_current')), None)
+            if _cur_ev:
+                _gw_dl = int(_cur_ev['id'])
+                _ro = {pid: v.get('round_owners') or {} for pid, v in consistency_data.items()}
+                _movers = (df_active.assign(_abs=pd.to_numeric(df_active['net_transfers_gw'],
+                                                               errors='coerce').abs())
+                           .nlargest(120, '_abs')['id'].tolist())
+                _keepers = df_active[(df_active['position'] == 'GKP') &
+                                     (df_active['minutes'] >= _mins_lo)]['id'].tolist()
+                _missing = list(dict.fromkeys(pid for pid in _movers + _keepers if pid not in _ro))
+                if _missing:
+                    for pid, hist in fetch_player_history_batch(_missing).items():
+                        _ro[pid] = round_owner_counts(hist)
+                deadline_owners = {int(pid): (_gw_dl,) + ro[_gw_dl]
+                                   for pid, ro in _ro.items() if _gw_dl in ro}
+                with DATA_LOCK:
+                    DATA['deadline_owners'] = deadline_owners
+                _basis = apply_deadline_deltas(df_active, deadline_owners, _boot, _tm)
+                with DATA_LOCK:
+                    DATA['delta_basis'] = _basis
+                print(f"  Ownership since the GW{_gw_dl} deadline: exact for {len(deadline_owners)} "
+                      f"players ({len(_missing)} extra histories fetched)")
+        except Exception as e:
+            print(f"  Deadline ownership unavailable ({e}) — using net transfers")
 
         # Commit consistency columns immediately — if any LATER Phase-2 step
         # fails (home/away, EO, projections), these results must survive
@@ -8597,7 +8618,7 @@ app.layout = html.Div([
                                 {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                                 {'name': 'EO% (Top)', 'id': 'top_eo', 'type': 'numeric',
                                  'format': {'specifier': '.1f'}},
-                                {'name': 'Own \u03947d', 'id': 'own_delta_7d', 'type': 'numeric',
+                                {'name': 'Own \u0394', 'id': 'own_delta_dl', 'type': 'numeric',
                                  'format': {'specifier': '+.1f'}},
                                 {'name': 'Diff Score', 'id': 'differential_score', 'type': 'numeric',
                                  'format': {'specifier': '.2f'}},
@@ -8921,9 +8942,9 @@ app.layout = html.Div([
                                  'format': {'specifier': '+.1f'}},
                                 {'name': 'Predicted %', 'id': 'price_predicted', 'type': 'numeric',
                                  'format': {'specifier': '+.1f'}},
-                                {'name': 'Own \u0394', 'id': 'own_delta_7d', 'type': 'numeric',
-                                 'format': {'specifier': '+.2f'}},
-                                {'name': '\u00a3 \u0394', 'id': 'price_delta_7d', 'type': 'numeric',
+                                {'name': 'Own \u0394', 'id': 'own_delta_dl', 'type': 'numeric',
+                                 'format': {'specifier': '+.1f'}},
+                                {'name': '\u00a3 \u0394', 'id': 'price_delta_dl', 'type': 'numeric',
                                  'format': {'specifier': '+.1f'}},
                                 {'name': 'Season +/-', 'id': 'cost_change_start', 'type': 'numeric',
                                  'format': {'specifier': '.1f'}},
@@ -10978,7 +10999,7 @@ def update_differentials(position, team, max_price, max_own, min_minutes, _visit
                           font=dict(family=FONT_FAMILY))
 
     cols = ['web_name', 'team_name', 'position', 'price', 'total_points', 'form', 'ppg',
-            'expected_goal_involvements', 'ownership', 'top_eo', 'own_delta_7d',
+            'expected_goal_involvements', 'ownership', 'top_eo', 'own_delta_dl',
             'differential_score', 'proj_pts_5', 'avg_fdr_5', 'fixture_string']
     table_data = prepare_table_data(filtered.nlargest(50, 'differential_score'), cols)
 
@@ -11271,8 +11292,8 @@ def update_transfers(position, team, max_price, min_minutes, _visit=None):
     sorted_by_activity['abs_net'] = sorted_by_activity['net_transfers_gw'].abs()
     cols = ['web_name', 'team_name', 'position', 'price', 'transfers_in_gw', 'transfers_out_gw',
             'net_transfers_gw', 'transfer_ratio', 'price_status', 'price_progress', 'price_predicted',
-            'own_delta_7d',
-            'price_delta_7d', 'cost_change_start', 'form', 'ownership']
+            'own_delta_dl',
+            'price_delta_dl', 'cost_change_start', 'form', 'ownership']
     for c in ('price_status', 'price_progress', 'price_predicted'):
         if c not in sorted_by_activity.columns:
             sorted_by_activity[c] = None
@@ -11284,10 +11305,10 @@ def update_transfers(position, team, max_price, min_minutes, _visit=None):
                    f"change tracker (read at {datetime.fromtimestamp(_pt, tz=ZoneInfo('Europe/London')):%H:%M}; "
                    f"a price changes when progress reaches \u00b1100% at the overnight update). "
                    if _pt else "FPL's price tracker isn't available right now, so those columns are empty. ")
-    note = (tracker_txt + f"Own \u0394 and \u00a3 \u0394 are measured over {basis}. "
-            f"Ownership change is derived from net transfers \u00f7 total managers, "
-            f"and price change from FPL's own gameweek movement \u2014 neither needs "
-            f"stored history, so both populate on the first run.")
+    note = (tracker_txt + f"Own \u0394 and \u00a3 \u0394 are the change since {basis}, so an "
+            f"international break is covered in full. Ownership at the deadline comes from each "
+            f"player's FPL history (the owners FPL recorded that gameweek, over the managers "
+            f"playing it); players without one use net transfers since the deadline.")
     return risers_fig, fallers_fig, scatter_fig, table_data, note
 
 
@@ -12248,7 +12269,7 @@ def check_price_alerts(n_clicks, team_id):
     rise_soon = rise_soon.nlargest(8, 'proj_pts_5')
 
     def _mini_table(frame, extra_col, extra_name):
-        cols = ['web_name', 'team_name', 'position', 'price', extra_col, 'proj_pts_5', 'own_delta_7d']
+        cols = ['web_name', 'team_name', 'position', 'price', extra_col, 'proj_pts_5', 'own_delta_dl']
         return dash_table.DataTable(
             data=prepare_table_data(frame, cols),
             columns=[
@@ -12257,7 +12278,7 @@ def check_price_alerts(n_clicks, team_id):
                 {'name': 'Price', 'id': 'price', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                 {'name': extra_name, 'id': extra_col, 'type': 'numeric', 'format': {'specifier': '.0f'}},
                 {'name': 'Proj Next 5', 'id': 'proj_pts_5', 'type': 'numeric', 'format': {'specifier': '.1f'}},
-                {'name': 'Own \u03947d', 'id': 'own_delta_7d', 'type': 'numeric', 'format': {'specifier': '+.1f'}},
+                {'name': 'Own \u0394', 'id': 'own_delta_dl', 'type': 'numeric', 'format': {'specifier': '+.1f'}},
             ],
             style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER, style_data=TABLE_STYLE_DATA,
         )
