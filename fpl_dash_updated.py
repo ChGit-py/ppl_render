@@ -8951,7 +8951,7 @@ app.layout = html.Div([
                                 {'name': 'Form', 'id': 'form', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                                 {'name': 'Own%', 'id': 'ownership', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                             ],
-                            sort_action='native',
+                            sort_action='custom', sort_mode='single', sort_by=[],
                             page_size=20,
                             style_cell=TABLE_STYLE_CELL,
                             style_header=TABLE_STYLE_HEADER,
@@ -11234,7 +11234,7 @@ def _scorer_odds_note():
 @callback(
     [Output('xfer-risers-bar', 'figure'), Output('xfer-fallers-bar', 'figure'),
      Output('xfer-scatter', 'figure'), Output('xfer-table', 'data'),
-     Output('xfer-delta-basis', 'children')],
+     Output('xfer-delta-basis', 'children'), Output('xfer-table', 'sort_by')],
     [Input('xfer-position', 'value'), Input('xfer-team', 'value'),
      Input('xfer-price', 'value'), Input('xfer-minutes', 'value'), Input('visit-transfers', 'data')],
     prevent_initial_call=True
@@ -11309,7 +11309,45 @@ def update_transfers(position, team, max_price, min_minutes, _visit=None):
             f"international break is covered in full. Ownership at the deadline comes from each "
             f"player's FPL history (the owners FPL recorded that gameweek, over the managers "
             f"playing it); players without one use net transfers since the deadline.")
-    return risers_fig, fallers_fig, scatter_fig, table_data, note
+    return risers_fig, fallers_fig, scatter_fig, table_data, note, []
+
+
+# Price Status sorts by meaning, not alphabetically: rises first, then no
+# change, then drops (reversed on the second click).
+PRICE_STATUS_ORDER = {'Very likely to rise': 0, 'Likely to rise': 1, 'Unlikely to change': 2,
+                      'Likely to drop': 3, 'Very likely to drop': 4, 'Calibrating': 5, 'Locked': 6}
+
+
+@callback(
+    Output('xfer-table', 'data', allow_duplicate=True),
+    Input('xfer-table', 'sort_by'),
+    State('xfer-table', 'data'),
+    prevent_initial_call=True
+)
+def sort_xfer_table(sort_by, rows):
+    if not sort_by or not rows:
+        raise PreventUpdate
+    col, desc = sort_by[0]['column_id'], sort_by[0]['direction'] == 'desc'
+
+    def num(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    if col == 'price_status':
+        # Within a status, the strongest move first (by FPL's predicted %)
+        def key(r):
+            pred = num(r.get('price_predicted')) or 0.0
+            return (PRICE_STATUS_ORDER.get(r.get('price_status'), 7), -pred)
+        return sorted(rows, key=key, reverse=desc)
+    present = [r for r in rows if r.get(col) not in (None, '')]
+    missing = [r for r in rows if r.get(col) in (None, '')]
+    if all(num(r.get(col)) is not None for r in present):
+        present.sort(key=lambda r: num(r.get(col)), reverse=desc)
+    else:
+        present.sort(key=lambda r: str(r.get(col)).lower(), reverse=desc)
+    return present + missing   # blanks always last
 
 
 def _team_goals_vs_xg(fixtures, ledger):
