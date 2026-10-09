@@ -7423,7 +7423,7 @@ app.layout = html.Div([
                 html.Div([
                     html.H2("Rank Tracker",
                             style={'color': COLORS['primary'], 'margin': '0 0 4px 0'}),
-                    html.P("Enter your overall rank to see the points of the managers around you, and a dream "
+                    html.P("Enter your overall rank to see the points of the managers around you, and a target "
                            "rank to see exactly how far off it you are. Every figure is read from FPL's "
                            "overall standings.",
                            style={'color': COLORS['text_light']})
