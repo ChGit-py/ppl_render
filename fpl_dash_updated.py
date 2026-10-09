@@ -7440,7 +7440,7 @@ app.layout = html.Div([
                                              'border': '1px solid #ccc', 'fontSize': '15px'})
                         ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
                         html.Div([
-                            html.Label("Dream rank (optional)",
+                            html.Label("Target rank (optional)",
                                        style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                             dcc.Input(id='rank-rival', type='number', value=None, min=1, step=1,
                                       placeholder='e.g. 100000',
