@@ -1485,6 +1485,14 @@ DEFCON_POINTS = 2
 # sweep tells you what to set them to once enough gameweeks are logged.
 FDR_STEP_RATIO = float(os.environ.get('FPL_FDR_RATIO', '1.18'))
 SHRINK_K = float(os.environ.get('FPL_SHRINK_K', '450'))
+
+# Minutes model (see minutes_security_one). 'v2' = recency-weighted, with
+# starts and bench appearances modelled separately; 'v1' = the original
+# equal-weighted last-6 shares. All three are env-tunable so the Model Lab
+# sweep's recommendation can be applied on Render without a code change.
+MINUTES_MODEL = os.environ.get('FPL_MINUTES_MODEL', 'v2').strip().lower()
+MINS_HALFLIFE = float(os.environ.get('FPL_MINS_HALFLIFE', '3'))
+MINS_WINDOW = int(os.environ.get('FPL_MINS_WINDOW', '8'))
 FDR_SENSITIVITY = FDR_STEP_RATIO - 1.0  # legacy alias
 
 # Team-level form shrinkage for the FALLBACK team model (used only when no
@@ -1757,7 +1765,11 @@ def compute_expected_points(df, gw_elapsed=38, priors=None, components_out=None)
     # (projection if fit) x (that week's availability).
     p60_fit = ((n('p60_rate') if 'p60_rate' in df.columns else n('start_rate')).fillna(n('start_rate'))
                / 100).clip(0, 1).fillna(p60_fallback)
-    p_any_fit = (share * 1.15 + 0.05).clip(0, 1).where(share > 0, 0)
+    p_any_heur = (share * 1.15 + 0.05).clip(0, 1).where(share > 0, 0)
+    # v2 minutes model measures the chance of any appearance directly;
+    # the old share-based guess remains the fallback
+    p_any_fit = ((n('p_any_rate') / 100).clip(0, 1).fillna(p_any_heur)
+                 if 'p_any_rate' in df.columns else p_any_heur)
     p_any_fit = pd.concat([p_any_fit, p60_fit], axis=1).max(axis=1)
     exp90_fit = share
 
@@ -2012,33 +2024,86 @@ def _started(m):
     return bool(st) if st is not None else (m.get('minutes') or 0) >= 60
 
 
-def minutes_security_one(matches, window=6):
+def minutes_security_one(matches, window=None, model=None, half_life=None):
     """
-    Recent start rate and share of minutes for one player's match history,
-    over his last `window` matches. Games missed through injury count as
-    non-starts: skipping 0-minute runs that end with a start was tried and,
-    over a 2025/26 replay, made projections worse (it turns a rotation
-    player's "0, 0, start, 0, 0, start" into a 100% starter).
-    `p60_rate` is the share of those matches in which he played 60+ minutes:
-    what FPL actually rewards (2 appearance points, clean sheets), and what
-    the projection engine uses — a starter subbed at 55 minutes gets
-    neither. Over a 2025/26 replay it projected better than the start rate.
-    Returns {start_rate, p60_rate, recent_minutes_pct, recent_games} or None.
+    How much a player is likely to play next match, from his recent match
+    history. Returns {start_rate, p60_rate, p_any_rate, recent_minutes_pct,
+    recent_games} (all percentages) or None.
+
+    `p60_rate` (chance of 60+ minutes) is what FPL actually rewards: 2
+    appearance points and clean sheets. A starter subbed at 55 gets neither.
+
+    v2 (default) makes two changes to the original:
+      1. Recency weighting. Each match counts half as much as one
+         `half_life` matches more recent, so last week's benching outweighs
+         a start five weeks ago. The original treated all six equally.
+      2. Starts and bench appearances are modelled separately:
+           expected minutes = P(start) x minutes when he starts
+                            + P(comes on) x minutes when he comes on
+         and likewise for 60+ minutes and any appearance. One blended
+         minutes share used to stand in for all three, so a nailed
+         70-minute starter and a regular impact sub could look alike.
+         "Minutes when he starts" is shrunk toward a typical 80 (and "60+
+         when he starts" toward 88%) so two early subs don't define him.
+    Games missed through injury still count as non-starts in both models:
+    skipping 0-minute runs that end with a start was tried and, over a
+    2025/26 replay, made projections worse (it turns a rotation player's
+    "0, 0, start, 0, 0, start" into a 100% starter).
+
+    v1 is the original: equal-weighted shares over the last 6 matches.
     """
-    recent = sorted(matches or [], key=lambda m: (m.get('round') or 0))[-window:]
+    model = (model or MINUTES_MODEL)
+    ordered = sorted(matches or [], key=lambda m: (m.get('round') or 0))
+    if model == 'v1':
+        recent = ordered[-(window or 6):]
+        if not recent:
+            return None
+        total_mins = sum(m.get('minutes') or 0 for m in recent)
+        starts = sum(1 for m in recent if _started(m))
+        full = sum(1 for m in recent if (m.get('minutes') or 0) >= 60)
+        k = len(recent)
+        return {'start_rate': round(starts / k * 100, 1),
+                'p60_rate': round(full / k * 100, 1),
+                'p_any_rate': None,
+                'recent_minutes_pct': round(total_mins / (k * 90) * 100, 1),
+                'recent_games': k}
+
+    recent = ordered[-(window or MINS_WINDOW):]
     if not recent:
         return None
-    total_mins = sum(m.get('minutes') or 0 for m in recent)
-    starts = sum(1 for m in recent if _started(m))
-    full = sum(1 for m in recent if (m.get('minutes') or 0) >= 60)
+    hl = max(float(half_life or MINS_HALFLIFE), 0.5)
     k = len(recent)
-    return {'start_rate': round(starts / k * 100, 1),
-            'p60_rate': round(full / k * 100, 1),
-            'recent_minutes_pct': round(total_mins / (k * 90) * 100, 1),
+    # Most recent match weight 1, halving every `hl` matches back
+    w = [0.5 ** ((k - 1 - i) / hl) for i in range(k)]
+    W = sum(w)
+    w_start = w_sub = 0.0
+    mins_start = mins_sub = full_start = full_sub = 0.0
+    for wi, m in zip(w, recent):
+        mins = m.get('minutes') or 0
+        if _started(m):
+            w_start += wi
+            mins_start += wi * mins
+            full_start += wi * (mins >= 60)
+        elif mins > 0:
+            w_sub += wi
+            mins_sub += wi * mins
+            full_sub += wi * (mins >= 60)
+    p_start = w_start / W
+    p_sub = w_sub / W
+    PSEUDO = 1.0                      # one "typical" match of evidence
+    m_if_start = (mins_start + 80.0 * PSEUDO) / (w_start + PSEUDO)
+    p60_if_start = (full_start + 0.88 * PSEUDO) / (w_start + PSEUDO)
+    m_if_sub = (mins_sub + 18.0 * PSEUDO) / (w_sub + PSEUDO)
+    p60_if_sub = (full_sub + 0.02 * PSEUDO) / (w_sub + PSEUDO)
+    exp_mins = p_start * m_if_start + p_sub * m_if_sub
+    return {'start_rate': round(p_start * 100, 1),
+            'p60_rate': round((p_start * p60_if_start + p_sub * p60_if_sub) * 100, 1),
+            'p_any_rate': round(min(p_start + p_sub, 1.0) * 100, 1),
+            'recent_minutes_pct': round(min(exp_mins / 90.0, 1.0) * 100, 1),
             'recent_games': k}
 
 
-def calculate_minutes_security(player_histories, window=6):
+def calculate_minutes_security(player_histories, window=None):
     """
     From match-by-match history, compute recent start rate and share of
     available minutes over the last `window` matches (see
@@ -3852,7 +3917,7 @@ def _rate(total, minutes):
     return (total / minutes * 90.0) if minutes and minutes > 0 else 0.0
 
 
-def reconstruct_player_frame(histories, meta, upto_round, recent_window=6):
+def reconstruct_player_frame(histories, meta, upto_round, recent_window=None):
     """
     Rebuild every player's state EXACTLY as it stood before `upto_round`.
 
@@ -3935,6 +4000,7 @@ def reconstruct_player_frame(histories, meta, upto_round, recent_window=6):
             'recent_minutes_pct': sec.get('recent_minutes_pct'),
             'start_rate': sec.get('start_rate'),
             'p60_rate': sec.get('p60_rate'),
+            'p_any_rate': sec.get('p_any_rate'),
         })
     return pd.DataFrame(rows)
 
@@ -3957,8 +4023,72 @@ def _fixtures_as_of(fixtures_data, upto_round):
     return out
 
 
+def _backtest_fixture_context(g, fixtures_data, teams_df, xg_ledger=None, team_records=None):
+    """
+    Everything fixture-related the backtest needs for gameweek `g`, built
+    only from what was known before it: refitted team ratings, clean-sheet
+    and goal-environment models, FDRs and fixture counts. Split out so the
+    parameter sweep can build it once per gameweek and reuse it for every
+    setting it tries.
+    """
+    hist_fx = _fixtures_as_of(fixtures_data, g)
+    rat = None
+    if team_records:
+        kicks = [_to_utc_naive(f.get('kickoff_time')) for f in fixtures_data
+                 if (f.get('event') or 0) == g]
+        kicks = [k for k in kicks if k is not None]
+        try:
+            rat = fit_team_ratings(team_records, list(teams_df['id']), before_round=g,
+                                   as_of=min(kicks) if kicks else None,
+                                   fdr_strength=fpl_fdr_strength(fixtures_data))
+        except Exception as e:
+            print(f"  backtest GW{g} ratings failed: {e}")
+    try:
+        xcs = calculate_expected_clean_sheets(hist_fx, teams_df, g - 1, num_gws=1,
+                                              xg_ledger=xg_ledger, ratings=rat)
+        genv = calculate_goal_environment(hist_fx, teams_df, g - 1, num_gws=1,
+                                          xg_ledger=xg_ledger, ratings=rat)
+    except Exception as e:
+        print(f"  backtest GW{g} team models failed: {e}")
+        xcs, genv = {}, {}
+
+    tgt = [f for f in fixtures_data if (f.get('event') or 0) == g]
+    fdr_h = {f['team_h']: f.get('team_a_difficulty', 3) for f in tgt}
+    fdr_a = {f['team_a']: f.get('team_h_difficulty', 3) for f in tgt}
+    att_fdr = {**fdr_h, **fdr_a}
+    counts = Counter()
+    for f in tgt:
+        counts[f['team_h']] += 1
+        counts[f['team_a']] += 1
+    return {'xcs': xcs, 'genv': genv, 'tgt': tgt, 'att_fdr': att_fdr, 'counts': counts}
+
+
+def _apply_fixture_context(frame, ctx):
+    """Write a gameweek's fixture context onto a reconstructed frame (in place)."""
+    genv, xcs, att_fdr, counts = ctx['genv'], ctx['xcs'], ctx['att_fdr'], ctx['counts']
+    team_env = lambda t, k, d: (genv.get(t, {}) or {}).get(k, d)
+    frame['next_att_fdr'] = frame['team'].map(att_fdr).fillna(3.0)
+    frame['next_def_fdr'] = frame['next_att_fdr']
+    frame['att_env_next'] = frame['team'].map(lambda t: team_env(t, 'att_env_avg', 1.0)).fillna(1.0)
+    frame['fix_mult_next'] = frame['team'].map(lambda t: team_env(t, 'fix_mult_avg', 1.0)).fillna(1.0)
+    frame['cs_prob_next'] = frame['team'].map(
+        lambda t: ((xcs.get(t, {}) or {}).get('avg_cs_prob') or 0) / 100.0).replace(0, np.nan)
+    frame['cs_prob_neutral'] = frame['team'].map(
+        lambda t: (xcs.get(t, {}) or {}).get('cs_prob_neutral'))
+    frame['gc_pen_next'] = frame['team'].map(lambda t: (xcs.get(t, {}) or {}).get('gc_pen_avg'))
+    frame['gc_pen_neutral'] = frame['team'].map(lambda t: (xcs.get(t, {}) or {}).get('gc_pen_neutral'))
+    frame['next_fixture_count'] = frame['team'].map(counts).fillna(0)
+    frame['fixture_count'] = frame['next_fixture_count']
+    for c in ('att_fdr_5', 'def_fdr_5'):
+        frame[c] = 3.0
+    frame['att_env_5'] = 1.0
+    frame['cs_prob_5'] = 0.25
+    frame['fixture_count_8'] = 8
+    return frame
+
+
 def run_projection_backtest(histories, meta, fixtures_data, teams_df,
-                            gws, priors=None, recent_window=6, xg_ledger=None,
+                            gws, priors=None, recent_window=None, xg_ledger=None,
                             team_records=None):
     """
     Walk forward one gameweek at a time: rebuild the inputs, project, then
@@ -3999,54 +4129,9 @@ def run_projection_backtest(histories, meta, fixtures_data, teams_df,
         if frame.empty or len(frame) < 30:
             continue
 
-        hist_fx = _fixtures_as_of(fixtures_data, g)
-        rat = None
-        if team_records:
-            kicks = [_to_utc_naive(f.get('kickoff_time')) for f in fixtures_data
-                     if (f.get('event') or 0) == g]
-            kicks = [k for k in kicks if k is not None]
-            try:
-                rat = fit_team_ratings(team_records, list(teams_df['id']), before_round=g,
-                                       as_of=min(kicks) if kicks else None,
-                                       fdr_strength=fpl_fdr_strength(fixtures_data))
-            except Exception as e:
-                print(f"  backtest GW{g} ratings failed: {e}")
-        try:
-            xcs = calculate_expected_clean_sheets(hist_fx, teams_df, g - 1, num_gws=1,
-                                                  xg_ledger=xg_ledger, ratings=rat)
-            genv = calculate_goal_environment(hist_fx, teams_df, g - 1, num_gws=1,
-                                              xg_ledger=xg_ledger, ratings=rat)
-        except Exception as e:
-            print(f"  backtest GW{g} team models failed: {e}")
-            xcs, genv = {}, {}
-
-        tgt = [f for f in fixtures_data if (f.get('event') or 0) == g]
-        fdr_h = {f['team_h']: f.get('team_a_difficulty', 3) for f in tgt}
-        fdr_a = {f['team_a']: f.get('team_h_difficulty', 3) for f in tgt}
-        att_fdr = {**fdr_h, **fdr_a}
-        counts = Counter()
-        for f in tgt:
-            counts[f['team_h']] += 1
-            counts[f['team_a']] += 1
-
-        team_env = lambda t, k, d: (genv.get(t, {}) or {}).get(k, d)
-        frame['next_att_fdr'] = frame['team'].map(att_fdr).fillna(3.0)
-        frame['next_def_fdr'] = frame['next_att_fdr']
-        frame['att_env_next'] = frame['team'].map(lambda t: team_env(t, 'att_env_avg', 1.0)).fillna(1.0)
-        frame['fix_mult_next'] = frame['team'].map(lambda t: team_env(t, 'fix_mult_avg', 1.0)).fillna(1.0)
-        frame['cs_prob_next'] = frame['team'].map(
-            lambda t: ((xcs.get(t, {}) or {}).get('avg_cs_prob') or 0) / 100.0).replace(0, np.nan)
-        frame['cs_prob_neutral'] = frame['team'].map(
-            lambda t: (xcs.get(t, {}) or {}).get('cs_prob_neutral'))
-        frame['gc_pen_next'] = frame['team'].map(lambda t: (xcs.get(t, {}) or {}).get('gc_pen_avg'))
-        frame['gc_pen_neutral'] = frame['team'].map(lambda t: (xcs.get(t, {}) or {}).get('gc_pen_neutral'))
-        frame['next_fixture_count'] = frame['team'].map(counts).fillna(0)
-        frame['fixture_count'] = frame['next_fixture_count']
-        for c in ('att_fdr_5', 'def_fdr_5'):
-            frame[c] = 3.0
-        frame['att_env_5'] = 1.0
-        frame['cs_prob_5'] = 0.25
-        frame['fixture_count_8'] = 8
+        ctx = _backtest_fixture_context(g, fixtures_data, teams_df, xg_ledger, team_records)
+        _apply_fixture_context(frame, ctx)
+        xcs, tgt = ctx['xcs'], ctx['tgt']
 
         parts = {}
         try:
@@ -4182,7 +4267,7 @@ def _backtest_calibration(goal_pairs, cs_pairs):
 # converting the model from "plausible" to "measured".
 
 FEATURE_COLS = ['id', 'position', 'minutes', 'avail_pct', 'recent_minutes_pct',
-                'start_rate', 'p60_rate', 'xg_per_90', 'xa_per_90', 'cs_per_90', 'gc_per_90',
+                'start_rate', 'p60_rate', 'p_any_rate', 'xg_per_90', 'xa_per_90', 'cs_per_90', 'gc_per_90',
                 'bonus_threshold', 'defcon_per_90', 'hit_rate', 'qualifying_games',
                 'cs_prob_next', 'cs_prob_5',
                 'saves', 'bonus_per_90', 'next_att_fdr', 'next_def_fdr',
@@ -4212,6 +4297,144 @@ def log_model_features(df_active, target_gw, priors):
         conn.execute("INSERT OR REPLACE INTO priors_log VALUES (?,?)",
                      (int(target_gw), json.dumps(priors or {})))
     conn.close()
+
+
+SWEEP_BUDGET = float(os.environ.get('FPL_SWEEP_BUDGET', '70'))
+
+
+def _sweep_label(cfg):
+    m = ('Old (equal-weighted last 6)' if cfg['model'] == 'v1'
+         else f"New, half-life {cfg['half_life']:g}")
+    return m
+
+
+def run_backtest_sweep(histories, meta, fixtures_data, teams_df, gws, priors=None,
+                       xg_ledger=None, team_records=None, budget=None):
+    """
+    Parameter sweep on the walk-forward backtest — no stored logs needed,
+    so it works on Render's wiped-at-deploy disk.
+
+    Stage 1 compares minutes models (the original equal-weighted last-6
+    against the recency-weighted start/bench split at three half-lives) at
+    the live shrinkage. Stage 2 takes the best minutes model and tries
+    shrinkage strengths. Each setting is scored over every finished
+    gameweek: RMSE first (projections are averages, which squared error
+    rewards), then MAE, rank correlation, the captaincy test (actual points
+    of the top projection each week) and the average miss on minutes.
+
+    Fixture models are built once per gameweek and reused; only the player
+    frame is rebuilt per setting, because the minutes inputs change with it.
+    Mutates the module constants under try/finally — single-threaded use only.
+    Returns {'stage1', 'stage2', 'best', 'live', 'gws', 'players'} or None.
+    """
+    global SHRINK_K, MINUTES_MODEL, MINS_HALFLIFE, MINS_WINDOW
+    budget = SWEEP_BUDGET if budget is None else budget
+    t0 = time.time()
+
+    # Built once: fixture context and actual points/minutes per gameweek
+    prep = []
+    for g in gws:
+        ctx = _backtest_fixture_context(g, fixtures_data, teams_df, xg_ledger, team_records)
+        rows_g = {pid: [h for h in hist if (h.get('round') or 0) == g]
+                  for pid, hist in histories.items()}
+        act = {pid: sum(h.get('total_points') or 0 for h in rs) for pid, rs in rows_g.items()}
+        mins = {pid: sum(h.get('minutes') or 0 for h in rs) for pid, rs in rows_g.items()}
+        prep.append((g, ctx, act, mins))
+
+    saved = (SHRINK_K, MINUTES_MODEL, MINS_HALFLIFE, MINS_WINDOW)
+    live = {'model': MINUTES_MODEL, 'half_life': MINS_HALFLIFE,
+            'window': MINS_WINDOW, 'shrink_k': SHRINK_K}
+
+    def score(cfg):
+        global SHRINK_K, MINUTES_MODEL, MINS_HALFLIFE, MINS_WINDOW
+        SHRINK_K = float(cfg['shrink_k'])
+        MINUTES_MODEL = cfg['model']
+        MINS_HALFLIFE = float(cfg['half_life'] or 3)
+        MINS_WINDOW = int(cfg['window'])
+        sq = ab = mins_ab = 0.0
+        n = 0
+        spear_w, top20, cap = [], [], []
+        for g, ctx, act, mins in prep:
+            frame = reconstruct_player_frame(histories, meta, g,
+                                             cfg['window'] if cfg['model'] == 'v1' else None)
+            if frame.empty or len(frame) < 30:
+                continue
+            _apply_fixture_context(frame, ctx)
+            try:
+                exp_mins, proj = compute_expected_points(
+                    frame, gw_elapsed=max(g - 1, 1), priors=priors or {})[:2]
+            except Exception as e:
+                print(f"  sweep GW{g} failed: {e}")
+                continue
+            frame = frame.assign(proj=pd.Series(proj).values,
+                                 exp_mins=pd.Series(exp_mins).values)
+            frame['actual'] = frame['id'].map(act)
+            frame['mins_act'] = frame['id'].map(mins).fillna(0)
+            frame = frame[(frame['next_fixture_count'] > 0) & frame['actual'].notna()]
+            if len(frame) < 30:
+                continue
+            err = frame['proj'] - frame['actual']
+            sq += float((err ** 2).sum())
+            ab += float(err.abs().sum())
+            mins_ab += float((frame['exp_mins'] * frame['next_fixture_count']
+                              - frame['mins_act']).abs().sum())
+            n += len(frame)
+            sp = frame[['proj', 'actual']].corr(method='spearman').iloc[0, 1]
+            if pd.notna(sp):
+                spear_w.append((float(sp), len(frame)))
+            top20.append(len(set(frame.nlargest(20, 'proj')['id'])
+                             & set(frame.nlargest(20, 'actual')['id'])))
+            cap.append(float(frame.loc[frame['proj'].idxmax(), 'actual']))
+        if not n:
+            return None
+        return {**cfg, 'label': _sweep_label(cfg),
+                'rmse': round(float(np.sqrt(sq / n)), 4),
+                'mae': round(ab / n, 4),
+                'spearman': round(sum(v * w for v, w in spear_w) / max(sum(w for _, w in spear_w), 1), 3),
+                'top20': round(float(np.mean(top20)), 1) if top20 else None,
+                'captain': round(float(np.mean(cap)), 2) if cap else None,
+                'mins_miss': round(mins_ab / n, 1),
+                'n': n}
+
+    stage1, stage2 = [], []
+    try:
+        k_live = live['shrink_k']
+        minutes_cfgs = [{'model': 'v1', 'half_life': None, 'window': 6, 'shrink_k': k_live}] + \
+                       [{'model': 'v2', 'half_life': hl, 'window': 8, 'shrink_k': k_live}
+                        for hl in (2, 3, 5)]
+        for cfg in minutes_cfgs:
+            if time.time() - t0 > budget:
+                break
+            r = score(cfg)
+            if r:
+                stage1.append(r)
+        if stage1:
+            best_m = min(stage1, key=lambda r: r['rmse'])
+            for k in (200, 300, 450, 700, 1000):
+                if time.time() - t0 > budget:
+                    break
+                if float(k) == float(k_live):
+                    stage2.append(best_m)
+                    continue
+                r = score({'model': best_m['model'], 'half_life': best_m['half_life'],
+                           'window': best_m['window'], 'shrink_k': k})
+                if r:
+                    stage2.append(r)
+    finally:
+        SHRINK_K, MINUTES_MODEL, MINS_HALFLIFE, MINS_WINDOW = saved
+
+    if not stage1:
+        return None
+    pool = stage1 + stage2
+    best = min(pool, key=lambda r: r['rmse'])
+    live_row = next((r for r in stage1
+                     if r['model'] == live['model']
+                     and (r['model'] == 'v1' or float(r['half_life']) == float(live['half_life']))),
+                    None)
+    print(f"[sweep] {len(pool)} settings scored in {time.time() - t0:.0f}s")
+    return {'stage1': stage1, 'stage2': sorted(stage2, key=lambda r: r['shrink_k']),
+            'best': best, 'live': live, 'live_row': live_row,
+            'gws': len(gws), 'players': len(histories)}
 
 
 def _load_replay_frames():
@@ -5713,7 +5936,7 @@ def refresh_core_data():
 
         # Initialise home/away + Phase-2 columns as NaN (Phase 2 will populate)
         for col in ['home_ppg', 'away_ppg', 'home_games', 'away_games', 'venue_ppg', 'ha_diff',
-                    'start_rate', 'p60_rate', 'recent_minutes_pct', 'top_eo']:
+                    'start_rate', 'p60_rate', 'p_any_rate', 'recent_minutes_pct', 'top_eo']:
             df_active[col] = np.nan
 
         # Captain score (partial — venue_ppg/start_rate neutral until Phase 2)
@@ -5953,6 +6176,7 @@ def refresh_heavy_data():
         _ms_all = {pid: v['minutes_sec'] for pid, v in consistency_data.items() if v.get('minutes_sec')}
         df_active['start_rate'] = df_active['id'].map(lambda x: _ms_all.get(x, {}).get('start_rate'))
         df_active['p60_rate'] = df_active['id'].map(lambda x: _ms_all.get(x, {}).get('p60_rate'))
+        df_active['p_any_rate'] = df_active['id'].map(lambda x: _ms_all.get(x, {}).get('p_any_rate'))
         df_active['recent_minutes_pct'] = df_active['id'].map(
             lambda x: _ms_all.get(x, {}).get('recent_minutes_pct'))
 
@@ -6035,7 +6259,7 @@ def refresh_heavy_data():
         df_active['ha_diff'] = df_active['home_ppg'] - df_active['away_ppg']
 
         # Minutes security from the same histories — no extra API calls
-        print("Computing minutes security (last 6 matches)...")
+        print(f"Computing minutes security (model {MINUTES_MODEL})...")
         minutes_sec = calculate_minutes_security(player_histories)
         # Same numbers as the DEFCON pass for these players; keep that
         # pass's values for everyone else
@@ -6045,6 +6269,8 @@ def refresh_heavy_data():
         for _pid, _sec in minutes_sec.items():
             _p60[_pid] = _sec.get('p60_rate')
         df_active['p60_rate'] = df_active['id'].map(_p60).fillna(df_active['p60_rate'])
+        df_active['p_any_rate'] = df_active['id'].map(
+            lambda x: minutes_sec.get(x, {}).get('p_any_rate')).fillna(df_active['p_any_rate'])
         df_active['recent_minutes_pct'] = df_active['id'].map(
             lambda x: minutes_sec.get(x, {}).get('recent_minutes_pct')).fillna(df_active['recent_minutes_pct'])
 
@@ -9087,10 +9313,12 @@ app.layout = html.Div([
 
                     html.Div([
                         html.H4("Parameter Sweep", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-                        html.P("Tests how many minutes of a player's own data it should take to outweigh "
-                               "his starting estimate, replaying every scoreable gameweek "
-                               "and ranking by RMSE. Needs at least one completed GW with logged features; "
-                               "results sharpen as gameweeks accumulate — re-run every few weeks.",
+                        html.P("Replays every finished gameweek through the backtest under different "
+                               "settings and reports which would have projected best: first the minutes "
+                               "model (old equal-weighted vs new recency-weighted), then shrinkage "
+                               "strength. Uses the same match histories as the backtest, so it works "
+                               "without stored logs. Takes up to a couple of minutes; re-run every few "
+                               "weeks as gameweeks accumulate.",
                                style={'color': COLORS['text_light'], 'marginBottom': '12px'}),
                         html.Button("Run Parameter Sweep", id='lab-sweep-btn', n_clicks=0,
                                     style={'backgroundColor': COLORS['primary'], 'color': 'white',
@@ -11697,25 +11925,22 @@ def render_backtest(n_clicks):
         ]), []
 
 
-def _render_backtest_inner():
-    """Returns (children, player_rows) — player_rows is the raw, unfiltered
-    per-player-per-GW list that feeds lab-player-rows-store, so the Diff/Mins
-    filter controls can re-slice it without re-running the backtest."""
-    data = get_data()
-    dfa, boot = data.get('df_active'), data.get('bootstrap_data')
-    fixtures, teams_df = data.get('fixtures_data'), data.get('teams_df')
-    if dfa is None or dfa.empty or not fixtures or teams_df is None:
-        return html.P("Data not loaded yet.", style={'color': COLORS['text_light']}), []
-
+def _gather_backtest_inputs(data, dfa, fixtures):
+    """
+    Player histories, metadata, gameweeks and priors for the walk-forward
+    backtest and the parameter sweep. Fetches missing histories within a
+    time budget (Render kills long requests) and caches them, so a second
+    press picks up where the first left off. Returns a dict, or a message
+    string when there isn't enough to work with yet.
+    """
     finished_gws = sorted({f['event'] for f in fixtures
                            if f.get('event') and (f.get('finished') or
                                                   f.get('finished_provisional'))})
     # GW1 has no prior history to reconstruct from, so scoring starts at GW2
     gws = [g for g in finished_gws if g >= 2]
     if not gws:
-        return html.P("No completed gameweeks with a prior gameweek to learn from yet. "
-                      "The backtest becomes available from GW2.",
-                      style={'color': COLORS['text_light']}), []
+        return ("No completed gameweeks with a prior gameweek to learn from yet. "
+                "The backtest becomes available from GW2.")
 
 
     # Fetch budget. Render kills long-running HTTP requests, and fetching
@@ -11750,9 +11975,8 @@ def _render_backtest_inner():
 
     usable = {k: v for k, v in cached.items() if k in set(wanted)}
     if len(usable) < 30:
-        return html.P(f"Only {len(usable)} player histories available. Press Run "
-                      f"Backtest again — each press fetches another batch and keeps "
-                      f"what it already has.", style={'color': COLORS['text_light']}), []
+        return (f"Only {len(usable)} player histories available. Press the button "
+                f"again — each press fetches another batch and keeps what it already has.")
     print(f"[backtest] scoring {len(usable)} players over GWs {gws}")
 
     # Start-of-season price (today's minus this season's change), so the
@@ -11764,6 +11988,25 @@ def _render_backtest_inner():
                         'price': float(p) if pd.notna(p) else None}
             for r, p in zip(dfa.itertuples(), _start_price)}
     priors = data.get('last_season_priors', {})
+    return {'histories': usable, 'meta': meta, 'gws': gws, 'priors': priors,
+            't_start': t_start}
+
+
+def _render_backtest_inner():
+    """Returns (children, player_rows) — player_rows is the raw, unfiltered
+    per-player-per-GW list that feeds lab-player-rows-store, so the Diff/Mins
+    filter controls can re-slice it without re-running the backtest."""
+    data = get_data()
+    dfa, boot = data.get('df_active'), data.get('bootstrap_data')
+    fixtures, teams_df = data.get('fixtures_data'), data.get('teams_df')
+    if dfa is None or dfa.empty or not fixtures or teams_df is None:
+        return html.P("Data not loaded yet.", style={'color': COLORS['text_light']}), []
+
+    inp = _gather_backtest_inputs(data, dfa, fixtures)
+    if isinstance(inp, str):
+        return html.P(inp, style={'color': COLORS['text_light']}), []
+    usable, meta, gws, priors, t_start = (inp['histories'], inp['meta'], inp['gws'],
+                                          inp['priors'], inp['t_start'])
 
     rows, player_rows, calib = run_projection_backtest(usable, meta, fixtures, teams_df,
                                                        gws, priors=priors,
@@ -12116,55 +12359,125 @@ def render_lab_calibration(page):
     prevent_initial_call=True
 )
 def run_lab_sweep(n_clicks):
-    sweep = run_parameter_sweep()
-    if not sweep or not sweep['results']:
-        return html.P("Not enough logged data yet — needs at least one finished gameweek "
-                      "with stored features.",
-                      style={'color': COLORS['text_light'], 'marginTop': '12px'})
-    best = sweep['results'][0]
-    live = sweep['live']
-    cur = sweep['current']
-    rows = [{'shrink_k': r['shrink_k'], 'rmse': r['rmse'], 'mae': r['mae'],
-             'tag': ('BEST' if r is best else '') +
-                    (' LIVE' if r['shrink_k'] == live['shrink_k'] else '')}
-            for r in sweep['results']]
-    advice = []
-    if cur and best['rmse'] < cur['rmse'] - 0.005:
-        advice.append(html.P([
+    try:
+        return _run_lab_sweep_inner()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return html.P(f"Sweep failed: {type(e).__name__}: {e}",
+                      style={'color': COLORS['danger_text'], 'marginTop': '12px'})
+
+
+def _run_lab_sweep_inner():
+    muted = {'color': COLORS['text_light'], 'marginTop': '12px'}
+    data = get_data()
+    dfa, fixtures, teams_df = data.get('df_active'), data.get('fixtures_data'), data.get('teams_df')
+    if dfa is None or dfa.empty or not fixtures or teams_df is None:
+        return html.P("Data not loaded yet.", style=muted)
+    inp = _gather_backtest_inputs(data, dfa, fixtures)
+    if isinstance(inp, str):
+        return html.P(inp, style=muted)
+    # gunicorn kills a request at 120s: whatever the fetch used comes off
+    # the sweep's own budget
+    remaining = max(20.0, min(SWEEP_BUDGET, 100.0 - (time.time() - inp['t_start'])))
+    sw = run_backtest_sweep(inp['histories'], inp['meta'], fixtures, teams_df, inp['gws'],
+                            priors=inp['priors'], xg_ledger=data.get('xg_ledger'),
+                            team_records=data.get('team_match_records'), budget=remaining)
+    if not sw:
+        return html.P("Not enough reconstructable history yet.", style=muted)
+
+    best, live, live_row = sw['best'], sw['live'], sw['live_row']
+    old = next((r for r in sw['stage1'] if r['model'] == 'v1'), None)
+    num = lambda i, n, f: {'name': n, 'id': i, 'type': 'numeric', 'format': {'specifier': f}}
+    cols = [num('rmse', 'RMSE', '.3f'), num('mae', 'Avg miss', '.3f'),
+            num('spearman', 'Ranking', '.3f'), num('captain', 'Captain pts', '.2f'),
+            num('mins_miss', 'Minutes miss', '.1f')]
+    best_cond = [{'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
+                 {'if': {'filter_query': '{tag} contains "Best"'},
+                  'backgroundColor': '#e6fff2', 'fontWeight': '600'}]
+
+    def is_live(r):
+        return (r['model'] == live['model'] and float(r['shrink_k']) == float(live['shrink_k'])
+                and (r['model'] == 'v1' or float(r['half_life']) == float(live['half_life'])))
+
+    def tag(r):
+        t = []
+        if r is best:
+            t.append('Best')
+        if is_live(r):
+            t.append('Live')
+        return ' / '.join(t)
+
+    s1 = [{**r, 'tag': tag(r)} for r in sw['stage1']]
+    s2 = [{**r, 'tag': tag(r)} for r in sw['stage2']]
+
+    out = []
+    # Headline: did the new minutes model help?
+    new_rows = [r for r in sw['stage1'] if r['model'] == 'v2']
+    if old and new_rows:
+        nb = min(new_rows, key=lambda r: r['rmse'])
+        better = nb['rmse'] < old['rmse']
+        out.append(html.P([
+            html.Strong("New minutes model: "),
+            (f"RMSE {nb['rmse']:.3f} vs {old['rmse']:.3f} for the old one "
+             f"({'better' if better else 'worse'} by {abs(old['rmse'] - nb['rmse']):.3f}). "
+             f"Minutes miss {nb['mins_miss']:.1f} vs {old['mins_miss']:.1f} per player; "
+             f"captain pick averaged {nb['captain']:.2f} vs {old['captain']:.2f} pts.")],
+            style={'color': COLORS['text_dark'], 'marginTop': '12px'}))
+
+    out += [
+        html.H5("Minutes model", style={'color': COLORS['primary'], 'margin': '16px 0 6px 0'}),
+        dash_table.DataTable(data=s1, columns=[{'name': 'Setting', 'id': 'label'}] + cols +
+                             [{'name': '', 'id': 'tag'}],
+                             style_table={'overflowX': 'auto'},
+                             style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
+                             style_data=TABLE_STYLE_DATA, style_data_conditional=best_cond),
+    ]
+    if s2:
+        out += [
+            html.H5("Shrinkage strength (with the best minutes model)",
+                    style={'color': COLORS['primary'], 'margin': '16px 0 6px 0'}),
+            html.P("How many minutes of this season's evidence it takes before a player's own "
+                   "numbers outweigh his starting estimate. Lower trusts this season sooner.",
+                   style={'color': COLORS['text_light'], 'fontSize': '14px'}),
+            dash_table.DataTable(data=s2, columns=[num('shrink_k', 'Shrinkage (mins)', '.0f')] + cols +
+                                 [{'name': '', 'id': 'tag'}],
+                                 style_table={'overflowX': 'auto'},
+                                 style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
+                                 style_data=TABLE_STYLE_DATA, style_data_conditional=best_cond),
+        ]
+
+    cur_rmse = live_row['rmse'] if live_row else None
+    if cur_rmse is not None and best['rmse'] < cur_rmse - 0.005:
+        env = []
+        if best['model'] != live['model']:
+            env.append(f"FPL_MINUTES_MODEL={best['model']}")
+        if best['model'] == 'v2' and (live['model'] != 'v2'
+                                      or float(best['half_life']) != float(live['half_life'])):
+            env.append(f"FPL_MINS_HALFLIFE={best['half_life']:g}")
+        if float(best['shrink_k']) != float(live['shrink_k']):
+            env.append(f"FPL_SHRINK_K={best['shrink_k']:g}")
+        out.append(html.P([
             html.Strong("Suggested change: "),
-            f"shrinkage k {best['shrink_k']} would have cut RMSE "
-            f"from {cur['rmse']:.4f} to {best['rmse']:.4f} over {sweep['gws']} GW(s). Apply by "
-            f"setting the env var FPL_SHRINK_K={best['shrink_k']} on Render, then redeploy."],
+            f"the best setting would have cut RMSE from {cur_rmse:.3f} to {best['rmse']:.3f}. "
+            f"To apply it, add these in Render under Environment: {', '.join(env)}. "
+            f"Render redeploys automatically when you save."],
             style={'color': COLORS['text_dark'], 'marginTop': '12px',
                    'backgroundColor': '#f0e6f5', 'padding': '10px', 'borderRadius': '6px'}))
     else:
-        advice.append(html.P("Your live constants are already at (or within noise of) the "
-                             "best tested combination — no change recommended.",
-                             style={'color': COLORS['success_text'], 'fontWeight': '600',
-                                    'marginTop': '12px'}))
-    if sweep['gws'] < 4:
-        advice.append(html.P(f"Caution: only {sweep['gws']} gameweek(s) scored — treat this as "
-                             f"directional until ~6 GWs are in. Early-season parameter fitting "
-                             f"can chase noise.",
-                             style={'color': COLORS['warning_text'], 'fontSize': '13px'}))
-    return html.Div([
-        dash_table.DataTable(
-            data=rows,
-            columns=[
-                {'name': 'Shrink k (minutes)', 'id': 'shrink_k', 'type': 'numeric'},
-                {'name': 'RMSE', 'id': 'rmse', 'type': 'numeric'},
-                {'name': 'MAE', 'id': 'mae', 'type': 'numeric'},
-                {'name': '', 'id': 'tag'},
-            ],
-            style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
-            style_data=TABLE_STYLE_DATA,
-            style_data_conditional=[
-                {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
-                {'if': {'filter_query': '{tag} contains "BEST"'},
-                 'backgroundColor': '#e6fff2', 'fontWeight': '600'},
-            ]),
-        *advice
-    ])
+        out.append(html.P("Your live settings are already the best tested, or within noise of "
+                          "it. No change recommended.",
+                          style={'color': COLORS['success_text'], 'fontWeight': '600',
+                                 'marginTop': '12px'}))
+    if sw['gws'] < 6:
+        out.append(html.P(f"Caution: only {sw['gws']} gameweek(s) scored. Treat this as "
+                          f"directional until 6+ are in; early-season tuning can chase noise.",
+                          style={'color': COLORS['warning_text'], 'fontSize': '13px'}))
+    out.append(html.P(f"Scored over {sw['gws']} gameweek(s) and {sw['players']} players. "
+                      f"Captain pts = actual points of the top projection each week (before "
+                      f"doubling). Minutes miss = average gap between expected and actual minutes.",
+                      style={'color': COLORS['text_light'], 'fontSize': '13px'}))
+    return html.Div(out)
 
 
 # --- DEADLINE DASHBOARD ---
