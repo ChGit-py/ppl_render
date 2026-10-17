@@ -10445,7 +10445,16 @@ def update_home_tab(n):
 
 # RANK CONGESTION TOOL
 OVERALL_PAGE_SIZE = 50                  # managers per overall-standings page
-RANK_LADDER_STEPS = (0.02, 0.05, 0.10, 0.20)   # distances above/below you, as a share of your rank
+# Distances above/below you on the Rank Tracker: the four largest of these
+# that fit above your rank (capped at 500k), so ~1M shows 50k/100k/250k/500k
+# and 150k shows 10k/25k/50k/100k.
+RANK_LADDER = (1, 2, 5, 10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000, 25_000,
+               50_000, 100_000, 250_000, 500_000)
+
+
+def rank_ladder_steps(rank, n=4):
+    fit = [d for d in RANK_LADDER if d < rank]
+    return fit[-n:] if len(fit) >= n else list(RANK_LADDER[:n])
 
 
 def fetch_overall_position(position):
@@ -10469,13 +10478,6 @@ def fetch_overall_position(position):
     return best.get('total'), best.get('entry_name')
 
 
-def _round_step(x):
-    """A distance in places, rounded to two significant figures (min 1)."""
-    x = max(float(x), 1.0)
-    mag = 10 ** max(int(np.floor(np.log10(x))) - 1, 0)
-    return int(round(x / mag) * mag)
-
-
 @callback(
     Output('rank-result', 'children'),
     Input('rank-check-btn', 'n_clicks'),
@@ -10494,7 +10496,7 @@ def check_rank_gap(n_clicks, your_rank, dream_rank):
         return html.P(f"Ranks go up to {total:,} this season.", style={'color': COLORS['danger_text']})
 
     # Positions to read: you, the ladder around you, and the dream rank
-    steps = sorted({_round_step(your_rank * f) for f in RANK_LADDER_STEPS})
+    steps = rank_ladder_steps(your_rank)
     above = [your_rank - d for d in reversed(steps) if your_rank - d >= 1]
     below = [your_rank + d for d in steps if not total or your_rank + d <= total]
     wanted = sorted(set(above + [your_rank] + below + ([dream_rank] if dream_rank else [])))
