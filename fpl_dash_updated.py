@@ -8791,11 +8791,14 @@ app.layout = html.Div([
                                            style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 html.Div([
                                     html.Div(
-                                        dcc.Slider(id='diff-max-own', min=5, max=100, step=1, value=15,
-                                                   marks={i: f'{i}%' for i in [5, 25, 50, 75, 100]}),
+                                        dcc.Slider(id='diff-max-own', min=0, max=100, step=0.5, value=15,
+                                                   marks={i: f'{i}%' for i in [0, 25, 50, 75, 100]}),
                                         style={'flex': '1'}
                                     ),
-                                    dcc.Input(id='diff-max-own-input', type='number', value=15, min=5, max=100, step=1,
+                                    # debounce: only applied on Enter / leaving the box, so
+                                    # the number isn't rewritten while you're typing it
+                                    dcc.Input(id='diff-max-own-input', type='number', value=15,
+                                              step='any', debounce=True, inputMode='decimal',
                                               style={'width': '70px', 'marginLeft': '12px', 'padding': '8px',
                                                      'borderRadius': '4px', 'border': '1px solid #ccc'})
                                 ], style={'display': 'flex', 'alignItems': 'center'})
@@ -11287,10 +11290,16 @@ def update_differentials(position, team, max_price, max_own, min_minutes, horizo
 )
 def sync_max_own(slider_val, input_val):
     """Keep the ownership slider and number box in step (one callback, so
-    Dash doesn't see two callbacks feeding each other in a loop)."""
-    val = input_val if ctx.triggered_id == 'diff-max-own-input' else slider_val
-    val = 15 if val is None else max(5, min(100, val))
-    return val, val
+    Dash doesn't see two callbacks feeding each other in a loop). Any value
+    from 0 to 100 can be typed; an empty box is left alone."""
+    if ctx.triggered_id == 'diff-max-own-input':
+        if input_val is None:
+            raise PreventUpdate
+        val = max(0.0, min(100.0, float(input_val)))
+        return val, (val if val != input_val else dash.no_update)
+    if slider_val is None:
+        raise PreventUpdate
+    return dash.no_update, slider_val
 
 
 # --- FIXTURE SWING DETECTOR ---
