@@ -404,7 +404,7 @@ def apply_deadline_deltas(df_active, deadline_owners, bootstrap_data, total_mana
     return f"the GW{gw} deadline{when}"
 
 
-def calculate_bonus_consistency(player_ids, player_thresholds, min_minutes=1):
+def calculate_bonus_consistency(player_ids, player_thresholds, min_minutes=1, keep_history=()):
     """
     Defensive-contribution hit rate: how often a player actually banks the
     2 DEFCON points (10+ for DEF, 12+ for MID/FWD in a single match).
@@ -428,6 +428,7 @@ def calculate_bonus_consistency(player_ids, player_thresholds, min_minutes=1):
     """
     results = {}
     priors = {}
+    keep_history = set(keep_history or ())   # histories returned under '_history'
 
     def process_player(player_id):
         summary = fetch_player_summary(player_id)
@@ -446,7 +447,10 @@ def calculate_bonus_consistency(player_ids, player_thresholds, min_minutes=1):
         qualifying_games = [g for g in history if (g.get('minutes') or 0) >= min_minutes]
 
         if not qualifying_games:
-            return player_id, {'minutes_sec': mins_sec, 'round_owners': round_owners}, prior
+            out = {'minutes_sec': mins_sec, 'round_owners': round_owners}
+            if player_id in keep_history:
+                out['_history'] = history
+            return player_id, out, prior
 
         # Count games hitting bonus threshold (position-aware)
         threshold = player_thresholds.get(player_id, 10)
@@ -481,6 +485,8 @@ def calculate_bonus_consistency(player_ids, player_thresholds, min_minutes=1):
             'minutes_sec': mins_sec,
             'round_owners': round_owners,
         }
+        if player_id in keep_history:
+            stats['_history'] = history
         return player_id, stats, prior
 
     # Use threading for faster fetching (capped at 8 to limit memory on free tier)
@@ -6148,8 +6154,17 @@ def refresh_heavy_data():
             df_active.loc[df_active['id'].isin(consistency_players), 'id'],
             df_active.loc[df_active['id'].isin(consistency_players), 'position'].map(SEASON['thresholds'])
         ))
+        # The captain / home-away analysis below needs full histories for the
+        # top 100 outfielders by form. They're all in this pass, so keep
+        # theirs instead of downloading them a second time.
+        captain_candidates = df_active[
+            (df_active['minutes'] >= _mins_hi) &
+            (df_active['position'].isin(SEASON['outfield_positions']))
+            ].nlargest(100, 'form')['id'].tolist()
         consistency_data, season_priors = calculate_bonus_consistency(
-            consistency_players, consistency_thresholds)
+            consistency_players, consistency_thresholds, keep_history=captain_candidates)
+        _kept_histories = {pid: v.pop('_history') for pid, v in consistency_data.items()
+                           if v.get('_history')}
         print(f"  Retrieved data for {len(consistency_data)} players "
               f"(+ last-season priors for {len(season_priors)})")
         with DATA_LOCK:
@@ -6219,14 +6234,17 @@ def refresh_heavy_data():
         gc.collect()
 
         # Home/Away splits
-        print("Fetching player histories for captain & home/away analysis...")
-        captain_candidates = df_active[
-            (df_active['minutes'] >= _mins_hi) &
-            (df_active['position'].isin(SEASON['outfield_positions']))
-            ].nlargest(100, 'form')['id'].tolist()
-
-        print(f"  Fetching match history for {len(captain_candidates)} captain candidates...")
-        player_histories = fetch_player_history_batch(captain_candidates)
+        print("Player histories for captain & home/away analysis...")
+        player_histories = {pid: _kept_histories[pid] for pid in captain_candidates
+                            if pid in _kept_histories}
+        # Only download what the pass above didn't get (a failed fetch, or a
+        # season where these positions don't all earn DefCon points)
+        _missing_hist = [pid for pid in captain_candidates if pid not in player_histories]
+        if _missing_hist:
+            player_histories.update(fetch_player_history_batch(_missing_hist))
+        del _kept_histories
+        print(f"  {len(captain_candidates) - len(_missing_hist)} reused from the pass above, "
+              f"{len(_missing_hist)} downloaded")
 
         # Schedule-adjusted 'true form' from the same histories
         with DATA_LOCK:
@@ -6363,8 +6381,34 @@ def refresh_all_data():
     refresh_heavy_data()
 
 
+# The data refreshes on a background timer, so it's usually fresh before
+# anyone opens the app (it used to wait for a visit to find it stale). The
+# timer is started per process, on import and again on the first request,
+# so it also runs under servers that fork worker processes after import.
+REFRESH_CHECK_SECONDS = int(os.environ.get('FPL_REFRESH_CHECK_SECONDS', '300'))
+_REFRESH_TIMER_PID = None
+
+
+def _refresh_timer_loop():
+    while True:
+        time.sleep(REFRESH_CHECK_SECONDS)
+        try:
+            check_and_refresh()
+        except Exception as e:
+            print(f"  Background refresh check failed (non-fatal): {e}")
+
+
+def ensure_refresh_timer():
+    global _REFRESH_TIMER_PID
+    if _REFRESH_TIMER_PID == os.getpid():
+        return
+    _REFRESH_TIMER_PID = os.getpid()
+    threading.Thread(target=_refresh_timer_loop, daemon=True, name='refresh-timer').start()
+
+
 def check_and_refresh():
     """Check if data is stale and refresh in background if needed."""
+    ensure_refresh_timer()
     check_shots_sync()   # independent cadence; no-op unless due
     if (DATA.get('df_active') is not None and not DATA.get('price_tracker_running')
             and not DATA.get('refreshing') and time.time() >= DATA.get('price_tracker_next', 0)):
@@ -6387,11 +6431,12 @@ def get_data():
 # --- Initial data load ---
 # Try cache first for instant startup. If no cache, load EVERYTHING
 # synchronously so every tab has data before the server accepts requests.
-# Background thread only handles the periodic 3-hour refresh cycle.
+# The refresh timer then keeps it to the 3-hour cycle.
 cache_hit = load_cache()
 if not cache_hit:
     print("  No cache — running full synchronous data load...")
     refresh_all_data()  # Phase 1 + Phase 2, blocks until complete
+ensure_refresh_timer()   # from here on, refreshes every 3 hours on its own
 
 # Convenience references for layout building (used once at startup)
 df = DATA['df']
