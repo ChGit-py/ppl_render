@@ -5186,9 +5186,24 @@ COLORS = {
     'info_text': '#00717f',
 }
 import plotly.io as pio
+# One chart look everywhere: transparent background (the card shows through),
+# hairline grid, muted axis text and a white hover label. Figures name
+# 'plotly_white', so the house style is applied to that template.
 _tpl = pio.templates['plotly_white']
-_tpl.layout.font = dict(family="Outfit, Arial, sans-serif", color='#37003c')
+_tpl.layout.font = dict(family="Outfit, Arial, sans-serif", color='#37003c', size=13)
+_tpl.layout.colorway = ['#37003c', '#00c46a', '#e90052', '#00a5b5', '#ffab1b', '#8e44ad', '#6b7c93']
+_tpl.layout.paper_bgcolor = 'rgba(0,0,0,0)'
+_tpl.layout.plot_bgcolor = 'rgba(0,0,0,0)'
+for _ax in ('xaxis', 'yaxis'):
+    _tpl.layout[_ax].update(gridcolor='#efe9f2', linecolor='#e2dae6', zerolinecolor='#e2dae6',
+                            tickfont=dict(color='#6b5c70', size=12),
+                            title=dict(font=dict(color='#6b5c70', size=13)))
+_tpl.layout.hoverlabel = dict(bgcolor='#ffffff', bordercolor='#e2dae6',
+                              font=dict(family="Outfit, Arial, sans-serif", color='#37003c', size=13))
+_tpl.layout.legend = dict(font=dict(size=12, color='#6b5c70'))
+_tpl.layout.title = dict(font=dict(size=16, color='#37003c'))
 pio.templates['plotly_white'] = _tpl
+pio.templates.default = 'plotly_white'
 
 # FPL's typeface, Premier Sans, is a bespoke licensed font that can't be
 # served from here; Outfit is the closest free geometric match.
@@ -5196,43 +5211,43 @@ FONT_FAMILY = "Outfit, Arial, sans-serif"
 
 CARD_STYLE = {
     'backgroundColor': COLORS['card_bg'],
-    'borderRadius': '12px',
+    'borderRadius': '16px',
     'padding': '24px',
     'marginBottom': '20px',
-    'boxShadow': '0 2px 8px rgba(0,0,0,0.08)',
-    'border': '1px solid #e0e0e0'
+    'boxShadow': '0 1px 2px rgba(55,0,60,0.04), 0 4px 16px rgba(55,0,60,0.04)',
+    'border': '1px solid #ece6ef'
 }
 
 STAT_CARD_STYLE = {
     'backgroundColor': COLORS['card_bg'],
-    'borderRadius': '12px',
+    'borderRadius': '16px',
     'padding': '20px',
     'textAlign': 'center',
-    'boxShadow': '0 2px 8px rgba(0,0,0,0.08)',
-    'border': '1px solid #e0e0e0',
+    'boxShadow': '0 1px 2px rgba(55,0,60,0.04), 0 4px 16px rgba(55,0,60,0.04)',
+    'border': '1px solid #ece6ef',
     'minHeight': '140px'
 }
 
 TABLE_STYLE_CELL = {
     'textAlign': 'left',
-    'padding': '12px 16px',
+    'padding': '11px 14px',
     'fontFamily': FONT_FAMILY,
     'fontSize': '14px',
+    'color': COLORS['text_dark'],
 }
 
 TABLE_STYLE_HEADER = {
-    'backgroundColor': COLORS['primary'],
-    'color': 'white',
-    'fontWeight': '600',
+    'backgroundColor': '#f8f5fa',
+    'color': COLORS['text_light'],
+    'fontWeight': '700',
     'textTransform': 'uppercase',
-    'fontSize': '12px',
-    'letterSpacing': '0.5px',
-    'padding': '14px 16px'
+    'fontSize': '11.5px',
+    'letterSpacing': '0.06em',
+    'padding': '12px 14px'
 }
 
 TABLE_STYLE_DATA = {
     'backgroundColor': 'white',
-    'borderBottom': '1px solid #e0e0e0'
 }
 
 # =============================================================================
@@ -6716,7 +6731,7 @@ chip_name_map = {
 # =============================================================================
 
 app = Dash(__name__, meta_tags=[
-    {"name": "viewport", "content": "width=device-width, initial-scale=1.0, maximum-scale=1.0"}
+    {"name": "viewport", "content": "width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover"}
 ])
 server = app.server
 
@@ -6742,137 +6757,88 @@ app.index_string = '''
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
         <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
         <style>
-            body { font-family: 'Outfit', Arial, sans-serif; color: #37003c; }
-            button, input, select, textarea { font-family: inherit; }
             /* ================================================================
-               BASE — all screen sizes
+               DESIGN TOKENS
             ================================================================ */
+            :root {
+                --brand: #37003c;
+                --green: #00ff87;
+                --green-ink: #00813f;
+                --cyan: #04f5ff;
+                --accent: #e90052;
+                --bg: #f5f3f7;
+                --surface: #ffffff;
+                --surface-2: #faf8fb;
+                --border: #ece6ef;
+                --border-strong: #d8cfdd;
+                --text: #37003c;
+                --muted: #6b5c70;
+                --focus: 0 0 0 3px rgba(55, 0, 60, 0.14);
+                --shadow: 0 1px 2px rgba(55, 0, 60, 0.04), 0 4px 16px rgba(55, 0, 60, 0.04);
+                --shadow-lg: 0 12px 32px rgba(55, 0, 60, 0.14);
+                --hdr-h: 64px;
+                --rail-w: 92px;
+                --tabbar-h: 62px;
+                --ico-home: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M3 10.5 12 3l9 7.5'/><path d='M5 9v11a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V9'/></svg>");
+                --ico-team: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M9 3 4 5.5 2 10l3.5 1.5V21h13v-9.5L22 10l-2-4.5L15 3c0 1.7-1.3 3-3 3S9 4.7 9 3z'/></svg>");
+                --ico-players: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='9' cy='8' r='3.5'/><path d='M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6'/><path d='M16 4.6a3.5 3.5 0 0 1 0 6.8'/><path d='M18 14.3c2 .8 3.5 2.8 3.5 5.7'/></svg>");
+                --ico-fixtures: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='3' y='4.5' width='18' height='16.5' rx='2.5'/><path d='M3 9.5h18M8 2.5v4M16 2.5v4'/></svg>");
+                --ico-stats: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M3 21h18'/><rect x='5' y='11' width='3' height='7' rx='1'/><rect x='10.5' y='5' width='3' height='13' rx='1'/><rect x='16' y='14' width='3' height='4' rx='1'/></svg>");
+            }
 
             * { box-sizing: border-box; }
-
-            /* Horizontal scroll for tables */
-            .dash-spreadsheet-container {
-                overflow-x: auto !important;
-                -webkit-overflow-scrolling: touch;
+            html, body { margin: 0; background: var(--bg); }
+            body {
+                font-family: 'Outfit', Arial, sans-serif; color: var(--text);
+                -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
             }
+            button, input, select, textarea { font-family: inherit; }
+            ::selection { background: rgba(0, 255, 135, 0.35); }
+            button, .sec-btn, .tab { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
 
             /* ================================================================
-               SIDEBAR LAYOUT
+               HEADER
             ================================================================ */
-
-            #app-body {
-                display: flex;
-                height: calc(100vh - 68px);   /* header + 4px FPL stripe */
-                position: relative;
-                overflow: hidden;
+            .hdr {
+                background: var(--brand); position: sticky; top: 0; z-index: 1000;
+                height: var(--hdr-h); display: flex; align-items: center;
             }
-
-            /* --- Sidebar --- */
-            #sidebar {
-                width: 240px;
-                min-width: 240px;
-                background: #37003c;
-                border-right: 0;
-                height: 100%;
-                overflow-y: auto;
-                overflow-x: hidden;
-                z-index: 500;
-                transition: transform 0.22s ease-out;
-                will-change: transform;
-                flex-shrink: 0;
-                padding-bottom: 24px;
+            .hdr-row {
+                display: flex; align-items: center; justify-content: space-between;
+                gap: 12px; width: 100%; padding: 0 20px;
             }
-
-            /* Section label: This Week, My Team, Leagues, Planner, Research */
-            .nav-group-label {
-                font-size: 12px;
-                font-weight: 700;
-                text-transform: uppercase;
-                letter-spacing: 0.12em;
-                color: #00ff87;
-                padding: 20px 22px 6px 22px;
-                margin: 0;
+            .hdr-left { display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1 1 auto; }
+            .hdr-logo { height: 40px; width: 40px; border-radius: 10px; object-fit: contain; flex: 0 0 auto; }
+            .hdr-name { display: flex; flex-direction: column; min-width: 0; line-height: 1.15; }
+            .hdr-title {
+                color: #ffffff; font-weight: 700; font-size: 18px; letter-spacing: -0.01em;
+                white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
             }
-            /* Sub-group inside Research */
-            .nav-subgroup-label {
-                font-size: 12px;
-                font-weight: 600;
-                color: rgba(255,255,255,0.55);
-                padding: 10px 22px 2px 22px;
-                margin: 0;
+            .hdr-sub {
+                color: var(--green); font-size: 11.5px; font-weight: 700; letter-spacing: 0.12em;
+                text-transform: uppercase; margin-top: 3px;
             }
-
-            /* Nav item button */
-            .nav-item {
-                display: flex;
-                align-items: center;
-                gap: 10px;
-                width: calc(100% - 20px);
-                margin: 1px 10px;
-                min-height: 38px;
-                background: none;
-                border: none;
-                border-radius: 8px;
-                padding: 8px 12px 8px 14px;
-                font-size: 14px;
-                font-family: inherit;
-                font-weight: 500;
-                color: rgba(255,255,255,0.82);
-                cursor: pointer;
-                text-align: left;
-                transition: background 0.15s, color 0.15s;
-                line-height: 1.3;
-                position: relative;
+            .hdr-short { display: none; }
+            .hdr-status { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+            .hdr-texts {
+                display: flex; align-items: center; gap: 8px; padding: 7px 14px;
+                border-radius: 999px; background: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.12); white-space: nowrap;
             }
-
-            .nav-item:hover {
-                background: rgba(255,255,255,0.08);
-                color: #ffffff;
+            .hdr-dot {
+                width: 8px; height: 8px; border-radius: 50%; background: var(--green);
+                box-shadow: 0 0 0 3px rgba(0, 255, 135, 0.22); flex: 0 0 auto;
             }
+            .hdr-gw { color: #ffffff; font-weight: 600; font-size: 13px; }
+            .hdr-sep { color: rgba(255, 255, 255, 0.4); font-size: 13px; }
+            .hdr-updated { color: rgba(255, 255, 255, 0.72); font-size: 12.5px; }
+            .fpl-stripe { height: 3px; background: linear-gradient(90deg, var(--green), var(--cyan)); }
 
-            .nav-item.active {
-                background: rgba(255,255,255,0.12);
-                color: #ffffff;
-                font-weight: 700;
-                box-shadow: inset 3px 0 0 #00ff87;
-            }
-
-            /* FPL's green-to-cyan stripe under the header */
-            .fpl-stripe { height: 4px; background: linear-gradient(90deg, #00ff87, #04f5ff); }
-
-            /* --- Content area --- */
-            #content-area {
-                flex: 1;
-                min-width: 0;
-                height: 100%;
-                overflow-y: auto;
-                padding: 24px 20px;
-                background: #f5f5f5;
-            }
-
-            /* --- Mobile overlay: covers app-body, not the header --- */
-            #sidebar-overlay {
-                display: none;
-                position: absolute;
-                inset: 0;
-                background: rgba(0,0,0,0.45);
-                z-index: 499;
-            }
-
-            /* --- Hamburger button (hidden on desktop) --- */
             /* Refresh button: only when opened from the home screen, where
                iOS gives you no reload button and no pull-to-refresh. */
             #app-refresh-btn {
-                display: none;
-                background: none;
-                border: none;
-                color: #ffffff;
-                font-size: 24px;
-                line-height: 1;
-                min-width: 44px;
-                min-height: 44px;
-                cursor: pointer;
-                -webkit-tap-highlight-color: transparent;
+                display: none; background: none; border: none; color: #ffffff;
+                font-size: 22px; line-height: 1; min-width: 44px; min-height: 44px; cursor: pointer;
             }
             @media (display-mode: standalone) {
                 #app-refresh-btn { display: inline-flex; align-items: center; justify-content: center; }
@@ -6881,40 +6847,188 @@ app.index_string = '''
                 display: inline-flex; align-items: center; justify-content: center;
             }
 
-            #hamburger-btn {
-                display: none;
-                background: none;
-                border: none;
-                color: white;
-                font-size: 22px;
-                cursor: pointer;
-                /* 44x44 is the minimum comfortable touch target; the old
-                   ~26px button was easy to half-miss on a phone. */
-                min-width: 44px;
-                min-height: 44px;
-                padding: 0 10px 0 0;
-                line-height: 1;
-                -webkit-tap-highlight-color: transparent;
+            /* ================================================================
+               SHELL: section rail + scrolling content
+            ================================================================ */
+            #app-body {
+                display: flex; position: relative; overflow: hidden;
+                height: calc(100vh - var(--hdr-h) - 3px);
+                height: calc(100dvh - var(--hdr-h) - 3px);
+            }
+            #sidebar {
+                width: var(--rail-w); flex: 0 0 var(--rail-w); height: 100%;
+                background: var(--surface); border-right: 1px solid var(--border);
+                display: flex; flex-direction: column; align-items: stretch; gap: 4px;
+                padding: 16px 8px; overflow-y: auto; z-index: 500;
+            }
+            .sec-btn {
+                display: flex; flex-direction: column; align-items: center; justify-content: center;
+                gap: 6px; width: 100%; min-height: 66px; padding: 8px 2px; border: 0;
+                border-radius: 14px; background: transparent; color: var(--muted);
+                font-size: 12.5px; font-weight: 600; cursor: pointer;
+                transition: background 0.15s, color 0.15s;
+            }
+            .sec-btn:hover { background: var(--surface-2); color: var(--brand); }
+            .sec-btn:focus-visible, .tab:focus-visible { outline: none; box-shadow: var(--focus); }
+            .sec-ico {
+                width: 52px; height: 32px; border-radius: 999px; display: flex;
+                align-items: center; justify-content: center; transition: background 0.15s;
+            }
+            .sec-ico::before {
+                content: ''; width: 22px; height: 22px; background: currentColor;
+                -webkit-mask: var(--ico) center / contain no-repeat; mask: var(--ico) center / contain no-repeat;
+            }
+            .ico-home { --ico: var(--ico-home); }
+            .ico-team { --ico: var(--ico-team); }
+            .ico-players { --ico: var(--ico-players); }
+            .ico-fixtures { --ico: var(--ico-fixtures); }
+            .ico-stats { --ico: var(--ico-stats); }
+            .sec-btn.active { color: var(--brand); font-weight: 700; }
+            .sec-btn.active .sec-ico { background: var(--green); }
+
+            #content-area {
+                flex: 1 1 auto; min-width: 0; height: 100%; overflow-y: auto;
+                padding: 0 28px 48px; background: var(--bg);
+            }
+            #content-area > div[id^="page-"], #stale-stats-banner {
+                max-width: 1400px; margin-left: auto; margin-right: auto;
             }
 
-            /* Kill the legacy ~300ms double-tap-zoom wait on taps */
-            button, .nav-item, #sidebar-overlay {
-                touch-action: manipulation;
+            /* Page tabs: sticky row at the top of the content column */
+            .page-tabs {
+                position: sticky; top: 0; z-index: 400; margin: 0 -28px 24px; padding: 10px 28px 0;
+                background: rgba(245, 243, 247, 0.9); border-bottom: 1px solid var(--border);
+                -webkit-backdrop-filter: saturate(180%) blur(12px); backdrop-filter: saturate(180%) blur(12px);
             }
+            .tab-group {
+                gap: 2px; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch;
+                max-width: 1400px; margin: 0 auto;
+            }
+            .tab-group::-webkit-scrollbar { display: none; }
+            .tab {
+                flex: 0 0 auto; border: 0; background: transparent; padding: 10px 14px 12px;
+                margin-bottom: -1px; font-size: 14.5px; font-weight: 600; color: var(--muted);
+                cursor: pointer; white-space: nowrap; border-bottom: 3px solid transparent;
+                border-radius: 8px 8px 0 0; transition: color 0.15s, border-color 0.15s, background 0.15s;
+            }
+            .tab:hover { color: var(--brand); background: rgba(55, 0, 60, 0.04); }
+            .tab.active { color: var(--brand); font-weight: 700; border-bottom-color: var(--brand); }
+
+            /* Page heading: the first card on each page */
+            .page-intro { padding: 4px 0 0; margin-bottom: 24px; }
+            .page-intro > h3:first-child {
+                font-size: 30px !important; font-weight: 800; letter-spacing: -0.025em;
+                line-height: 1.12; margin: 0 0 10px !important; color: var(--brand);
+            }
+            .page-intro p, .page-intro li {
+                color: var(--muted) !important; font-size: 15.5px !important; line-height: 1.55;
+                max-width: 900px;
+            }
+            .page-intro strong { color: var(--text); }
 
             /* ================================================================
-               TABLET & BELOW  (≤ 900px)
+               CONTENT
             ================================================================ */
-            /* Horizontal scroll for fixture grids, all screen sizes */
-            .chart-scroll {
-                overflow-x: auto !important;
-                -webkit-overflow-scrolling: touch;
-            }
+            #content-area h2 { font-size: 22px; font-weight: 800; letter-spacing: -0.015em; }
+            #content-area h3 { font-weight: 700; letter-spacing: -0.01em; }
+            #content-area p { line-height: 1.55; }
+            /* No stray gap above a heading that opens a card or block */
+            #content-area h2:first-child, #content-area h3:first-child,
+            #content-area h4:first-child { margin-top: 0; }
+            #content-area a { color: var(--accent); }
 
-            /* ================================================================
-               HEADER — compact single row on phones and narrow tablets
-            ================================================================ */
-            .hdr-short { display: none; }
+            /* Primary buttons (all set inline in the app's purple) */
+            #content-area button[style*="background-color: rgb(55, 0, 60)"] {
+                border-radius: 10px !important; font-weight: 700 !important;
+                box-shadow: 0 1px 2px rgba(55, 0, 60, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+                transition: filter 0.15s, transform 0.05s;
+            }
+            #content-area button[style*="background-color: rgb(55, 0, 60)"]:hover { filter: brightness(1.3); }
+            #content-area button[style*="background-color: rgb(55, 0, 60)"]:active { transform: translateY(1px); }
+
+            /* Text inputs */
+            #content-area input[type="number"], #content-area input[type="text"],
+            #content-area input[type="search"] {
+                border: 1px solid var(--border-strong) !important; border-radius: 10px !important;
+                background: #ffffff; color: var(--text); outline: none;
+                transition: border-color 0.15s, box-shadow 0.15s;
+            }
+            #content-area input[type="number"]:focus, #content-area input[type="text"]:focus,
+            #content-area input[type="search"]:focus {
+                border-color: var(--brand) !important; box-shadow: var(--focus);
+            }
+            input[type="checkbox"], input[type="radio"] { accent-color: var(--brand); }
+
+            /* Dropdowns */
+            .Select-control {
+                border: 1px solid var(--border-strong) !important; border-radius: 10px !important;
+                box-shadow: none !important; transition: border-color 0.15s, box-shadow 0.15s;
+            }
+            .Select-control:hover { border-color: #b9adc0 !important; }
+            .is-focused > .Select-control, .is-open > .Select-control {
+                border-color: var(--brand) !important; box-shadow: var(--focus) !important;
+            }
+            .Select-menu-outer {
+                border: 1px solid var(--border) !important; border-radius: 12px !important;
+                box-shadow: var(--shadow-lg) !important; margin-top: 6px !important;
+                overflow: hidden; z-index: 600 !important;
+            }
+            .Select-option { padding: 10px 12px !important; color: var(--text) !important; }
+            .Select-option.is-focused { background: #f6f0f8 !important; }
+            .Select-option.is-selected { background: #efe4f2 !important; font-weight: 600; }
+            .Select--multi .Select-value {
+                background: #f3ecf5 !important; border: 1px solid #e3d6e8 !important;
+                color: var(--brand) !important; border-radius: 999px !important;
+            }
+            .Select--multi .Select-value-icon { border-right: 1px solid #e3d6e8 !important; }
+            .Select-arrow { border-top-color: var(--muted) !important; }
+
+            /* Sliders */
+            .rc-slider-track { background-color: var(--brand) !important; }
+            .rc-slider-handle { border-color: var(--brand) !important; }
+            .rc-slider-handle:focus, .rc-slider-handle:active { box-shadow: var(--focus) !important; }
+            .rc-slider-dot-active { border-color: var(--brand) !important; }
+            .rc-slider-tooltip-inner { background-color: var(--brand) !important; border-radius: 8px !important; }
+
+            /* Tables */
+            .dash-spreadsheet-container {
+                overflow-x: auto !important; -webkit-overflow-scrolling: touch;
+                border: 1px solid var(--border); border-radius: 12px; background: #ffffff;
+            }
+            .dash-spreadsheet-container .dash-spreadsheet-inner th,
+            .dash-spreadsheet-container .dash-spreadsheet-inner td {
+                border-left: 0 !important; border-right: 0 !important; border-top: 0 !important;
+                border-bottom: 1px solid #f1ecf3 !important;
+            }
+            .dash-spreadsheet-container .dash-spreadsheet-inner th {
+                border-bottom: 1px solid var(--border) !important;
+            }
+            .dash-spreadsheet-container .dash-spreadsheet-inner tr:last-of-type td { border-bottom: 0 !important; }
+            .dash-spreadsheet-container .dash-spreadsheet-inner tr:hover td {
+                box-shadow: inset 0 0 0 9999px rgba(55, 0, 60, 0.035);
+            }
+            .dash-spreadsheet-container .dash-spreadsheet-inner td.focused,
+            .dash-spreadsheet-container .dash-spreadsheet-inner td.cell--selected {
+                background-color: rgba(4, 245, 255, 0.10) !important;
+            }
+            .dash-spreadsheet-container .dash-filter input {
+                border: 0 !important; box-shadow: none !important; border-radius: 0 !important;
+                font-size: 13px !important;
+            }
+            .dash-spreadsheet-container .column-header--sort { color: #b9adc0 !important; }
+            .previous-next-container { padding: 10px 4px 0; }
+            .previous-next-container button {
+                border: 1px solid var(--border) !important; background: #ffffff !important;
+                border-radius: 8px !important; min-width: 34px; min-height: 30px; cursor: pointer;
+            }
+            .previous-next-container .page-number { font-weight: 600; color: var(--muted); }
+
+            /* Collapsible sections */
+            #content-area summary { cursor: pointer; }
+
+            /* Horizontal scroll for wide fixture grids, all screen sizes */
+            .chart-scroll { overflow-x: auto !important; -webkit-overflow-scrolling: touch; }
+
             /* Squad Builder result rows: name/club left, price/score right */
             .sq-pos-card { flex: 1 1 300px; min-width: 0; }
             .sq-row { display: flex; justify-content: space-between; align-items: center;
@@ -6923,169 +7037,212 @@ app.index_string = '''
             .sq-row-left { min-width: 0; flex: 1 1 auto; }
             .sq-row-left .sq-name { overflow-wrap: anywhere; }
             .sq-row-right { text-align: right; flex: 0 0 auto; }
-            /* Lineup Advisor bullets: FPL green, in the darker shade that stays
-               visible on white (the bright #00ff87 all but disappears) */
+            /* Lineup Advisor bullets: the darker green that stays visible on white */
             .lineup-list li::marker { color: #00813f; font-size: 1.15em; }
-            /* min-width lives here, not inline: an inline min-width on the header's
-               left group matched the mobile filter-row rule, which stretched it to
-               100% width and pushed the GW / Updated text off the right edge. */
-            .hdr .hdr-row > .hdr-left { min-width: 0; flex: 1 1 auto; }
-            .hdr .hdr-row > .hdr-status { flex: 0 0 auto; }
-            @media (max-width: 700px) {
-                .hdr { padding: 8px 0 !important; }
-                .hdr-row { padding: 0 8px 0 4px !important; }
-                .hdr-logo { height: 28px !important; margin-right: 8px !important; }
-                .hdr-pill { font-size: 14px !important; padding: 4px 8px !important;
-                            margin-right: 0 !important; }
-                .hdr-long, .hdr-sub, .hdr-sep { display: none !important; }
-                .hdr-short { display: inline; }
-                /* GW and "Updated" stack as two small right-aligned lines */
-                .hdr-texts { flex-direction: column !important; align-items: flex-end !important;
-                             gap: 1px !important; text-align: right; line-height: 1.25; }
-                .hdr-gw { font-size: 12px !important; white-space: nowrap; }
-                .hdr-updated { font-size: 11px !important; max-width: 150px; }
-                #hamburger-btn { min-width: 40px; padding: 0 !important; }
-                #app-body { height: calc(100vh - 64px); }   /* 60px compact header + 4px stripe */
-            }
-            @media (max-width: 380px) {
-                .hdr-pill { font-size: 13px !important; padding: 3px 6px !important; }
-                .hdr-logo { height: 24px !important; margin-right: 6px !important; }
-                .hdr-gw { font-size: 11px !important; }
-                .hdr-updated { font-size: 10px !important; max-width: 128px; }
-            }
 
+            /* Player headshots — keep the box stable while fallbacks resolve */
+            .player-photo { object-fit: cover; background: #efeaf3; border-radius: 8px; }
+
+            /* ================================================================
+               HOME
+            ================================================================ */
+            .home-hero {
+                position: relative; overflow: hidden; border-radius: 20px; color: #ffffff;
+                padding: 28px 28px 26px; margin: 4px 0 20px;
+                background: radial-gradient(120% 140% at 100% 0%, rgba(4, 245, 255, 0.28) 0%, rgba(4, 245, 255, 0) 45%),
+                            radial-gradient(90% 120% at 0% 100%, rgba(0, 255, 135, 0.22) 0%, rgba(0, 255, 135, 0) 50%),
+                            linear-gradient(135deg, #37003c 0%, #4f0a57 100%);
+                box-shadow: 0 10px 30px rgba(55, 0, 60, 0.18);
+            }
+            .home-hero-top { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 20px; align-items: flex-end; }
+            .home-eyebrow {
+                font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase;
+                color: var(--green); margin: 0 0 8px;
+            }
+            .home-hero h1 { font-size: 34px; line-height: 1.1; letter-spacing: -0.025em; margin: 0; font-weight: 800; }
+            .home-hero-sub { color: rgba(255, 255, 255, 0.78); font-size: 15px; margin: 8px 0 0; }
+            .home-countdown {
+                background: rgba(255, 255, 255, 0.10); border: 1px solid rgba(255, 255, 255, 0.16);
+                border-radius: 14px; padding: 12px 16px; text-align: right; min-width: 170px;
+            }
+            .home-countdown-num { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.1; }
+            .home-countdown-lbl { font-size: 12.5px; color: rgba(255, 255, 255, 0.72); }
+            .home-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+            .home-action {
+                border: 0; border-radius: 999px; padding: 10px 16px; font-size: 14px; font-weight: 700;
+                cursor: pointer; background: rgba(255, 255, 255, 0.12); color: #ffffff;
+                border: 1px solid rgba(255, 255, 255, 0.18); transition: background 0.15s;
+            }
+            .home-action:hover { background: rgba(255, 255, 255, 0.2); }
+            .home-action.primary { background: var(--green); color: var(--brand); border-color: var(--green); }
+            .home-action.primary:hover { filter: brightness(1.05); }
+
+            .tile-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 28px; }
+            .tile {
+                background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
+                padding: 16px 18px; box-shadow: var(--shadow); min-width: 0;
+            }
+            .tile-label {
+                font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+                color: var(--muted); margin: 0 0 6px;
+            }
+            .tile-value { font-size: 28px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.15; color: var(--brand); }
+            .tile-sub { font-size: 13.5px; color: var(--muted); margin-top: 4px; }
+
+            .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 8px 0 12px; }
+            .section-head h2 { margin: 0; font-size: 20px !important; }
+            .section-head p { margin: 2px 0 0; color: var(--muted); font-size: 14px; }
+            .link-btn {
+                border: 0; background: none; padding: 0; color: var(--accent); font-weight: 700;
+                font-size: 13.5px; cursor: pointer; white-space: nowrap;
+            }
+            .link-btn:hover { text-decoration: underline; }
+
+            .model-strip {
+                display: grid; grid-template-columns: 1.3fr repeat(3, minmax(0, 1fr)); gap: 0;
+                background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
+                box-shadow: var(--shadow); margin-bottom: 28px; overflow: hidden;
+            }
+            .model-strip > div { padding: 16px 18px; border-left: 1px solid var(--border); min-width: 0; }
+            .model-strip > div:first-child { border-left: 0; }
+            .model-verdict { font-size: 15px; font-weight: 600; color: var(--text); line-height: 1.45; }
+            .model-pair { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+            .model-pair .win { color: var(--green-ink); }
+            .model-pair b { font-size: 22px; font-weight: 800; letter-spacing: -0.02em; }
+            .model-pair span { color: var(--muted); font-size: 13px; }
+
+            .people-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 28px; }
+            .person {
+                display: flex; gap: 14px; align-items: center; background: var(--surface);
+                border: 1px solid var(--border); border-radius: 16px; padding: 14px 16px;
+                box-shadow: var(--shadow); min-width: 0;
+            }
+            .person img { width: 54px; height: 68px; flex: 0 0 auto; }
+            .person-body { min-width: 0; flex: 1 1 auto; }
+            .person-tag {
+                display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
+                text-transform: uppercase; color: var(--brand); background: rgba(0, 255, 135, 0.22);
+                padding: 3px 8px; border-radius: 999px; margin-bottom: 6px;
+            }
+            .person-name { font-size: 17px; font-weight: 800; color: var(--brand); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+            .person-meta { font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+            .person-stat { font-size: 13px; color: var(--muted); margin-top: 4px; }
+            .person-stat b { color: var(--brand); font-size: 15px; }
+
+            .chip-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 28px; }
+            .chip-tile { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 14px 16px; box-shadow: var(--shadow); }
+            .chip-name { font-weight: 700; font-size: 14px; color: var(--brand); }
+            .chip-num { font-size: 22px; font-weight: 800; color: var(--brand); margin-top: 2px; }
+            .chip-sub { font-size: 12.5px; color: var(--muted); }
+            .chip-bar { height: 6px; border-radius: 999px; background: #f0eaf3; margin-top: 10px; overflow: hidden; }
+            .chip-bar > div { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--green), var(--cyan)); }
+
+            /* ================================================================
+               TABLET & BELOW (≤ 900px): bottom tab bar, tighter spacing
+            ================================================================ */
             @media (max-width: 900px) {
-
-                #hamburger-btn { display: block; }
-
+                :root { --hdr-h: 58px; }
                 #sidebar {
-                    position: absolute;
-                    top: 0;
-                    left: 0;
-                    height: 100%;
-                    overflow-y: auto;
-                    transform: translateX(-100%);
-                    z-index: 600;
-                    box-shadow: 4px 0 16px rgba(0,0,0,0.18);
+                    position: fixed; left: 0; right: 0; bottom: 0; top: auto; width: auto; height: auto;
+                    flex-direction: row; justify-content: space-around; align-items: stretch; gap: 0;
+                    padding: 4px 4px calc(4px + env(safe-area-inset-bottom));
+                    border-right: 0; border-top: 1px solid var(--border); overflow: hidden; z-index: 900;
+                    background: rgba(255, 255, 255, 0.94);
+                    -webkit-backdrop-filter: saturate(180%) blur(14px); backdrop-filter: saturate(180%) blur(14px);
                 }
+                .sec-btn {
+                    flex: 1 1 0; min-width: 0; min-height: 0; height: 54px; gap: 3px;
+                    padding: 4px 0; border-radius: 12px; font-size: 11px;
+                }
+                .sec-btn:hover { background: transparent; }
+                .sec-ico { width: 50px; height: 28px; }
+                .sec-ico::before { width: 20px; height: 20px; }
+                #content-area { padding: 0 12px calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 28px); }
+                .page-tabs { margin: 0 -12px 16px; padding: 4px 6px 0; }
+                .tab { padding: 10px 11px 11px; font-size: 14px; }
+                .page-intro { margin-bottom: 16px; }
+                .page-intro > h3:first-child { font-size: 24px !important; }
+                .page-intro p, .page-intro li { font-size: 14.5px !important; }
 
-                #sidebar.sidebar-open {
-                    transform: translateX(0);
-                }
-
-                #sidebar-overlay.overlay-open {
-                    display: block;
-                }
-
-                #content-area {
-                    padding: 12px 8px;
-                }
-
-                .js-plotly-plot,
-                .js-plotly-plot .plotly,
-                .js-plotly-plot .plotly .main-svg {
-                    width: 100% !important;
-                }
-
-                /* Grids are the exception: squeezing 6+ gameweek columns into
-                   a 380px screen makes every cell unreadable. These keep a
-                   fixed cell width and scroll sideways instead. */
-                .chart-scroll .js-plotly-plot,
-                .chart-scroll .js-plotly-plot .plotly,
-                .chart-scroll .js-plotly-plot .plotly .main-svg {
-                    width: auto !important;
-                }
+                .js-plotly-plot, .js-plotly-plot .plotly, .js-plotly-plot .plotly .main-svg { width: 100% !important; }
+                /* Grids are the exception: they keep a fixed cell width and scroll sideways */
+                .chart-scroll .js-plotly-plot, .chart-scroll .js-plotly-plot .plotly,
+                .chart-scroll .js-plotly-plot .plotly .main-svg { width: auto !important; }
 
                 .dash-dropdown { min-width: 100% !important; }
 
-                /* React serialises style dicts to hyphenated CSS, so the DOM
-                   attribute reads "min-width: 160px" — a [style*="minWidth"]
-                   selector never matched and none of these filter rows have
-                   been stacking on mobile. */
+                /* React writes style dicts as hyphenated CSS ("min-width: 160px"),
+                   which is what these filter-row selectors match. */
                 [style*="display: flex"] > div[style*="min-width"] {
-                    min-width: 100% !important;
-                    flex: 1 1 100% !important;
-                    padding-left: 0 !important;
-                    padding-right: 0 !important;
-                    margin-bottom: 10px;
+                    min-width: 100% !important; flex: 1 1 100% !important;
+                    padding-left: 0 !important; padding-right: 0 !important; margin-bottom: 10px;
                 }
-                /* The rule above is meant for filter columns, but it also caught the
-                   Home spotlight cards and stripped their side padding, leaving the
-                   text and photo pressed against the card edges on phones. */
-                #content-area .sq-pos-card {
-                    padding: 16px 14px !important;
-                }
-                #content-area .spotlight-card {
-                    padding-left: 14px !important;
-                    padding-right: 14px !important;
-                }
-
-                [style*="margin: 0 -10px"] > div {
-                    flex: 1 1 45% !important;
-                    min-width: 45% !important;
-                }
-
-                [style*="gap: 20px"] > div {
-                    flex: 1 1 100% !important;
-                    min-width: 100% !important;
-                }
-
+                #content-area .sq-pos-card { padding: 16px 14px !important; }
+                #content-area .spotlight-card { padding-left: 14px !important; padding-right: 14px !important; }
+                [style*="margin: 0 -10px"] > div { flex: 1 1 45% !important; min-width: 45% !important; }
+                [style*="gap: 20px"] > div { flex: 1 1 100% !important; min-width: 100% !important; }
                 [style*="padding: 24px"] { padding: 16px !important; }
 
-                h2 { font-size: 22px !important; }
+                h2 { font-size: 21px !important; }
                 h3 { font-size: 18px !important; }
                 h4 { font-size: 16px !important; }
 
-                .dash-cell,
-                .dash-spreadsheet-container td {
-                    padding: 8px 6px !important;
-                    font-size: 12px !important;
-                }
-                .dash-header,
-                .dash-spreadsheet-container th {
-                    padding: 8px 6px !important;
-                    font-size: 11px !important;
-                }
+                .dash-cell, .dash-spreadsheet-container td { padding: 8px 8px !important; font-size: 12.5px !important; }
+                .dash-header, .dash-spreadsheet-container th { padding: 8px 8px !important; font-size: 10.5px !important; }
+                .rc-slider { margin-left: 8px !important; margin-right: 8px !important; }
 
-                .rc-slider {
-                    margin-left: 8px !important;
-                    margin-right: 8px !important;
-                }
+                .tile-grid, .people-grid, .chip-row { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+                .model-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+                .model-strip > div:first-child { grid-column: 1 / -1; border-bottom: 1px solid var(--border); }
+                .model-strip > div:nth-child(2) { border-left: 0; }
+                .home-hero { padding: 22px 18px 20px; border-radius: 18px; }
+                .home-hero h1 { font-size: 27px; }
+                .home-countdown { text-align: left; }
             }
 
             /* ================================================================
-               PHONE  (≤ 480px)
+               PHONE (≤ 700px): compact header
             ================================================================ */
-            @media (max-width: 480px) {
-                h2 { font-size: 18px !important; }
-                h3 { font-size: 16px !important; }
-                h4 { font-size: 14px !important; }
-
-                [style*="margin: 0 -10px"] > div {
-                    flex: 1 1 100% !important;
-                    min-width: 100% !important;
+            @media (max-width: 700px) {
+                .hdr-row { padding: 0 12px; gap: 8px; }
+                .hdr-logo { height: 34px; width: 34px; border-radius: 9px; }
+                .hdr-left { gap: 10px; }
+                .hdr-long { display: none; }
+                .hdr-short { display: inline; }
+                .hdr-title { font-size: 16.5px; }
+                .hdr-sub { font-size: 10px; margin-top: 2px; }
+                .hdr-texts {
+                    flex-direction: column; align-items: flex-end; gap: 1px; padding: 0;
+                    background: none; border: 0; line-height: 1.25;
                 }
-
-                .dash-cell,
-                .dash-spreadsheet-container td {
-                    padding: 6px 4px !important;
-                    font-size: 11px !important;
+                .hdr-dot, .hdr-sep { display: none; }
+                .hdr-gw { font-size: 13px; }
+                .hdr-updated {
+                    font-size: 11px; max-width: 150px; overflow: hidden; text-overflow: ellipsis;
                 }
-                .dash-header,
-                .dash-spreadsheet-container th {
-                    padding: 6px 4px !important;
-                    font-size: 10px !important;
-                }
-
-                /* No height cap on charts: squeezing a 380-500px figure into a
-                   shorter box flattens it (Chrome redraws to fit) or spills its
-                   axis labels over the next card (Safari doesn't). */
             }
-            /* Player headshots — keep the box stable while fallbacks resolve */
-            .player-photo {
-                object-fit: cover;
-                background: #efeaf3;
-                border-radius: 8px;
+
+            @media (max-width: 480px) {
+                h2 { font-size: 19px !important; }
+                h3 { font-size: 16.5px !important; }
+                h4 { font-size: 15px !important; }
+                [style*="margin: 0 -10px"] > div { flex: 1 1 100% !important; min-width: 100% !important; }
+                .dash-cell, .dash-spreadsheet-container td { padding: 7px 6px !important; font-size: 12px !important; }
+                .dash-header, .dash-spreadsheet-container th { padding: 7px 6px !important; font-size: 10px !important; }
+                .tile { padding: 13px 14px; }
+                .tile-value { font-size: 23px; }
+                .tile-label { font-size: 11px; }
+                .people-grid { grid-template-columns: 1fr; }
+                .model-strip > div { padding: 12px 12px; }
+                .model-pair b { font-size: 19px; }
+                .home-hero h1 { font-size: 24px; }
+                /* No height cap on charts: squeezing a figure into a shorter box
+                   flattens it (Chrome) or spills its labels over the next card (Safari). */
+            }
+            @media (max-width: 360px) {
+                .hdr-title { font-size: 15px; }
+                .hdr-updated { max-width: 120px; }
+                .sec-btn { font-size: 10px; }
             }
         </style>
     </head>
@@ -7100,6 +7257,25 @@ app.index_string = '''
                 if (window.navigator.standalone) {
                     document.documentElement.classList.add('ios-standalone');
                 }
+            </script>
+            <script>
+                // Deadline countdowns: re-count any element with data-deadline
+                (function () {
+                    function fmt(ms) {
+                        if (ms <= 0) { return 'Passed'; }
+                        var s = Math.floor(ms / 1000), d = Math.floor(s / 86400),
+                            h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+                        return d ? d + 'd ' + h + 'h' : (h ? h + 'h ' + m + 'm' : m + 'm');
+                    }
+                    function tick() {
+                        var els = document.querySelectorAll('[data-deadline]');
+                        for (var i = 0; i < els.length; i++) {
+                            var t = Date.parse(els[i].getAttribute('data-deadline'));
+                            if (!isNaN(t)) { els[i].textContent = fmt(t - Date.now()); }
+                        }
+                    }
+                    setInterval(tick, 20000);
+                })();
             </script>
             <script>
                 // Player headshots: advance through data-fallbacks on 404.
@@ -7187,70 +7363,6 @@ def build_stat_card(title, value, subtitle=None, color=COLORS['primary'], image_
                    'fontFamily': 'inherit'}
         ) if link_page else None
     ], style=STAT_CARD_STYLE)
-
-
-def build_player_spotlight(player, title, metric_label, metric_value,
-                           link_page=None, link_label='See all'):
-    """
-    Spotlight card. `link_page` turns the footer into a jump to the page that
-    shows the full ranking behind the single name — the card answers "who",
-    the link answers "who else".
-    """
-    if player is None:
-        return html.Div()
-
-    text_section = html.Div([
-        html.Div([
-            html.Span(title, style={
-                'backgroundColor': COLORS['secondary'],
-                'color': COLORS['primary'],
-                'padding': '4px 12px',
-                'borderRadius': '20px', 'display': 'inline-block', 'lineHeight': '1.35', 'maxWidth': '100%',
-                'fontSize': '12px',
-                'fontWeight': '600',
-                'textTransform': 'uppercase'
-            })
-        ], style={'marginBottom': '16px'}),
-        html.H3(player['web_name'], style={
-            'color': COLORS['primary'],
-            'margin': '0 0 4px 0',
-            'fontSize': '22px',
-            'fontWeight': '700'
-        }),
-        html.P(f"{player['team_name']} {player['position']}  £{player['price']:.1f}m", style={
-            'color': COLORS['text_light'],
-            'margin': '0 0 16px 0',
-            'fontSize': '14px'
-        }),
-        html.Div([
-            html.Span(metric_label, style={'color': COLORS['text_light'], 'fontSize': '13px'}),
-            html.Span(metric_value, style={
-                'color': COLORS['primary'],
-                'fontWeight': '700',
-                'fontSize': '18px',
-                'marginLeft': '8px'
-            })
-        ]),
-        html.Button(
-            f"{link_label} \u2192",
-            id={'type': 'home-jump', 'page': link_page},
-            n_clicks=0,
-            style={'marginTop': '12px', 'padding': '0', 'border': 'none',
-                   'background': 'none', 'color': COLORS['accent'],
-                   'fontWeight': '600', 'fontSize': '13px', 'cursor': 'pointer',
-                   'fontFamily': 'inherit'}
-        ) if link_page else None
-    ], style={'flex': '1'})
-
-    image_section = player_photo_img(player, style={
-        'width': '70px', 'height': '90px',
-        'borderRadius': '8px', 'alignSelf': 'center'
-    })
-
-    return html.Div([text_section, image_section], className='spotlight-card', style={
-        **CARD_STYLE, 'flex': '1', 'minWidth': '220px',
-        'display': 'flex', 'justifyContent': 'space-between'
-    })
 
 
 # =============================================================================
@@ -7511,6 +7623,49 @@ NUMERIC_FILTER_OPTIONS = [
     {'label': 'Not equal to (\u2260)', 'value': 'neq'},
 ]
 
+# Navigation: five sections, each holding a row of page tabs. Tab labels are
+# short; each page's own heading carries its full name. A desktop rail and a
+# phone bottom bar both switch section; the tabs switch page within it.
+NAV_SECTIONS = [
+    ('home', 'Home', [('home', 'Overview'), ('deadline', 'Deadline'), ('model-lab', 'Model Lab')]),
+    ('team', 'My Team', [('my-squad', 'My Squad'), ('transfer-planner', 'Transfer Planner'),
+                         ('chip-planner', 'Chip Planner'), ('squad-builder', 'Squad Builder'),
+                         ('rivals', 'Mini-League Rivals')]),
+    ('players', 'Players', [('captain', 'Captaincy'), ('differentials', 'Differentials'),
+                            ('value', 'Value'), ('form', 'Form'), ('transfers', 'Transfer Trends')]),
+    ('fixtures', 'Fixtures', [('fixture-ticker', 'Ticker'), ('fixture-outlook', 'Outlook'),
+                              ('fixtures', 'Difficulty'), ('matchups', 'Matchups')]),
+    ('stats', 'Stats', [('xg', 'xG & xA'), ('underlying', 'Underlying'),
+                        ('chance-quality', 'Chance Quality'), ('shot-profiles', 'Shot Profiles'),
+                        ('cs', 'Clean Sheets'), ('xcs', 'Expected CS'), ('defcon-bonus', 'DEFCON Bonus'),
+                        ('bonus-consistency', 'DEFCON Consistency'), ('defcon', 'DEFCONs')]),
+]
+SECTION_PAGES = {sec: [p for p, _ in pages] for sec, _, pages in NAV_SECTIONS}
+PAGE_SECTION = {p: sec for sec, pages in SECTION_PAGES.items() for p in pages}
+
+
+def _page_heading(title, desc):
+    """Title and one-line description at the top of a page (styled as .page-intro)."""
+    return html.Div([html.H3(title), html.P(desc)], className='page-intro')
+
+
+def _section_button(sec, label):
+    return html.Button([html.Span(className=f'sec-ico ico-{sec}'), html.Span(label, className='sec-lbl')],
+                       id=f'sec-{sec}', className='sec-btn active' if sec == 'home' else 'sec-btn',
+                       n_clicks=0, title=label)
+
+
+def _page_tabs():
+    return html.Div(id='section-tabs', className='page-tabs', children=[
+        html.Div(id=f'tabs-{sec}', className='tab-group',
+                 style={'display': 'flex' if sec == 'home' else 'none'},
+                 children=[html.Button(label, id=f'nav-{p}', n_clicks=0,
+                                       className='tab active' if p == 'home' else 'tab')
+                           for p, label in pages])
+        for sec, _, pages in NAV_SECTIONS
+    ])
+
+
 # Pages whose content is rendered on demand: only when first opened, and
 # again only if the underlying data has refreshed since. Everything else on
 # the page (dropdowns, filters) still re-renders live as you change it.
@@ -7533,7 +7688,6 @@ app.layout = html.Div([
     dcc.Interval(id='refresh-interval', interval=2 * 60 * 1000, n_intervals=0),
     dcc.Store(id='active-page', data='home'),
     dcc.Store(id='active-page-local'),
-    dcc.Store(id='sidebar-open', data=False),
     # Lazy page rendering — see LAZY_PAGES / gate_page_renders below.
     dcc.Store(id='data-version'),
     dcc.Store(id='page-rendered', data={}),
@@ -7544,93 +7698,40 @@ app.layout = html.Div([
     html.Div([
         html.Div([
             html.Div([
-                # Hamburger (visible on mobile only via CSS)
-                html.Button('☰', id='hamburger-btn', n_clicks=0),
-                html.Img(src="/assets/premier_league_logo.png", className='hdr-logo',
-                         style={'height': '40px', 'marginRight': '12px'}),
-                html.Span([
-                    html.Span(f"Fantasy Premier League {SEASON['label']}", className='hdr-long'),
-                    html.Span(f"FPL {SEASON['label']}", className='hdr-short'),
-                ], className='hdr-pill',
-                   style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
-                          'padding': '6px 12px', 'borderRadius': '6px', 'fontWeight': '800',
-                          'fontSize': '18px', 'marginRight': '12px', 'whiteSpace': 'nowrap'}),
-                html.Span("Analytics Hub", className='hdr-sub',
-                          style={'color': 'white', 'fontSize': '20px', 'fontWeight': '600'})
-            ], className='hdr-left', style={'display': 'flex', 'alignItems': 'center'}),
+                html.Img(src="/assets/premier_league_logo.png", className='hdr-logo', alt=''),
+                html.Div([
+                    html.Div([
+                        html.Span(f"Fantasy Premier League {SEASON['label']}", className='hdr-long'),
+                        html.Span(f"FPL {SEASON['label']}", className='hdr-short'),
+                    ], className='hdr-title'),
+                    html.Div("Analytics Hub", className='hdr-sub'),
+                ], className='hdr-name'),
+            ], className='hdr-left'),
             html.Div([
                 html.Div([
-                    html.Span(id='gw-status-text', className='hdr-gw',
-                              style={'color': 'rgba(255,255,255,0.8)', 'fontSize': '13px'}),
-                    html.Span(" | ", className='hdr-sep',
-                              style={'color': 'rgba(255,255,255,0.5)', 'fontSize': '13px'}),
-                    html.Span(id='last-updated-text', className='hdr-updated',
-                              style={'color': 'rgba(255,255,255,0.6)', 'fontSize': '12px'}),
-                ], className='hdr-texts', style={'display': 'flex', 'alignItems': 'center', 'gap': '4px'}),
+                    html.Span(className='hdr-dot'),
+                    html.Span(id='gw-status-text', className='hdr-gw'),
+                    html.Span("\u00b7", className='hdr-sep'),
+                    html.Span(id='last-updated-text', className='hdr-updated'),
+                ], className='hdr-texts'),
                 # Home-screen app only (no Safari reload button there); CSS shows it
                 html.Button('\u21bb', id='app-refresh-btn', n_clicks=0,
                             title='Refresh', **{'aria-label': 'Refresh'}),
-            ], className='hdr-status', style={'display': 'flex', 'alignItems': 'center', 'gap': '4px'})
-        ], className='hdr-row', style={'display': 'flex', 'justifyContent': 'space-between', 'alignItems': 'center',
-                  'maxWidth': '100%', 'margin': '0 auto', 'padding': '0 20px', 'gap': '8px'})
-    ], className='hdr', style={'backgroundColor': COLORS['primary'], 'padding': '12px 0', 'position': 'sticky',
-              'top': '0', 'zIndex': '1000', 'boxShadow': '0 2px 8px rgba(0,0,0,0.15)'}),
+            ], className='hdr-status'),
+        ], className='hdr-row'),
+    ], className='hdr'),
     html.Div(className='fpl-stripe'),
 
-    # Body: sidebar + content
+    # Body: section rail (bottom bar on phones) + content
     html.Div([
 
-        # Mobile overlay
-        html.Div(id='sidebar-overlay', n_clicks=0),
-
-        # Sidebar nav
-        html.Div(
-            id='sidebar',
-            className='sidebar',
-            children=[
-                html.Div(style={'height': '12px'}),
-                html.Button('Home', id='nav-home', className='nav-item active', n_clicks=0),
-                html.P('This Week', className='nav-group-label'),
-                html.Button('Deadline Dashboard', id='nav-deadline', className='nav-item', n_clicks=0),
-                html.P('My Team', className='nav-group-label'),
-                html.Button('My Squad', id='nav-my-squad', className='nav-item', n_clicks=0),
-                html.P('Leagues', className='nav-group-label'),
-                html.Button('Mini-League Rivals', id='nav-rivals', className='nav-item', n_clicks=0),
-                html.P('Planner', className='nav-group-label'),
-                html.Button('Transfer Planner', id='nav-transfer-planner', className='nav-item', n_clicks=0),
-                html.Button('Chip Planner', id='nav-chip-planner', className='nav-item', n_clicks=0),
-                html.Button('Squad Builder', id='nav-squad-builder', className='nav-item', n_clicks=0),
-                html.Button('Fixture Ticker', id='nav-fixture-ticker', className='nav-item', n_clicks=0),
-                html.Button('Fixture Outlook', id='nav-fixture-outlook', className='nav-item', n_clicks=0),
-                html.P('Research', className='nav-group-label'),
-                html.P('PLAYERS & FORM', className='nav-subgroup-label'),
-                html.Button('Captain Optimiser', id='nav-captain', className='nav-item', n_clicks=0),
-                html.Button('Differentials', id='nav-differentials', className='nav-item', n_clicks=0),
-                html.Button('Value Analysis', id='nav-value', className='nav-item', n_clicks=0),
-                html.Button('Form Tracker', id='nav-form', className='nav-item', n_clicks=0),
-                html.Button('Transfer Trends', id='nav-transfers', className='nav-item', n_clicks=0),
-                html.P('ATTACKING', className='nav-subgroup-label'),
-                html.Button('Expected Goals & Assists', id='nav-xg', className='nav-item', n_clicks=0),
-                html.Button('Underlying Numbers', id='nav-underlying', className='nav-item', n_clicks=0),
-                html.P('DEFENSIVE', className='nav-subgroup-label'),
-                html.Button('DEFCON Bonus', id='nav-defcon-bonus', className='nav-item', n_clicks=0),
-                html.Button('DEFCON: Consistency', id='nav-bonus-consistency', className='nav-item', n_clicks=0),
-                html.Button('DEFCONS', id='nav-defcon', className='nav-item', n_clicks=0),
-                html.Button('Clean Sheets', id='nav-cs', className='nav-item', n_clicks=0),
-                html.Button('Expected Clean Sheets', id='nav-xcs', className='nav-item', n_clicks=0),
-                html.P('FIXTURES', className='nav-subgroup-label'),
-                html.Button('Fixture Difficulty', id='nav-fixtures', className='nav-item', n_clicks=0),
-                html.P('SHOT INTELLIGENCE', className='nav-subgroup-label'),
-                html.Button('Team Shot Profiles', id='nav-shot-profiles', className='nav-item', n_clicks=0),
-                html.Button('Matchup Finder', id='nav-matchups', className='nav-item', n_clicks=0),
-                html.Button('Chance Quality', id='nav-chance-quality', className='nav-item', n_clicks=0),
-                html.P('MODEL', className='nav-subgroup-label'),
-                html.Button('Model Lab', id='nav-model-lab', className='nav-item', n_clicks=0),
-            ]
-        ),
+        html.Nav(id='sidebar', className='sidebar',
+                 children=[_section_button(sec, label) for sec, label, _ in NAV_SECTIONS]),
 
         # Content area — all pages live here, show/hide via callback
         html.Div(id='content-area', children=[
+
+            _page_tabs(),
 
             # Carried-over-stats warning; populated by callback, empty in-season.
             # Must live INSIDE the content column — as a direct child of the
@@ -7654,7 +7755,7 @@ app.layout = html.Div([
                             "towards the league average until a team has enough matches, so early-season "
                             "extremes are damped rather than taken at face value."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '0'}),
-                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+                    ], className='page-intro'),
                     html.Div(id='sp-status'),
                     html.Div([
                         html.Div([
@@ -7778,7 +7879,7 @@ app.layout = html.Div([
                             "single edge."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div(id='mu-validation'),
-                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+                    ], className='page-intro'),
                     html.Div(id='mu-status'),
                     html.Div([
                         html.Div([
@@ -7881,7 +7982,7 @@ app.layout = html.Div([
                             "hauls; the creation columns show who sets them up, and how (crosses, set pieces). "
                             "Non-penalty throughout, so penalty takers aren't flattered."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '0'}),
-                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+                    ], className='page-intro'),
                     html.Div(id='cq-status'),
                     html.Div([
                         html.Div([
@@ -8005,7 +8106,7 @@ app.layout = html.Div([
                                             style={'backgroundColor': COLORS['secondary'],
                                                    'color': COLORS['primary'], 'padding': '8px 16px',
                                                    'borderRadius': '20px', 'display': 'inline-block', 'lineHeight': '1.35', 'maxWidth': '100%', 'fontWeight': '600'})])
-                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+                    ], className='page-intro'),
 
                     html.Div([
                         html.Div([
@@ -8117,7 +8218,7 @@ app.layout = html.Div([
                                              'color': COLORS['primary'], 'padding': '8px 16px', 'borderRadius': '20px', 'display': 'inline-block', 'lineHeight': '1.35', 'maxWidth': '100%',
                                              'fontWeight': '600'})
                         ])
-                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+                    ], className='page-intro'),
 
                     # Filters
                     html.Div([
@@ -8232,6 +8333,8 @@ app.layout = html.Div([
             # DEFENSIVE CONTRIBUTIONS TAB
             # DEFCONS PAGE
             html.Div(id='page-defcon', style={'display': 'none'}, children=[
+                _page_heading('Defensive Contributions',
+                              'Tackles, interceptions, clearances, blocks and recoveries per player, against what their minutes and position would predict.'),
                 html.Div([
                     html.Div([
                         html.Div([
@@ -8318,6 +8421,8 @@ app.layout = html.Div([
             # XG TAB
             # XG PAGE
             html.Div(id='page-xg', style={'display': 'none'}, children=[
+                _page_heading('Expected Goals & Assists',
+                              'Who keeps getting into scoring positions. Goals and assists are noisy; xG and xA show the chances behind them, so a player beating or trailing his numbers stands out.'),
                 html.Div([
                     html.Div([
                         html.Div([
@@ -8421,7 +8526,7 @@ app.layout = html.Div([
                                       style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
                                              'padding': '8px 16px', 'borderRadius': '20px', 'display': 'inline-block', 'lineHeight': '1.35', 'maxWidth': '100%', 'fontWeight': '600'})
                         ])
-                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+                    ], className='page-intro'),
 
                     # Filters
                     html.Div([
@@ -8500,6 +8605,8 @@ app.layout = html.Div([
             # VALUE TAB
             # VALUE PAGE
             html.Div(id='page-value', style={'display': 'none'}, children=[
+                _page_heading('Value Analysis',
+                              'Points returned for every £1m spent, to find the players who are worth their price.'),
                 html.Div([
                     html.Div([
                         html.Div([
@@ -8574,6 +8681,8 @@ app.layout = html.Div([
             # FORM TAB
             # FORM PAGE
             html.Div(id='page-form', style={'display': 'none'}, children=[
+                _page_heading('Form Tracker',
+                              'Who is scoring above or below their season average right now, and the in-form players few managers own.'),
                 html.Div([
                     html.Div([
                         html.Div([
@@ -8658,6 +8767,8 @@ app.layout = html.Div([
             # CLEAN SHEETS TAB
             # CLEAN SHEETS PAGE
             html.Div(id='page-cs', style={'display': 'none'}, children=[
+                _page_heading('Clean Sheets',
+                              'Which defences keep clean sheets and how many goals they concede, per 90 minutes.'),
                 html.Div([
                     html.Div([
                         html.Div([
@@ -8753,7 +8864,7 @@ app.layout = html.Div([
                             "number cannot say that. Totals sum across the window, so a blank "
                             "contributes nothing and a double contributes an extra fixture.",
                         ], style={'color': COLORS['text_light'], 'fontSize': '14px', 'marginBottom': '0'}),
-                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+                    ], className='page-intro'),
 
                     html.Div([
                         html.Div([
@@ -8840,7 +8951,7 @@ app.layout = html.Div([
                             html.Span("■", style={'color': '#d0d0d0', 'fontSize': '20px', 'marginRight': '4px'}),
                             html.Span("Blank GW", style={'fontSize': '13px', 'color': COLORS['text_dark']}),
                         ])
-                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+                    ], className='page-intro'),
 
                     html.Div([
                         html.Div([
@@ -8907,7 +9018,7 @@ app.layout = html.Div([
                                                                  'color': COLORS['primary'], 'padding': '8px 16px',
                                                                  'borderRadius': '20px', 'display': 'inline-block', 'lineHeight': '1.35', 'maxWidth': '100%', 'fontWeight': '600'})
                         ])
-                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+                    ], className='page-intro'),
 
                     # Filters
                     html.Div([
@@ -9067,7 +9178,7 @@ app.layout = html.Div([
                                       style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
                                              'padding': '8px 16px', 'borderRadius': '20px', 'display': 'inline-block', 'lineHeight': '1.35', 'maxWidth': '100%', 'fontWeight': '600'})
                         ])
-                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+                    ], className='page-intro'),
 
                     html.Div([
                         html.Div([
@@ -9234,7 +9345,7 @@ app.layout = html.Div([
                                       style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
                                              'padding': '8px 16px', 'borderRadius': '20px', 'display': 'inline-block', 'lineHeight': '1.35', 'maxWidth': '100%', 'fontWeight': '600'})
                         ])
-                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+                    ], className='page-intro'),
 
                     html.Div([
                         html.Div([
@@ -9401,7 +9512,7 @@ app.layout = html.Div([
                                       style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
                                              'padding': '8px 16px', 'borderRadius': '20px', 'display': 'inline-block', 'lineHeight': '1.35', 'maxWidth': '100%', 'fontWeight': '600'})
                         ])
-                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+                    ], className='page-intro'),
 
                     html.Div([
                         html.Div([
@@ -9567,7 +9678,7 @@ app.layout = html.Div([
                                 "after every refresh and every gameweek. Further down: how a projection is "
                                 "built, a breakdown for any player, and a replay of the season."],
                                style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': 0}),
-                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+                    ], className='page-intro'),
 
                     html.Div([
                         html.H3("Model vs FPL's Projections", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
@@ -9783,7 +9894,7 @@ app.layout = html.Div([
                             " per fixture; the horizon total simply sums them, so doubles count twice and blanks count zero."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
                         html.Div(id='xcs-form-note')
-                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+                    ], className='page-intro'),
 
                     html.Div([
                         html.Div([
@@ -9874,7 +9985,7 @@ app.layout = html.Div([
                             "This compares any two players on ", html.Strong("projected points over your chosen horizon"),
                             " and tells you the net gain of the move — including the hit, if you're taking one."
                         ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
-                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+                    ], className='page-intro'),
 
                     html.Div([
                         html.Div([
@@ -10013,7 +10124,7 @@ app.layout = html.Div([
                         ]),
                         html.P("Your team ID is in the URL on the FPL Points page: fantasy.premierleague.com/entry/XXXXXXX/…",
                                style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginTop': '10px'})
-                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+                    ], className='page-intro'),
 
                     dcc.Loading(html.Div(id='cp-content'), type='circle', color=COLORS['primary'])
                 ], style={'padding': '20px 0'})
@@ -10038,7 +10149,7 @@ app.layout = html.Div([
                                                'border': 'none', 'padding': '10px 28px', 'borderRadius': '6px',
                                                'fontSize': '15px', 'fontWeight': '700', 'cursor': 'pointer'}),
                         ], style={'display': 'flex', 'alignItems': 'center', 'flexWrap': 'wrap', 'gap': '8px'}),
-                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+                    ], className='page-intro'),
                     dcc.Loading(html.Div(id='dd-content'), type='circle', color=COLORS['primary'])
                 ], style={'padding': '20px 0'})
             ]),
@@ -10089,7 +10200,7 @@ app.layout = html.Div([
                                 "Works for any classic league. Leagues bigger than 20 are capped at the top 20 by rank. ",
                                 "Add your team ID to unlock the you-vs-them views."],
                                style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginTop': '10px'})
-                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+                    ], className='page-intro'),
 
                     dcc.Loading(html.Div(id='rv-content'), type='circle', color=COLORS['primary'])
                 ], style={'padding': '20px 0'})
@@ -10159,7 +10270,7 @@ app.layout = html.Div([
                             )
                         ], style={'color': COLORS['text_light'], 'fontSize': '13px',
                                   'marginTop': '12px', 'marginBottom': '0'}),
-                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+                    ], className='page-intro'),
 
                     dcc.Loading(
                         id='my-squad-loading',
@@ -10193,7 +10304,7 @@ app.layout = html.Div([
                                  style={'backgroundColor': COLORS['secondary'], 'color': COLORS['primary'],
                                         'padding': '8px 14px', 'borderRadius': '10px', 'fontWeight': '600',
                                         'display': 'inline-block', 'lineHeight': '1.4', 'fontSize': '14px'})
-                    ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
+                    ], className='page-intro'),
 
                     # Controls
                     html.Div([
@@ -10392,6 +10503,7 @@ ALL_PAGES = [
     'rivals', 'deadline', 'my-squad', 'squad-builder',
     'shot-profiles', 'matchups', 'chance-quality',
 ]
+assert sorted(PAGE_SECTION) == sorted(ALL_PAGES), 'every page needs a section'
 
 # -----------------------------------------------------------------------------
 # NAVIGATION & SIDEBAR — all clientside.
@@ -10466,7 +10578,8 @@ clientside_callback(
 clientside_callback(
     """
     function() {
-        var page = localStorage.getItem('fpl_active_page');
+        var page = null;
+        try { page = localStorage.getItem('fpl_active_page'); } catch (e) {}
         return page || 'home';
     }
     """,
@@ -10479,33 +10592,79 @@ clientside_callback(
     """
     function(page) {
         if (page) {
-            localStorage.setItem('fpl_active_page', page);
+            try {
+                localStorage.setItem('fpl_active_page', page);
+                var sec = %s[page];
+                var last = JSON.parse(localStorage.getItem('fpl_section_last') || '{}');
+                if (sec) { last[sec] = page; }
+                localStorage.setItem('fpl_section_last', JSON.stringify(last));
+            } catch (e) {}
         }
         return window.dash_clientside.no_update;
     }
-    """,
+    """ % json.dumps(PAGE_SECTION),
     Output('active-page', 'id'),
     Input('active-page', 'data'),
 )
 
 
-# --- PAGES: show active page, hide the rest; highlight its nav button ---
+# --- PAGES: show the active page; highlight its tab and section ---
 clientside_callback(
     """
     function(active) {
-        var pages = %s;
+        var pages = %s, pageSection = %s, sections = %s;
+        var sec = pageSection[active] || 'home';
         var styles = pages.map(function(p) {
             return p === active ? {'display': 'block'} : {'display': 'none'};
         });
-        var classes = pages.map(function(p) {
-            return p === active ? 'nav-item active' : 'nav-item';
+        var tabs = pages.map(function(p) { return p === active ? 'tab active' : 'tab'; });
+        var secs = sections.map(function(s) { return s === sec ? 'sec-btn active' : 'sec-btn'; });
+        var rows = sections.map(function(s) {
+            return s === sec ? {'display': 'flex'} : {'display': 'none'};
         });
-        return styles.concat(classes);
+        // New page starts at the top, with its tab scrolled into view
+        setTimeout(function() {
+            var area = document.getElementById('content-area');
+            if (area) { area.scrollTop = 0; }
+            var tab = document.getElementById('nav-' + active);
+            var row = document.getElementById('tabs-' + sec);
+            if (tab && row) {
+                row.scrollLeft = tab.offsetLeft - (row.clientWidth - tab.offsetWidth) / 2;
+            }
+        }, 0);
+        return styles.concat(tabs, secs, rows);
     }
-    """ % json.dumps(ALL_PAGES),
+    """ % (json.dumps(ALL_PAGES), json.dumps(PAGE_SECTION), json.dumps(list(SECTION_PAGES))),
     [Output(f'page-{p}', 'style') for p in ALL_PAGES]
-    + [Output(f'nav-{p}', 'className') for p in ALL_PAGES],
+    + [Output(f'nav-{p}', 'className') for p in ALL_PAGES]
+    + [Output(f'sec-{s}', 'className') for s in SECTION_PAGES]
+    + [Output(f'tabs-{s}', 'style') for s in SECTION_PAGES],
     Input('active-page', 'data')
+)
+
+
+# --- SECTIONS: open the page last used in that section (its first page if
+# none, or if you tap the section you're already in) ---
+clientside_callback(
+    """
+    function() {
+        var args = Array.prototype.slice.call(arguments);
+        var active = args[args.length - 1];
+        var sectionPages = %s, pageSection = %s;
+        %s
+        if (!trigVal || trigId.indexOf('sec-') !== 0) { return window.dash_clientside.no_update; }
+        var sec = trigId.substring(4), pages = sectionPages[sec];
+        if (!pages) { return window.dash_clientside.no_update; }
+        if (pageSection[active] === sec) { return pages[0]; }
+        var last = {};
+        try { last = JSON.parse(localStorage.getItem('fpl_section_last') || '{}'); } catch (e) {}
+        return pages.indexOf(last[sec]) !== -1 ? last[sec] : pages[0];
+    }
+    """ % (json.dumps(SECTION_PAGES), json.dumps(PAGE_SECTION), _nav_trigger_js()),
+    Output('active-page', 'data', allow_duplicate=True),
+    [Input(f'sec-{s}', 'n_clicks') for s in SECTION_PAGES],
+    State('active-page', 'data'),
+    prevent_initial_call=True
 )
 
 
@@ -10554,29 +10713,6 @@ clientside_callback(
 )
 
 
-# --- SIDEBAR: toggle open/closed on mobile, in one step ---
-clientside_callback(
-    """
-    function(hamburgerClicks, overlayClicks, activePage, isOpen) {
-        %s
-        var open = (trigId === 'hamburger-btn') ? !isOpen : false;
-        return [open,
-                open ? 'sidebar sidebar-open' : 'sidebar',
-                open ? 'overlay-open' : ''];
-    }
-    """ % _nav_trigger_js(),
-    [Output('sidebar-open', 'data'),
-     Output('sidebar', 'className'),
-     Output('sidebar-overlay', 'className')],
-    [Input('hamburger-btn', 'n_clicks'),
-     Input('sidebar-overlay', 'n_clicks'),
-     Input('active-page', 'data')],
-    State('sidebar-open', 'data'),
-    prevent_initial_call=True
-)
-
-
-
 @callback(
     [Output('gw-status-text', 'children'), Output('last-updated-text', 'children'),
      Output('data-version', 'data')],
@@ -10598,8 +10734,8 @@ def _refresh_status_text(n):
     check_and_refresh()
     current_gw_now = DATA.get('current_gw')
     if current_gw_now:
-        gw_text = [html.Span(f"Data as of {current_gw_now['name']}", className='hdr-long'),
-                   html.Span(f"Data as of GW{current_gw_now['id']}", className='hdr-short')]
+        gw_text = [html.Span(current_gw_now['name'], className='hdr-long'),
+                   html.Span(f"GW{current_gw_now['id']}", className='hdr-short')]
     else:
         gw_text = "N/A"
     last = DATA.get('last_refresh', 0)
@@ -10682,45 +10818,14 @@ def update_home_tab(n):
         if len(match) > 0:
             most_vice = match.iloc[0]
 
-    # Chip usage — THIS gameweek (for the weekly card and bar chart)
+    # Chip usage — THIS gameweek
     chips = current_gw_now.get('chip_plays', []) if current_gw_now else []
-    chip_sum = ', '.join(
-        [f"{chip_name_map.get(c['chip_name'], c['chip_name'])}: {c['num_played']:,}" for c in chips]
-    ) if chips else "No data yet"
     total_chips = sum(c['num_played'] for c in chips) if chips else 0
 
     # Chip usage — SEASON TO DATE, summed across every gameweek. The card
     # above is a weekly snapshot; this is how much of the game has spent each
     # chip so far, which is the number people actually mean.
     season_chips = summarise_chip_usage(data.get('bootstrap_data'))
-
-    # Chip bar chart
-    chip_colors = {
-        'Bench Boost': COLORS['info'],
-        'Triple Captain': COLORS['accent'],
-        'Wildcard': COLORS['success'],
-        'Free Hit': COLORS['warning'],
-    }
-    if chips:
-        c_names = [chip_name_map.get(c['chip_name'], c['chip_name']) for c in chips]
-        c_counts = [c['num_played'] for c in chips]
-        sorted_pairs = sorted(zip(c_names, c_counts), key=lambda x: x[1], reverse=True)
-        c_names = [p[0] for p in sorted_pairs]
-        c_counts = [p[1] for p in sorted_pairs]
-        c_colors = [chip_colors.get(n, COLORS['primary']) for n in c_names]
-        chip_fig = go.Figure()
-        chip_fig.add_trace(go.Bar(x=c_names, y=c_counts, marker_color=c_colors,
-                                  text=[f"{c:,}" for c in c_counts], textposition='outside'))
-        chip_fig.update_layout(template='plotly_white', height=300,
-                               margin=dict(t=40, b=40, l=40, r=40),
-                               yaxis_title='Managers', showlegend=False,
-                               font=dict(family=FONT_FAMILY),
-                               yaxis=dict(range=[0, max(c_counts) * 1.15]))
-    else:
-        chip_fig = go.Figure()
-        chip_fig.add_annotation(text="No chip data available yet", xref="paper", yref="paper",
-                                x=0.5, y=0.5, showarrow=False, font=dict(size=16, color=COLORS['text_light']))
-        chip_fig.update_layout(template='plotly_white', height=300)
 
     # Position breakdown chart
     pos_data = df_now[df_now['minutes'] >= _home_thr]
@@ -10732,154 +10837,194 @@ def update_home_tab(n):
         position_stats['position'] = pd.Categorical(position_stats['position'], categories=position_order, ordered=True)
         position_stats = position_stats.sort_values('position')
         pos_fig = go.Figure()
-        pos_fig.add_trace(go.Bar(name='Avg Points', x=position_stats['position'], y=position_stats['total_points'],
+        pos_fig.add_trace(go.Bar(name='Avg points', x=position_stats['position'], y=position_stats['total_points'],
                                  marker_color=COLORS['primary'], text=position_stats['total_points'].round(1),
                                  textposition='outside'))
         pos_fig.add_trace(
-            go.Bar(name='Avg Pts/m (x10)', x=position_stats['position'], y=position_stats['points_per_million'] * 10,
+            go.Bar(name='Avg pts per £m (x10)', x=position_stats['position'], y=position_stats['points_per_million'] * 10,
                    marker_color=COLORS['secondary'], text=position_stats['points_per_million'].round(2),
                    textposition='outside'))
-        pos_fig.update_layout(barmode='group', template='plotly_white', height=350,
-                              margin=dict(t=60, b=40, l=40, r=40),
+        pos_fig.update_layout(barmode='group', template='plotly_white', height=320,
+                              margin=dict(t=40, b=30, l=40, r=10),
                               legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5),
-                              yaxis_title='Value', xaxis_title='Position', font=dict(family=FONT_FAMILY),
-                              yaxis=dict(range=[0, position_stats['points_per_million'].max() * 10 * 1.2]))
+                              font=dict(family=FONT_FAMILY),
+                              yaxis=dict(range=[0, max(position_stats['points_per_million'].max() * 10,
+                                                       position_stats['total_points'].max()) * 1.2]))
     else:
-        pos_fig = go.Figure()
+        pos_fig = None
 
-    # Model vs FPL card (once a gameweek has been scored; details in the Model Lab)
-    board = data.get('model_scoreboard') or {}
-    if board.get('gws'):
-        beats = board['rmse_model'] < board['rmse_fpl']
-        cal_card = html.Div([
-            html.H3("Model vs FPL's Projections", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-            html.P([
-                f"Over {board['gws']} finished gameweek{'s' if board['gws'] != 1 else ''}, the app's typical "
-                f"projection error is ", html.Strong(f"{board['rmse_model']:.2f} pts"),
-                " vs FPL's xP at ", html.Strong(f"{board['rmse_fpl']:.2f} pts"),
-                f"; its top 10 picks averaged {board['top10_model']:.1f} points vs FPL's "
-                f"{board['top10_fpl']:.1f}. ",
-                ("The model is ahead — trust the Proj columns." if beats else
-                 "FPL's xP is ahead — treat the projections as a second opinion."),
-                " Full breakdown in the Model Lab.",
-            ], style={'color': COLORS['text_dark'], 'margin': 0}),
-        ], style={**CARD_STYLE, 'backgroundColor': '#f0faf4' if beats else '#fdf6ec'})
-    else:
-        cal_card = html.Div()
-
-    # Build and return layout
+    gw_label = f"GW{current_gw_now['id']}" if current_gw_now else "This GW"
     return html.Div([
-        cal_card,
+        _home_hero(next_gw_now, current_gw_now, avg_gw, highest_gw),
+        _home_model_strip(data.get('model_scoreboard') or {}),
         html.Div([
-            html.H2("Season Overview", style={'color': COLORS['primary'], 'margin': '0 0 4px 0'}),
-            html.P(f"Key statistics from the {data.get('season_label', SEASON['label'])} FPL season",
-                   style={'color': COLORS['text_light']})
-        ], style={'marginBottom': '24px'}),
+            _home_tile("Managers", f"{total_mgrs:,}", "Playing worldwide"),
+            _home_tile(f"{gw_label} average", f"{avg_gw} pts", "Across every team"),
+            _home_tile(f"{gw_label} highest", f"{highest_gw} pts", "Best score this gameweek"),
+            _home_tile("Chips played", f"{total_chips:,}" if total_chips else "–", f"In {gw_label}"),
+        ], className='tile-grid'),
 
+        _home_section_head("Player spotlights", "Who the game is backing, and who's delivering",
+                           'captain', 'Captaincy'),
         html.Div([
-            html.Div([build_stat_card("Total Managers", f"{total_mgrs:,}", "Competing worldwide")],
-                     style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
-            html.Div([build_stat_card("Current Gameweek",
-                                      current_gw_now['name'].replace('Gameweek ', 'GW') if current_gw_now else "N/A",
-                                      f"Average: {avg_gw} pts")],
-                     style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
-            html.Div([build_stat_card("Highest GW Score", f"{highest_gw}", "This gameweek", color=COLORS['success_text'])],
-                     style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
-            html.Div([
-                build_stat_card(
-                    "Next Deadline",
-                    next_gw_now['name'].replace('Gameweek ', 'GW') if next_gw_now else "N/A",
-                    datetime.fromisoformat(
-                        next_gw_now['deadline_time'].replace('Z', '+00:00')
-                    ).astimezone(
-                        ZoneInfo('Europe/London')
-                    ).strftime('%a %d %b, %H:%M') if next_gw_now else "",
-                    link_page='deadline',
-                    link_label='Deadline dashboard'
-                )
-            ],
-                style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
-        ], style={'display': 'flex', 'flexWrap': 'wrap', 'margin': '0 -10px 40px -10px'}),
+            _home_person(most_cap, "Most captained", html.Span(f"The most popular captain in {gw_label}")),
+            _home_person(most_vice, "Most vice-captained", html.Span(f"The most popular vice in {gw_label}")),
+            _home_person(top_scorer_now, "Top scorer", [html.B(
+                f"{int(top_scorer_now['total_points'])}" if top_scorer_now is not None else ''), " points"]),
+            _home_person(most_selected_now, "Most selected", [html.B(
+                f"{most_selected_now['ownership']:.1f}%" if most_selected_now is not None else ''), " owned"]),
+            _home_person(best_value_now, "Best value", [html.B(
+                f"{best_value_now['points_per_million']:.2f}" if best_value_now is not None else ''),
+                " points per £m"]),
+            _home_person(top_form_now, "In form", [html.B(
+                f"{top_form_now['form']:.1f}" if top_form_now is not None else ''), " form"]),
+        ], className='people-grid'),
+
+        _home_section_head("Chips", f"Played in {gw_label}, and the share of teams that have used each "
+                           f"so far (two chip sets a season, so a share can pass 100%)",
+                           'chip-planner', 'Chip planner'),
+        _home_chips(chips, season_chips),
 
         html.Div([
-            html.Div([build_stat_card(
-                "Most Captained",
-                most_cap['web_name'] if most_cap is not None else "N/A",
-                f"{most_cap['team_name']} - £{most_cap['price']:.1f}m" if most_cap is not None else "Data available after deadline",
-                color=COLORS['primary'],
-                image_code=most_cap if most_cap is not None else None,
-                link_page='captain', link_label='Captain optimiser'
-            )], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
-            html.Div([build_stat_card(
-                "Most Vice-Captained",
-                most_vice['web_name'] if most_vice is not None else "N/A",
-                f"{most_vice['team_name']} - £{most_vice['price']:.1f}m" if most_vice is not None else "Data available after deadline",
-                color=COLORS['accent'],
-                image_code=most_vice if most_vice is not None else None,
-                link_page='captain', link_label='Captain optimiser'
-            )], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
-            html.Div([build_stat_card(
-                "Chips Used This GW",
-                f"{total_chips:,}" if total_chips > 0 else "N/A",
-                chip_sum,
-                color=COLORS['info_text']
-            ,
-                link_page='chip-planner', link_label='Chip planner')], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
-        ], style={'display': 'flex', 'flexWrap': 'wrap', 'margin': '0 -10px 40px -10px'}),
+            _home_section_head("Position breakdown", "Average points, and points per £m, by position "
+                               "(players with regular minutes)"),
+            html.Div([dcc.Graph(figure=pos_fig, config={'displayModeBar': False})], style=CARD_STYLE),
+        ]) if pos_fig is not None else html.Div(),
+    ], style={'paddingTop': '4px'})
 
-        html.Div([
-            html.H2("Chip Usage This Gameweek", style={'color': COLORS['primary'], 'margin': '0 0 4px 0'}),
-            html.P("Number of managers activating each chip", style={'color': COLORS['text_light']})
-        ], style={'marginBottom': '24px'}),
 
-        html.Div([dcc.Graph(figure=chip_fig, config={'displayModeBar': False})], style=CARD_STYLE),
+def _home_jump(label, page, cls='link-btn'):
+    """A button that opens another page. Each page may appear only once on
+    Home: the jump buttons are keyed by page, so a repeat would clash."""
+    return html.Button(label, id={'type': 'home-jump', 'page': page}, n_clicks=0, className=cls)
 
-        html.Div([
-            html.H2("How Much of the Game Has Used Each Chip",
-                    style={'color': COLORS['primary'], 'margin': '0 0 4px 0'}),
-            html.P(f"Season to date across all {season_chips['total_players']:,} teams, "
-                   f"summed over {season_chips['gws']} gameweeks. Two chip sets per season "
-                   f"means a share can exceed the share of managers \u2014 read it as plays "
-                   f"per team.", style={'color': COLORS['text_light']})
-        ], style={'marginBottom': '24px'}) if season_chips['rows'] else html.Div(),
 
+def _countdown_text(deadline_utc, now=None):
+    secs = (deadline_utc - (now or datetime.now(timezone.utc))).total_seconds()
+    if secs <= 0:
+        return "Passed"
+    d, h, m = int(secs // 86400), int(secs % 86400 // 3600), int(secs % 3600 // 60)
+    return f"{d}d {h}h" if d else (f"{h}h {m}m" if h else f"{m}m")
+
+
+def _home_hero(next_gw, current_gw, avg_gw, highest_gw):
+    if next_gw:
+        deadline = datetime.fromisoformat(next_gw['deadline_time'].replace('Z', '+00:00'))
+        local = deadline.astimezone(ZoneInfo('Europe/London'))
+        title = next_gw['name']
+        sub = f"Deadline {local.strftime('%a')} {local.day} {local.strftime('%b')} at {local.strftime('%H:%M')} (UK time)"
+        countdown = html.Div([
+            # The page script re-counts every element carrying data-deadline
+            html.Div(_countdown_text(deadline), className='home-countdown-num',
+                     **{'data-deadline': deadline.isoformat()}),
+            html.Div("until the deadline", className='home-countdown-lbl'),
+        ], className='home-countdown')
+    else:
+        title, sub, countdown = "Season complete", "No more deadlines this season", None
+    last = (f" · {current_gw['name']}: average {avg_gw} pts, highest {highest_gw}"
+            if current_gw else "")
+    return html.Div([
         html.Div([
             html.Div([
-                build_stat_card(r['chip'], f"{r['pct']:.1f}%", f"{r['played']:,} played",
-                                color=COLORS['accent'])
-            ], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'})
-            for r in season_chips['rows']
-        ], style={'display': 'flex', 'flexWrap': 'wrap', 'margin': '0 -10px 40px -10px'}
-        ) if season_chips['rows'] else html.Div(),
-
+                html.P("Next deadline" if next_gw else "Fantasy Premier League", className='home-eyebrow'),
+                html.H1(title),
+                html.P(sub + last, className='home-hero-sub'),
+            ]),
+            countdown,
+        ], className='home-hero-top'),
         html.Div([
-            html.H2("Player Spotlights", style={'color': COLORS['primary'], 'margin': '0 0 4px 0'}),
-            html.P("Top performers across key metrics", style={'color': COLORS['text_light']})
-        ], style={'marginBottom': '24px'}),
+            _home_jump("Run the deadline check", 'deadline', 'home-action primary'),
+            _home_jump("Plan transfers", 'transfer-planner', 'home-action'),
+            _home_jump("My squad", 'my-squad', 'home-action'),
+            _home_jump("Find differentials", 'differentials', 'home-action'),
+        ], className='home-actions'),
+    ], className='home-hero')
 
+
+def _home_model_strip(board):
+    """Model vs FPL in one row; the full scoreboard is in the Model Lab."""
+    if not board.get('gws'):
+        return html.Div([
+            html.Div([
+                html.P("Model vs FPL's projections", className='tile-label'),
+                html.Div("Tracking has started. The first head-to-head appears once a gameweek with "
+                         "saved projections has finished.", className='model-verdict'),
+                _home_jump("Model Lab →", 'model-lab'),
+            ], style={'gridColumn': '1 / -1'}),
+        ], className='model-strip')
+    gws = board['gws']
+    beats = board['rmse_model'] < board['rmse_fpl']
+    pct = (1 - board['rmse_model'] / board['rmse_fpl']) * 100 if board['rmse_fpl'] else 0
+    verdict = (f"The model is ahead: its typical error is {pct:.0f}% lower than FPL's xP."
+               if beats else
+               f"FPL's xP is ahead: its typical error is {abs(pct):.0f}% lower than the model's.")
+
+    def pair(label, model_val, fpl_val, model_better, unit=''):
+        return html.Div([
+            html.P(label, className='tile-label'),
+            html.Div([
+                html.B(f"{model_val}{unit}", className='win' if model_better else ''),
+                html.Span(f"vs {fpl_val}{unit} FPL"),
+            ], className='model-pair'),
+        ])
+
+    return html.Div([
         html.Div([
-            build_player_spotlight(top_scorer_now, "Top Scorer", "Total Points",
-                                   f"{int(top_scorer_now['total_points'])}" if top_scorer_now is not None else "N/A",
-                                   link_page='value', link_label='Points table'),
-            build_player_spotlight(most_selected_now, "Most Selected", "Ownership",
-                                   f"{most_selected_now['ownership']:.1f}%" if most_selected_now is not None else "N/A",
-                                   link_page='differentials', link_label='Ownership table'),
-            build_player_spotlight(best_value_now, "Best Value", "Points/£m",
-                                   f"{best_value_now['points_per_million']:.2f}" if best_value_now is not None else "N/A",
-                                   link_page='value', link_label='Value analysis'),
-            build_player_spotlight(top_form_now, "In Form", "Form Rating",
-                                   f"{top_form_now['form']:.1f}" if top_form_now is not None else "N/A",
-                                   link_page='form', link_label='Form tracker'),
-        ], style={'display': 'flex', 'flexWrap': 'wrap', 'gap': '20px', 'marginBottom': '40px'}),
+            html.P(f"Model vs FPL · {gws} gameweek{'s' if gws != 1 else ''}", className='tile-label'),
+            html.Div(verdict, className='model-verdict'),
+            _home_jump("Full scoreboard →", 'model-lab'),
+        ]),
+        pair("Typical error", f"{board['rmse_model']:.2f}", f"{board['rmse_fpl']:.2f}", beats),
+        pair("Top 10 picks", f"{board['top10_model']:.1f}", f"{board['top10_fpl']:.1f}",
+             board['top10_model'] > board['top10_fpl'], ' pts'),
+        pair("Captain test", f"{board['cap_model_pts']}", f"{board['cap_fpl_pts']}",
+             board['cap_model_pts'] > board['cap_fpl_pts'], ' pts'),
+    ], className='model-strip')
 
+
+def _home_tile(label, value, sub):
+    return html.Div([html.P(label, className='tile-label'), html.Div(value, className='tile-value'),
+                     html.Div(sub, className='tile-sub')], className='tile')
+
+
+def _home_section_head(title, sub, page=None, link=None):
+    return html.Div([
+        html.Div([html.H2(title), html.P(sub)]),
+        _home_jump(f"{link} →", page) if page else None,
+    ], className='section-head')
+
+
+def _home_person(player, tag, stat):
+    if player is None:
+        return html.Div([html.Div([html.Span(tag, className='person-tag'),
+                                   html.Div("Not available yet", className='person-meta')],
+                                  className='person-body')], className='person')
+    return html.Div([
+        player_photo_img(player, style={'width': '54px', 'height': '68px'}),
         html.Div([
-            html.H2("Position Breakdown", style={'color': COLORS['primary'], 'margin': '0 0 4px 0'}),
-            html.P("Average points and value by position", style={'color': COLORS['text_light']})
-        ], style={'marginBottom': '24px'}),
+            html.Span(tag, className='person-tag'),
+            html.Div(player['web_name'], className='person-name'),
+            html.Div(f"{player['team_name']} · {player['position']} · £{player['price']:.1f}m",
+                     className='person-meta'),
+            html.Div(stat, className='person-stat'),
+        ], className='person-body'),
+    ], className='person')
 
-        html.Div([dcc.Graph(figure=pos_fig, config={'displayModeBar': False})], style=CARD_STYLE),
 
-    ], style={'padding': '20px 0'})
+def _home_chips(chips, season_chips):
+    this_gw = {chip_name_map.get(c['chip_name'], c['chip_name']): c['num_played'] for c in (chips or [])}
+    rows = season_chips.get('rows') or [{'chip': n, 'played': 0, 'pct': 0.0} for n in this_gw]
+    if not rows:
+        return html.Div("No chip data yet.", className='tile', style={'marginBottom': '28px'})
+    return html.Div([
+        html.Div([
+            html.Div(r['chip'], className='chip-name'),
+            html.Div(f"{this_gw.get(r['chip'], 0):,}", className='chip-num'),
+            html.Div(f"this GW · {r['pct']:.1f}% of teams this season", className='chip-sub'),
+            html.Div(html.Div(style={'width': f"{min(r['pct'], 100):.1f}%"}), className='chip-bar'),
+        ], className='chip-tile')
+        for r in rows
+    ], className='chip-row')
 
 
 # RANK CONGESTION TOOL
