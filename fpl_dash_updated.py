@@ -6868,7 +6868,10 @@ app.index_string = '''
                 font-size: 12.5px; font-weight: 600; cursor: pointer;
                 transition: background 0.15s, color 0.15s;
             }
-            .sec-btn:hover { background: var(--surface-2); color: var(--brand); }
+            @media (hover: hover) {
+                .sec-btn:hover { background: var(--surface-2); color: var(--brand); }
+                .tab:hover { color: var(--brand); background: rgba(55, 0, 60, 0.04); }
+            }
             .sec-btn:focus-visible, .tab:focus-visible { outline: none; box-shadow: var(--focus); }
             .sec-ico {
                 width: 52px; height: 32px; border-radius: 999px; display: flex;
@@ -6886,32 +6889,36 @@ app.index_string = '''
             .sec-btn.active { color: var(--brand); font-weight: 700; }
             .sec-btn.active .sec-ico { background: var(--green); }
 
+            .main-col {
+                flex: 1 1 auto; min-width: 0; height: 100%;
+                display: flex; flex-direction: column;
+            }
             #content-area {
-                flex: 1 1 auto; min-width: 0; height: 100%; overflow-y: auto;
-                padding: 0 28px 48px; background: var(--bg);
+                flex: 1 1 auto; min-width: 0; min-height: 0; overflow-y: auto;
+                padding: 24px 28px 48px; background: var(--bg);
             }
             #content-area > div[id^="page-"], #stale-stats-banner {
                 max-width: 1400px; margin-left: auto; margin-right: auto;
             }
 
-            /* Page tabs: sticky row at the top of the content column */
+            /* Page tabs: a fixed row above the scrolling content. It scrolls
+               sideways only: overflow-y hidden, and nothing pokes out below. */
             .page-tabs {
-                position: sticky; top: 0; z-index: 400; margin: 0 -28px 24px; padding: 10px 28px 0;
-                background: rgba(245, 243, 247, 0.9); border-bottom: 1px solid var(--border);
-                -webkit-backdrop-filter: saturate(180%) blur(12px); backdrop-filter: saturate(180%) blur(12px);
+                flex: 0 0 auto; z-index: 400; padding: 10px 28px 0;
+                background: var(--bg); border-bottom: 1px solid var(--border);
             }
             .tab-group {
-                gap: 2px; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch;
+                gap: 2px; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain;
+                scrollbar-width: none; -webkit-overflow-scrolling: touch;
                 max-width: 1400px; margin: 0 auto;
             }
             .tab-group::-webkit-scrollbar { display: none; }
             .tab {
-                flex: 0 0 auto; border: 0; background: transparent; padding: 10px 14px 12px;
-                margin-bottom: -1px; font-size: 14.5px; font-weight: 600; color: var(--muted);
+                flex: 0 0 auto; border: 0; background: transparent; padding: 10px 14px 9px;
+                font-size: 14.5px; font-weight: 600; color: var(--muted);
                 cursor: pointer; white-space: nowrap; border-bottom: 3px solid transparent;
                 border-radius: 8px 8px 0 0; transition: color 0.15s, border-color 0.15s, background 0.15s;
             }
-            .tab:hover { color: var(--brand); background: rgba(55, 0, 60, 0.04); }
             .tab.active { color: var(--brand); font-weight: 700; border-bottom-color: var(--brand); }
 
             /* Page heading: the first card on each page */
@@ -7154,12 +7161,11 @@ app.index_string = '''
                     flex: 1 1 0; min-width: 0; min-height: 0; height: 54px; gap: 3px;
                     padding: 4px 0; border-radius: 12px; font-size: 11px;
                 }
-                .sec-btn:hover { background: transparent; }
                 .sec-ico { width: 50px; height: 28px; }
                 .sec-ico::before { width: 20px; height: 20px; }
-                #content-area { padding: 0 12px calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 28px); }
-                .page-tabs { margin: 0 -12px 16px; padding: 4px 6px 0; }
-                .tab { padding: 10px 11px 11px; font-size: 14px; }
+                #content-area { padding: 16px 12px calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 28px); }
+                .page-tabs { padding: 4px 6px 0; }
+                .tab { padding: 10px 11px 8px; font-size: 14px; }
                 .page-intro { margin-bottom: 16px; }
                 .page-intro > h3:first-child { font-size: 24px !important; }
                 .page-intro p, .page-intro li { font-size: 14.5px !important; }
@@ -7729,9 +7735,10 @@ app.layout = html.Div([
                  children=[_section_button(sec, label) for sec, label, _ in NAV_SECTIONS]),
 
         # Content area — all pages live here, show/hide via callback
+        # Tab row sits above the scroller, so it never moves vertically
+        html.Div(className='main-col', children=[
+        _page_tabs(),
         html.Div(id='content-area', children=[
-
-            _page_tabs(),
 
             # Carried-over-stats warning; populated by callback, empty in-season.
             # Must live INSIDE the content column — as a direct child of the
@@ -10422,6 +10429,7 @@ app.layout = html.Div([
             ]),
 
         ]),  # end content-area
+        ]),  # end main-col
 
     ], id='app-body'),  # end app-body (sidebar + content)
 
