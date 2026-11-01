@@ -10867,8 +10867,8 @@ def update_home_tab(n):
         _home_model_strip(data.get('model_scoreboard') or {}),
         html.Div([
             _home_tile("Managers", f"{total_mgrs:,}", "Playing worldwide"),
-            _home_tile(f"{gw_label} average", f"{avg_gw} pts", "Across every team"),
-            _home_tile(f"{gw_label} highest", f"{highest_gw} pts", "Best score this gameweek"),
+            _home_tile(f"{gw_label} Average", f"{avg_gw} pts", "Across every team"),
+            _home_tile(f"{gw_label} Highest", f"{highest_gw} pts", "Best score this gameweek"),
             _home_tile("Chips played", f"{total_chips:,}" if total_chips else "–", f"In {gw_label}"),
         ], className='tile-grid'),
 
