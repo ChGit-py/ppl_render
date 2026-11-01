@@ -10753,7 +10753,7 @@ def _refresh_status_text(n):
         if DATA.get('refreshing', False):
             return gw_text, "Refreshing data..."
         if not DATA.get('heavy_loaded', False):
-            return gw_text, f"Updated {refresh_time} ({age_mins}m ago) · Loading detailed stats..."
+            return gw_text, f"Updated {refresh_time} ({age_mins}m ago) | Loading detailed stats..."
         return gw_text, f"Updated {refresh_time} ({age_mins}m ago)"
     return gw_text, "Loading..."
 
@@ -10929,7 +10929,7 @@ def _home_hero(next_gw, current_gw, avg_gw, highest_gw):
         ], className='home-countdown')
     else:
         title, sub, countdown = "Season complete", "No more deadlines this season", None
-    last = (f" · {current_gw['name']}: average {avg_gw} pts, highest {highest_gw}"
+    last = (f" | {current_gw['name']}: average {avg_gw} pts, highest {highest_gw}"
             if current_gw else "")
     return html.Div([
         html.Div([
@@ -10978,7 +10978,7 @@ def _home_model_strip(board):
 
     return html.Div([
         html.Div([
-            html.P(f"Model vs FPL · {gws} gameweek{'s' if gws != 1 else ''}", className='tile-label'),
+            html.P(f"Model vs FPL | {gws} gameweek{'s' if gws != 1 else ''}", className='tile-label'),
             html.Div(verdict, className='model-verdict'),
             _home_jump("Full scoreboard →", 'model-lab'),
         ]),
@@ -11012,7 +11012,7 @@ def _home_person(player, tag, stat):
         html.Div([
             html.Span(tag, className='person-tag'),
             html.Div(player['web_name'], className='person-name'),
-            html.Div(f"{player['team_name']} · {player['position']} · £{player['price']:.1f}m",
+            html.Div(f"{player['team_name']} | {player['position']} | £{player['price']:.1f}m",
                      className='person-meta'),
             html.Div(stat, className='person-stat'),
         ], className='person-body'),
@@ -11028,7 +11028,7 @@ def _home_chips(chips, season_chips):
         html.Div([
             html.Div(r['chip'], className='chip-name'),
             html.Div(f"{this_gw.get(r['chip'], 0):,}", className='chip-num'),
-            html.Div(f"this GW · {r['pct']:.1f}% of teams this season", className='chip-sub'),
+            html.Div(f"this GW | {r['pct']:.1f}% of teams this season", className='chip-sub'),
             html.Div(html.Div(style={'width': f"{min(r['pct'], 100):.1f}%"}), className='chip-bar'),
         ], className='chip-tile')
         for r in rows
@@ -13892,7 +13892,7 @@ def load_my_squad(n_clicks, team_id, free_transfers=1):
                           style={'color': COLORS['text_light']}),
                 html.Span(status_text,
                           style={'color': status_color, 'fontWeight': '600'}),
-                html.Span(f" · {news}" if news else '',
+                html.Span(f" | {news}" if news else '',
                           style={'color': COLORS['text_light'], 'fontSize': '13px'}),
             ], style={'marginBottom': '8px'}))
 
@@ -15584,7 +15584,7 @@ def _shot_intel_status(data):
     if st.get('error'):
         extra.append(f" Last sync issue: {st['error']}.")
         tone = 'warn'
-    return intel, _shot_note(' · '.join(bits) + '.' + ''.join(extra), tone)
+    return intel, _shot_note(' | '.join(bits) + '.' + ''.join(extra), tone)
 
 
 def _blank_fig(msg='', height=300):
@@ -15659,7 +15659,7 @@ def _half_pitch_fig(shots, left_label, right_label):
                         opacity=0.72, line=dict(width=0.5, color='white')),
             customdata=np.stack([d['player'].fillna(''), d['xg'], d['result'].fillna(''),
                                  d['last_action'].fillna('')], axis=-1),
-            hovertemplate='%{customdata[0]}<br>xG %{customdata[1]:.2f} · %{customdata[2]}'
+            hovertemplate='%{customdata[0]}<br>xG %{customdata[1]:.2f} | %{customdata[2]}'
                           '<br>Set up by: %{customdata[3]}<extra></extra>'))
     return fig
 
