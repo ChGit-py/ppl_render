@@ -9068,19 +9068,20 @@ app.layout = html.Div([
                     html.Div([
                         html.H3("Fixture Swings — Buy the Run Early", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
                         html.P("Teams whose attacking fixtures change sharply between the next 3 GWs and the 3 after. "
-                               "A big improvement means buy their attackers BEFORE the run starts — getting there a "
-                               "week early is the cheap edge. Negative swing = fixtures about to turn bad.",
+                               "A positive swing means the run is about to get easier: buy their attackers BEFORE "
+                               "it starts — getting there a week early is the cheap edge. A negative swing means "
+                               "fixtures are about to turn bad.",
                                style={'color': COLORS['text_light']}),
                         dash_table.DataTable(
                             id='fdr-swing-table', data=[],
                             columns=[
                                 {'name': 'Team', 'id': 'team'},
-                                {'name': 'aFDR GW+1..3', 'id': 'now_att', 'type': 'numeric'},
-                                {'name': 'aFDR GW+4..6', 'id': 'later_att', 'type': 'numeric'},
+                                {'name': 'aFDR next 3', 'id': 'now_att', 'type': 'numeric'},
+                                {'name': 'aFDR GWs 4-6', 'id': 'later_att', 'type': 'numeric'},
                                 {'name': 'Attack Swing', 'id': 'att_swing', 'type': 'numeric',
                                  'format': {'specifier': '+.2f'}},
-                                {'name': 'dFDR GW+1..3', 'id': 'now_def', 'type': 'numeric'},
-                                {'name': 'dFDR GW+4..6', 'id': 'later_def', 'type': 'numeric'},
+                                {'name': 'dFDR next 3', 'id': 'now_def', 'type': 'numeric'},
+                                {'name': 'dFDR GWs 4-6', 'id': 'later_def', 'type': 'numeric'},
                                 {'name': 'Defence Swing', 'id': 'def_swing', 'type': 'numeric',
                                  'format': {'specifier': '+.2f'}},
                             ],
@@ -9089,17 +9090,18 @@ app.layout = html.Div([
                             style_data=TABLE_STYLE_DATA,
                             style_data_conditional=[
                                 {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
-                                {'if': {'filter_query': '{att_swing} <= -0.4', 'column_id': 'att_swing'},
-                                 'backgroundColor': '#e6fff2', 'fontWeight': '600'},
                                 {'if': {'filter_query': '{att_swing} >= 0.4', 'column_id': 'att_swing'},
-                                 'backgroundColor': '#fde8ef'},
-                                {'if': {'filter_query': '{def_swing} <= -0.4', 'column_id': 'def_swing'},
                                  'backgroundColor': '#e6fff2', 'fontWeight': '600'},
+                                {'if': {'filter_query': '{att_swing} <= -0.4', 'column_id': 'att_swing'},
+                                 'backgroundColor': '#fde8ef'},
                                 {'if': {'filter_query': '{def_swing} >= 0.4', 'column_id': 'def_swing'},
+                                 'backgroundColor': '#e6fff2', 'fontWeight': '600'},
+                                {'if': {'filter_query': '{def_swing} <= -0.4', 'column_id': 'def_swing'},
                                  'backgroundColor': '#fde8ef'},
                             ]
                         ),
-                        html.P("Negative swing (green) = later fixtures are EASIER than the current window — buy window. "
+                        html.P("Swing = difficulty of the next 3 minus difficulty of the 3 after. Positive (green) = "
+                               "the later run is EASIER: a buy window. Negative (pink) = it gets harder. "
                                "Swings under \u00b10.4 are noise.",
                                style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginTop': '10px'})
                     ], style=CARD_STYLE),
@@ -11893,11 +11895,12 @@ def update_fixture_swings(_n):
         rows.append({
             'team': name_map[tid],
             'now_att': n_['att_fdr'], 'later_att': f_['att_fdr'],
-            'att_swing': round(f_['att_fdr'] - n_['att_fdr'], 2),
+            # Positive = the later run is easier (difficulty falls): an improvement
+            'att_swing': round(n_['att_fdr'] - f_['att_fdr'], 2),
             'now_def': n_.get('def_fdr'), 'later_def': f_.get('def_fdr'),
-            'def_swing': round((f_.get('def_fdr') or 3) - (n_.get('def_fdr') or 3), 2),
+            'def_swing': round((n_.get('def_fdr') or 3) - (f_.get('def_fdr') or 3), 2),
         })
-    rows.sort(key=lambda r: r['att_swing'])
+    rows.sort(key=lambda r: r['att_swing'], reverse=True)
     return rows
 
 
