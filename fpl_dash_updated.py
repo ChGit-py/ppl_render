@@ -4492,8 +4492,12 @@ def refresh_model_scoreboard():
             with DATA_LOCK:
                 DATA['model_log_read'] = {'ok': False, 'error': f"{type(e).__name__}: {e}"[:200]}
             print(f"  Couldn't read saved projections from GitHub: {e}")
-    for gw, v in load_predictions_local().items():
-        logs.setdefault(gw, v)
+    # The server's own database only stands in when there's no GitHub log:
+    # it can hold old rows (e.g. a database file committed to the repo)
+    # that weren't locked in at a deadline by this logger.
+    if not model_log_enabled():
+        for gw, v in load_predictions_local().items():
+            logs.setdefault(gw, v)
     events = {e.get('id'): e for e in boot.get('events') or []}
     for gw in sorted(logs):
         ev = events.get(gw) or {}
@@ -7145,6 +7149,47 @@ app.index_string = '''
             .chip-bar > div { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--green), var(--cyan)); }
 
             /* ================================================================
+               MODEL LAB
+            ================================================================ */
+            .lab-verdict {
+                background: var(--surface); border: 1px solid var(--border); border-left: 5px solid var(--green);
+                border-radius: 16px; box-shadow: var(--shadow); padding: 18px 22px; margin-bottom: 16px;
+            }
+            .lab-verdict.behind { border-left-color: var(--cyan); }
+            .lab-verdict h2 { margin: 2px 0 6px; font-size: 24px !important; }
+            .lab-verdict-text { margin: 0; color: var(--muted); font-size: 15px; max-width: 900px; }
+            .lab-verdict .lab-note { margin-top: 10px; }
+            .vs-row { display: flex; gap: 8px; margin: 8px 0; }
+            .vs-side { flex: 1 1 0; min-width: 0; border-radius: 12px; padding: 8px 10px; background: var(--surface-2); }
+            .vs-side.win { background: #e6fff2; }
+            .vs-who { font-size: 12px; font-weight: 700; color: var(--muted); }
+            .vs-num { font-size: 24px; font-weight: 800; letter-spacing: -0.02em; color: var(--brand); line-height: 1.2; }
+            .vs-side.win .vs-num { color: var(--green-ink); }
+            .lab-card-head {
+                display: flex; justify-content: space-between; align-items: flex-start;
+                gap: 12px; flex-wrap: wrap; margin-bottom: 12px;
+            }
+            .lab-card-head h3 { margin: 0 0 4px; }
+            .lab-card-head p { margin: 0; color: var(--muted); font-size: 14px; }
+            .lab-gw-pick { width: 180px; }
+            .lab-controls { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+            .lab-search { width: 220px; height: 38px; padding: 0 12px; font-size: 14px; }
+            .lab-note { color: var(--muted); font-size: 13px; margin: 4px 0 0; }
+            .lab-warn { background: #fff8e1; color: #7a5600; border-radius: 10px; padding: 8px 12px; font-size: 13px; margin-bottom: 8px; }
+            .lab-empty {
+                background: var(--surface); border: 1px dashed var(--border-strong); border-radius: 16px;
+                padding: 30px 24px; text-align: center; margin-bottom: 14px;
+            }
+            .lab-empty-title { font-size: 21px; font-weight: 800; color: var(--brand); margin: 4px 0 8px; letter-spacing: -0.01em; }
+            .lab-empty-text { color: var(--muted); max-width: 640px; margin: 0 auto; }
+            .lab-how { margin-top: 14px; }
+            .lab-how summary { font-weight: 700; color: var(--brand); font-size: 14px; list-style: none; }
+            .lab-how summary::-webkit-details-marker { display: none; }
+            .lab-how summary::after { content: ' +'; color: var(--muted); }
+            .lab-how[open] summary::after { content: ' \2013'; }
+            .lab-how p { color: var(--muted); font-size: 14px; margin: 8px 0 0; max-width: 900px; }
+
+            /* ================================================================
                TABLET & BELOW (≤ 900px): bottom tab bar, tighter spacing
             ================================================================ */
             @media (max-width: 900px) {
@@ -7239,6 +7284,11 @@ app.index_string = '''
                 .tile-value { font-size: 23px; }
                 .tile-label { font-size: 11px; }
                 .people-grid { grid-template-columns: 1fr; }
+                .vs-num { font-size: 20px; }
+                .vs-side { padding: 7px 8px; }
+                .lab-gw-pick, .lab-search { width: 100%; }
+                .lab-verdict { padding: 16px 16px; }
+                .lab-verdict h2 { font-size: 21px !important; }
                 .model-strip > div { padding: 12px 12px; }
                 .model-pair b { font-size: 19px; }
                 .home-hero h1 { font-size: 24px; }
@@ -7615,19 +7665,6 @@ home_value_cols = ['web_name', 'team_name', 'position', 'price', 'minutes', 'tot
 # Threshold shorthands for layout copy (SEASON is populated by this point)
 DEF_THR = SEASON['thresholds'].get('DEF', 10)
 MID_THR = SEASON['thresholds'].get('MID', 12)
-
-# Shared by the Diff and Mins filter dropdowns on the backtest player table —
-# a plain-English operator picker instead of requiring Dash's native
-# `{diff} >= 4`-style filter-box syntax.
-NUMERIC_FILTER_OPTIONS = [
-    {'label': 'Any', 'value': 'any'},
-    {'label': 'Greater than (>)', 'value': 'gt'},
-    {'label': 'Greater than or equal to (\u2265)', 'value': 'gte'},
-    {'label': 'Less than (<)', 'value': 'lt'},
-    {'label': 'Less than or equal to (\u2264)', 'value': 'lte'},
-    {'label': 'Equal to (=)', 'value': 'eq'},
-    {'label': 'Not equal to (\u2260)', 'value': 'neq'},
-]
 
 # Navigation: five sections, each holding a row of page tabs. Tab labels are
 # short; each page's own heading carries its full name. A desktop rail and a
@@ -9678,211 +9715,54 @@ app.layout = html.Div([
             # MY SQUAD PAGE
             # MODEL LAB PAGE
             html.Div(id='page-model-lab', style={'display': 'none'}, children=[
-                html.Div([
+                _page_heading(
+                    "Model Lab",
+                    "How close the app's projections come to the points players actually score, side by "
+                    "side with FPL's own expected points (xP). Both are locked in at each deadline and "
+                    "checked once the gameweek has finished."),
+                dcc.Loading(html.Div(id='lab-scoreboard'), type='circle', color=COLORS['primary']),
+                html.Div(id='lab-gw-section', style={'display': 'none'}, children=[
                     html.Div([
-                        html.H3("Model Lab", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
-                        html.P(["How good are the app's projections? The scoreboard compares them with ",
-                                html.Strong("FPL's own projected points (xP)"), " on every finished gameweek, "
-                                "using the numbers both showed just before the deadline. It updates by itself "
-                                "after every refresh and every gameweek. Further down: how a projection is "
-                                "built, a breakdown for any player, and a replay of the season."],
-                               style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': 0}),
-                    ], className='page-intro'),
-
-                    html.Div([
-                        html.H3("Model vs FPL's Projections", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-                        dcc.Loading(html.Div(id='lab-scoreboard'), type='circle', color=COLORS['primary']),
-                    ], style=CARD_STYLE),
-
-                    html.Div([
-                        html.H3("How a Projection Is Built", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-                        html.P("Each player's projected points for a gameweek add up the ways FPL scores, "
-                               "each estimated separately:", style={'color': COLORS['text_dark'],
-                                                                     'marginBottom': '8px'}),
-                        html.Ul([
-                            html.Li([html.Strong("Minutes. "), "How often he starts and plays 60+, weighted "
-                                     "towards recent matches, then scaled by FPL's injury and suspension "
-                                     "flags week by week (with return dates read from the news)."]),
-                            html.Li([html.Strong("Goals and assists. "), "His xG and xA per 90, steadied "
-                                     "early in the season by last season's rates and his price; a boost for "
-                                     "penalty takers; and, when odds are available, half from the bookmakers' "
-                                     "anytime-scorer prices for the next gameweek."]),
-                            html.Li([html.Strong("Fixtures. "), "Every team's attack and defence are rated from "
-                                     "this season's and last season's xG and from bookmaker prices (past and "
-                                     "upcoming), with home advantage. Doubles count twice, blanks zero."]),
-                            html.Li([html.Strong("Clean sheets and goals conceded. "), "The chance of a clean "
-                                     "sheet and the expected deductions come from the same team ratings, "
-                                     "sharpened by match odds where priced."]),
-                            html.Li([html.Strong("Defensive contributions, saves and bonus. "), "Each player's "
-                                     "own rates: how close his defensive actions run to the DefCon threshold, "
-                                     "a keeper's saves, and his bonus record."]),
-                            html.Li([html.Strong("Upside. "), "4,000 simulated gameweeks per player give the "
-                                     "chance of 10+ or 15+ points used for captaincy and hauls."]),
-                        ], style={'color': COLORS['text_dark'], 'paddingLeft': '20px', 'lineHeight': '1.55'}),
-                        html.P("Each part was tested on a full replay of the 2025/26 season before going in.",
-                               style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginTop': '6px',
-                                      'marginBottom': 0}),
-                    ], style=CARD_STYLE),
-
-                    html.Div([
-                        html.H4("Projection Breakdown", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-                        html.P(["A projection is eight components summed. Collapsed into one number they are "
-                                "impossible to interrogate: an 8.8 built from a modest rate \u00d7 a 1.6 fixture "
-                                "multiplier looks identical to an 8.5 rate barely scaled, and those need "
-                                "opposite fixes. ", html.Strong("Neutral"), " is the projection at a "
-                                "league-average fixture; ", html.Strong("Fix \u00d7"), " is the attacking "
-                                "environment multiplier actually applied. If Proj is far above Neutral the "
-                                "fixture model is driving it; if Neutral is already high, the player's own "
-                                "rates are."],
-                               style={'color': COLORS['text_light'], 'marginBottom': '12px'}),
                         html.Div([
                             html.Div([
-                                html.Label("Position", style={'fontWeight': '600', 'marginBottom': '6px',
-                                                              'display': 'block'}),
-                                dcc.Dropdown(id='lab-bd-position',
-                                             options=[{'label': 'All', 'value': 'All'}] +
-                                                     [{'label': x, 'value': x} for x in ['GKP', 'DEF', 'MID', 'FWD']],
-                                             value='All', clearable=False)
-                            ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
-                            html.Div([
-                                html.Label("Team", style={'fontWeight': '600', 'marginBottom': '6px',
-                                                          'display': 'block'}),
-                                dcc.Dropdown(id='lab-bd-team',
-                                             options=[{'label': 'All', 'value': 'All'}] +
-                                                     [{'label': t, 'value': t} for t in sorted_teams],
-                                             value='All', clearable=False)
-                            ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
-                            html.Div([
-                                html.Label("Search player", style={'fontWeight': '600', 'marginBottom': '6px',
-                                                                   'display': 'block'}),
-                                dcc.Input(id='lab-bd-search', type='text', value='', debounce=True,
-                                          placeholder='e.g. Gross',
-                                          style={'width': '100%', 'padding': '8px', 'borderRadius': '4px',
-                                                 'border': '1px solid #ccc'})
-                            ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
-                        ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-end',
-                                  'marginBottom': '16px'}),
-                        dcc.Graph(id='lab-bd-chart', config={'displayModeBar': False}),
-                        html.Div(id='lab-bd-table')
+                                html.H3("Player by player"),
+                                html.P("Each player's projection from the model and from FPL, next to the "
+                                       "points he scored. Closer shows which one was nearer."),
+                            ]),
+                            html.Div(dcc.Dropdown(id='lab-gw', options=[], value=None, clearable=False,
+                                                  searchable=False), className='lab-gw-pick'),
+                        ], className='lab-card-head'),
+                        html.Div([
+                            dcc.Input(id='lab-search', type='search', placeholder='Search player',
+                                      debounce=True, className='lab-search'),
+                            dcc.Checklist(id='lab-played', value=['played'],
+                                          options=[{'label': ' Only players who played', 'value': 'played'}]),
+                        ], className='lab-controls'),
+                        html.P(id='lab-gw-summary', className='lab-note', style={'margin': '0 0 10px'}),
+                        dash_table.DataTable(
+                            id='lab-gw-table', data=[],
+                            columns=[
+                                {'name': 'Player', 'id': 'name'},
+                                {'name': 'Team', 'id': 'team'},
+                                {'name': 'Pos', 'id': 'pos'},
+                                {'name': 'Model', 'id': 'proj', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                {'name': 'FPL xP', 'id': 'ep', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                                {'name': 'Points', 'id': 'pts', 'type': 'numeric'},
+                                {'name': 'Closer', 'id': 'closer'},
+                            ],
+                            sort_action='native', sort_by=[{'column_id': 'pts', 'direction': 'desc'}],
+                            page_size=15,
+                            style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
+                            style_data=TABLE_STYLE_DATA,
+                            style_data_conditional=[
+                                {'if': {'column_id': 'pts'}, 'fontWeight': '700'},
+                                {'if': {'filter_query': '{closer} = "Model"', 'column_id': 'closer'},
+                                 'backgroundColor': '#e6fff2', 'color': COLORS['success_text'], 'fontWeight': '700'},
+                                {'if': {'filter_query': '{closer} = "FPL"', 'column_id': 'closer'},
+                                 'backgroundColor': '#e6f6f8', 'color': COLORS['info_text'], 'fontWeight': '700'},
+                            ]),
                     ], style=CARD_STYLE),
-
-                    html.Div([
-                        html.H3("Season Replay: Model vs Simple Baselines",
-                                style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-                        html.P(["Replays every finished gameweek of this season. For each one it rebuilds "
-                                "every player's numbers from matches ", html.Strong("before"), " that "
-                                "gameweek, projects, then scores the projection against what happened. "
-                                "It needs no saved data, so it works any time — but it can't include "
-                                "FPL's xP (FPL doesn't keep old xP); the scoreboard above covers that.",
-                                html.Br(), html.Br(),
-                                html.Strong("Read it against the baselines: "),
-                                "'his points per game so far' and 'the average for his position'. A model "
-                                "that can't beat those isn't earning its place. Ranking (rank correlation, "
-                                "top 20) matters most, since every decision in this app is a ranking.",
-                                html.Br(), html.Br(),
-                                html.Em("Takes up to a minute. FPL doesn't archive injury flags, so everyone "
-                                        "is treated as fit; that makes every method look slightly worse "
-                                        "than live, equally.")],
-                               style={'color': COLORS['text_light'], 'marginBottom': '12px'}),
-                        html.Button('Run Backtest', id='lab-bt-run', n_clicks=0,
-                                    style={'backgroundColor': COLORS['primary'], 'color': 'white',
-                                           'border': 'none', 'padding': '12px 24px',
-                                           'borderRadius': '8px', 'fontWeight': '600',
-                                           'cursor': 'pointer', 'marginBottom': '16px'}),
-                        dcc.Loading(html.Div(id='lab-bt-out'), type='circle',
-                                    color=COLORS['primary']),
-                        # Per-player rows: part of the page from the start (hidden until
-                        # a replay has run) so its filter callbacks always have targets
-                        html.Div(id='lab-player-section', style={'display': 'none'}, children=[
-                            html.H4("Every Player, Every Gameweek",
-                                    style={'color': COLORS['primary'], 'margin': '24px 0 8px 0'}),
-                            html.P("What the model projected and what he actually scored. Sort any column, "
-                                   "or type in the GW/Player/Pos boxes to search by text. "
-                                   "Diff is actual minus projected, so positive means the model was too low. "
-                                   "Use the Diff/Mins filters below for numeric thresholds \u2014 no query "
-                                   "syntax needed.",
-                                   style={'color': COLORS['text_light'], 'marginBottom': '12px'}),
-
-                            html.Div([
-                                html.Div([
-                                    html.Label("Diff filter", style={'fontWeight': '600', 'marginBottom': '6px',
-                                                                      'display': 'block'}),
-                                    html.Div([
-                                        dcc.Dropdown(id='lab-diff-op', options=NUMERIC_FILTER_OPTIONS,
-                                                     value='any', clearable=False,
-                                                     style={'minWidth': '190px', 'flex': '1'}),
-                                        dcc.Input(id='lab-diff-value', type='number', placeholder='e.g. 0',
-                                                  style={'width': '90px', 'padding': '8px', 'marginLeft': '8px',
-                                                         'borderRadius': '4px', 'border': '1px solid #ccc'}),
-                                    ], style={'display': 'flex', 'alignItems': 'center'})
-                                ], style={'flex': '1', 'minWidth': '280px', 'padding': '0 10px'}),
-                                html.Div([
-                                    html.Label("Mins filter", style={'fontWeight': '600', 'marginBottom': '6px',
-                                                                      'display': 'block'}),
-                                    html.Div([
-                                        dcc.Dropdown(id='lab-mins-op', options=NUMERIC_FILTER_OPTIONS,
-                                                     value='any', clearable=False,
-                                                     style={'minWidth': '190px', 'flex': '1'}),
-                                        dcc.Input(id='lab-mins-value', type='number', placeholder='e.g. 90',
-                                                  style={'width': '90px', 'padding': '8px', 'marginLeft': '8px',
-                                                         'borderRadius': '4px', 'border': '1px solid #ccc'}),
-                                    ], style={'display': 'flex', 'alignItems': 'center'})
-                                ], style={'flex': '1', 'minWidth': '280px', 'padding': '0 10px'}),
-                            ], style={'display': 'flex', 'flexWrap': 'wrap', 'marginBottom': '16px'}),
-
-                            dash_table.DataTable(
-                                id='lab-player-table',
-                                data=[],
-                                columns=[
-                                    {'name': 'GW', 'id': 'gw'},
-                                    {'name': 'Player', 'id': 'web_name'},
-                                    {'name': 'Pos', 'id': 'position'},
-                                    {'name': 'Projected', 'id': 'proj', 'type': 'numeric',
-                                     'format': {'specifier': '.2f'}},
-                                    {'name': 'Actual', 'id': 'actual', 'type': 'numeric'},
-                                    {'name': 'Diff', 'id': 'diff', 'type': 'numeric',
-                                     'format': {'specifier': '+.2f'}},
-                                    {'name': 'Mins', 'id': 'minutes_played', 'type': 'numeric'},
-                                ],
-                                sort_action='native', filter_action='native', page_size=25,
-                                sort_by=[{'column_id': 'gw', 'direction': 'asc'},
-                                         {'column_id': 'actual', 'direction': 'desc'}],
-                                style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
-                                style_data=TABLE_STYLE_DATA,
-                                style_data_conditional=[
-                                    {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
-                                    {'if': {'filter_query': '{diff} >= 4', 'column_id': 'diff'},
-                                     'backgroundColor': '#e6fff2', 'fontWeight': '600'},
-                                    {'if': {'filter_query': '{diff} <= -4', 'column_id': 'diff'},
-                                     'backgroundColor': '#fde8ef', 'fontWeight': '600'},
-                                    {'if': {'filter_query': '{minutes_played} = 0'},
-                                     'color': COLORS['text_light'], 'fontStyle': 'italic'},
-                                ])
-                        ]),
-                        # Full unfiltered per-player-per-GW rows from the last backtest
-                        # run — lets the Diff/Mins filter controls re-slice instantly
-                        # without re-running the (expensive) backtest itself.
-                        dcc.Store(id='lab-player-rows-store')
-                    ], style=CARD_STYLE),
-
-                    html.Div([
-                        html.Details([
-                            html.Summary("Advanced: parameter sweep",
-                                         style={'color': COLORS['primary'], 'fontWeight': '700', 'fontSize': '17px',
-                                                'cursor': 'pointer'}),
-                            html.P("Replays every finished gameweek under different settings and reports which "
-                                   "would have projected best: first the minutes model (equal-weighted vs "
-                                   "recency-weighted), then how strongly early-season rates are steadied. "
-                                   "Takes up to a couple of minutes; worth re-running every few weeks.",
-                                   style={'color': COLORS['text_light'], 'margin': '12px 0'}),
-                                                    html.Button("Run Parameter Sweep", id='lab-sweep-btn', n_clicks=0,
-                                    style={'backgroundColor': COLORS['primary'], 'color': 'white',
-                                           'border': 'none', 'padding': '10px 28px', 'borderRadius': '6px',
-                                           'fontSize': '15px', 'fontWeight': '700', 'cursor': 'pointer'}),
-                        dcc.Loading(html.Div(id='lab-sweep-result'), type='circle', color=COLORS['primary'])
-                        ]),
-                    ], style=CARD_STYLE),
-                ], style={'padding': '20px 0'})
+                ]),
             ]),
 
             # EXPECTED CLEAN SHEETS PAGE
@@ -12481,53 +12361,11 @@ def show_outlook_why(click, why):
                                  'borderRadius': '10px', 'padding': '12px 14px'})
 
 
-# --- MODEL LAB: WALK-FORWARD BACKTEST ---
-
-_NUMERIC_FILTER_FNS = {
-    'gt': lambda v, t: v > t, 'gte': lambda v, t: v >= t,
-    'lt': lambda v, t: v < t, 'lte': lambda v, t: v <= t,
-    'eq': lambda v, t: v == t, 'neq': lambda v, t: v != t,
-}
-
-
-def _apply_numeric_filter(rows, field, op, value):
-    """Filter a list of row dicts on one numeric field by operator + value.
-    No-ops (returns rows unchanged) if op is 'any'/unset or value is blank —
-    0 is a legitimate threshold, so this checks for None, not falsiness."""
-    fn = _NUMERIC_FILTER_FNS.get(op)
-    if fn is None or value is None or value == '':
-        return rows
-    try:
-        threshold = float(value)
-    except (TypeError, ValueError):
-        return rows
-    return [r for r in rows if r.get(field) is not None and fn(r[field], threshold)]
-
-@callback(
-    [Output('lab-bt-out', 'children'), Output('lab-player-rows-store', 'data'),
-     Output('lab-player-section', 'style')],
-    Input('lab-bt-run', 'n_clicks'),
-    prevent_initial_call=True
-)
-def render_backtest(n_clicks):
-    try:
-        children, rows = _render_backtest_inner()
-        return children, rows, ({'display': 'block'} if rows else {'display': 'none'})
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return html.Div([
-            html.P("Backtest failed.", style={'color': COLORS['danger_text'],
-                                              'fontWeight': '600', 'marginBottom': '6px'}),
-            html.Pre(f"{type(e).__name__}: {e}",
-                     style={'color': COLORS['text_light'], 'fontSize': '13px',
-                            'whiteSpace': 'pre-wrap', 'backgroundColor': '#f8f9fa',
-                            'padding': '10px', 'borderRadius': '6px'}),
-            html.P("Full traceback is in the server logs.",
-                   style={'color': COLORS['text_light'], 'fontSize': '13px'}),
-        ]), [], {'display': 'none'}
-
-
+# --- SEASON REPLAY INPUTS (offline tuning) ---
+# Not on any page: run_backtest / run_backtest_sweep replay the season with
+# only the data each deadline had. Use from a Python shell, e.g.
+#   inp = _gather_backtest_inputs(get_data(), DATA['df_active'], DATA['fixtures_data'])
+#   run_backtest_sweep(inp['histories'], inp['meta'], DATA['fixtures_data'], DATA['teams_df'], inp['gws'])
 def _gather_backtest_inputs(data, dfa, fixtures):
     """
     Player histories, metadata, gameweeks and priors for the walk-forward
@@ -12595,542 +12433,218 @@ def _gather_backtest_inputs(data, dfa, fixtures):
             't_start': t_start}
 
 
-def _render_backtest_inner():
-    """Returns (children, player_rows) — player_rows is the raw, unfiltered
-    per-player-per-GW list that feeds lab-player-rows-store, so the Diff/Mins
-    filter controls can re-slice it without re-running the backtest."""
-    data = get_data()
-    dfa, boot = data.get('df_active'), data.get('bootstrap_data')
-    fixtures, teams_df = data.get('fixtures_data'), data.get('teams_df')
-    if dfa is None or dfa.empty or not fixtures or teams_df is None:
-        return html.P("Data not loaded yet.", style={'color': COLORS['text_light']}), []
-
-    inp = _gather_backtest_inputs(data, dfa, fixtures)
-    if isinstance(inp, str):
-        return html.P(inp, style={'color': COLORS['text_light']}), []
-    usable, meta, gws, priors, t_start = (inp['histories'], inp['meta'], inp['gws'],
-                                          inp['priors'], inp['t_start'])
-
-    rows, player_rows, calib = run_projection_backtest(usable, meta, fixtures, teams_df,
-                                                       gws, priors=priors,
-                                                       xg_ledger=data.get('xg_ledger'),
-                                                       team_records=data.get('team_match_records'))
-    print(f"[backtest] done in {time.time() - t_start:.0f}s, "
-          f"{len(rows)} gameweeks scored")
-    if not rows:
-        return html.P("Not enough reconstructable history yet.",
-                      style={'color': COLORS['text_light']}), []
-
-    n = sum(r['players'] for r in rows)
-    w = lambda k: sum(r[k] * r['players'] for r in rows) / n
-    # Squared errors pool as a weighted mean of squares, not of roots
-    wr = lambda k: float(np.sqrt(sum(r[k] ** 2 * r['players'] for r in rows) / n))
-    rmse, rmse_ppg, rmse_pos = wr('rmse'), wr('rmse_ppg'), wr('rmse_pos')
-    mae = w('mae')
-    spear = sum(r['spearman'] * r['players'] for r in rows) / n
-    bias = w('bias')
-    top20 = sum(r['top20'] for r in rows) / len(rows)
-
-    verdict = (f"Model error (RMSE) {rmse:.3f} vs {rmse_ppg:.3f} for 'use his points per game' "
-               f"and {rmse_pos:.3f} for the positional average (MAE {mae:.3f}). ")
-    verdict += ("The model is beating both naive baselines."
-                if rmse < rmse_ppg and rmse < rmse_pos else
-                "The model is NOT beating the naive baselines \u2014 the modelling layer "
-                "is not earning its place yet.")
-    verdict += (f" Rank correlation {spear:.3f}; {top20:.1f} of the top 20 projections "
-                f"landed in the actual top 20 per gameweek. Bias {bias:+.3f} "
-                f"({'over' if bias > 0 else 'under'}-projecting on average).")
-
-    calib_blocks = []
-    if calib.get('goals'):
-        calib_blocks += [
-            html.H4("Goals: predicted vs actual", style={'color': COLORS['primary'],
-                                                          'margin': '20px 0 6px 0'}),
-            html.P(f"Players grouped by predicted goals per gameweek. Across the whole test: "
-                   f"{calib.get('goals_pred_total', 0):.1f} goals predicted, "
-                   f"{calib.get('goals_act_total', 0)} scored.",
-                   style={'color': COLORS['text_light'], 'fontSize': '13px'}),
-            dash_table.DataTable(
-                data=calib['goals'],
-                columns=[{'name': 'Predicted goals', 'id': 'bucket'},
-                         {'name': 'Player-GWs', 'id': 'n', 'type': 'numeric'},
-                         {'name': 'Avg predicted', 'id': 'pred', 'type': 'numeric'},
-                         {'name': 'Avg actual', 'id': 'actual', 'type': 'numeric'}],
-                style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
-                style_data=TABLE_STYLE_DATA),
-        ]
-    if calib.get('cs'):
-        better = calib['cs_brier'] < calib['cs_brier_base']
-        calib_blocks += [
-            html.H4("Clean sheets: predicted vs actual", style={'color': COLORS['primary'],
-                                                                 'margin': '20px 0 6px 0'}),
-            html.P(f"Every team fixture, grouped by the model's clean-sheet chance. Brier score "
-                   f"{calib['cs_brier']:.4f} vs {calib['cs_brier_base']:.4f} for 'every team "
-                   f"gets the league-average rate' (lower is better) \u2014 the model is "
-                   f"{'ahead of' if better else 'NOT beating'} that baseline over "
-                   f"{calib['n_cs']} team-fixtures.",
-                   style={'color': COLORS['text_light'], 'fontSize': '13px'}),
-            dash_table.DataTable(
-                data=calib['cs'],
-                columns=[{'name': 'Predicted CS chance', 'id': 'bucket'},
-                         {'name': 'Team-fixtures', 'id': 'n', 'type': 'numeric'},
-                         {'name': 'Avg predicted %', 'id': 'pred', 'type': 'numeric'},
-                         {'name': 'Actual CS %', 'id': 'actual', 'type': 'numeric'}],
-                style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
-                style_data=TABLE_STYLE_DATA),
-        ]
-    calib_blocks.append(html.P(
-        "Limits: FPL doesn't archive injury flags or penalty order, so the test uses "
-        "today's penalty order and treats everyone as available; stored bookmaker prices feed "
-        "the team ratings, but the final odds blend for each fixture isn't replayed. Small "
-        "samples early in the season are noisy.",
-        style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginTop': '12px'}))
-
-    return html.Div([
-        html.P(verdict, style={'color': COLORS['text_dark'], 'fontWeight': '600',
-                               'marginBottom': '12px'}),
-        dash_table.DataTable(
-            data=[{**r, 'gw': f"GW{r['gw']}"} for r in rows],
-            columns=[
-                {'name': 'GW', 'id': 'gw'},
-                {'name': 'Players', 'id': 'players', 'type': 'numeric'},
-                {'name': 'Model RMSE', 'id': 'rmse', 'type': 'numeric',
-                 'format': {'specifier': '.3f'}},
-                {'name': 'PPG baseline', 'id': 'rmse_ppg', 'type': 'numeric',
-                 'format': {'specifier': '.3f'}},
-                {'name': 'Pos-avg baseline', 'id': 'rmse_pos', 'type': 'numeric',
-                 'format': {'specifier': '.3f'}},
-                {'name': 'Model MAE', 'id': 'mae', 'type': 'numeric',
-                 'format': {'specifier': '.3f'}},
-                {'name': 'Spearman', 'id': 'spearman', 'type': 'numeric',
-                 'format': {'specifier': '.3f'}},
-                {'name': 'Top-20 hits', 'id': 'top20', 'type': 'numeric'},
-                {'name': 'Bias', 'id': 'bias', 'type': 'numeric',
-                 'format': {'specifier': '+.3f'}},
-            ],
-            sort_action='native',
-            style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
-            style_data=TABLE_STYLE_DATA,
-            style_data_conditional=[
-                {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
-            ]),
-        *calib_blocks
-    ]), player_rows
-
-
-@callback(
-    Output('lab-player-table', 'data'),
-    [Input('lab-diff-op', 'value'), Input('lab-diff-value', 'value'),
-     Input('lab-mins-op', 'value'), Input('lab-mins-value', 'value'),
-     Input('lab-player-rows-store', 'data')],
-    prevent_initial_call=True
-)
-def filter_backtest_player_table(diff_op, diff_val, mins_op, mins_val, stored_rows):
-    """Re-slices the already-computed backtest rows on the Diff/Mins operator
-    + value controls. Deliberately separate from render_backtest — that one
-    re-runs the (slow, rate-limited) backtest itself, and a filter tweak
-    shouldn't trigger that."""
-    rows = stored_rows or []
-    rows = _apply_numeric_filter(rows, 'diff', diff_op, diff_val)
-    rows = _apply_numeric_filter(rows, 'minutes_played', mins_op, mins_val)
-    return rows
-
-
-# --- MODEL LAB: PROJECTION BREAKDOWN ---
-XP_PARTS = [('xp_appear', 'Appear'), ('xp_goals', 'Goals'), ('xp_assists', 'Assists'),
-            ('xp_cs', 'CS'), ('xp_defcon', 'DEFCON'), ('xp_saves', 'Saves'),
-            ('xp_bonus', 'Bonus'), ('xp_gc', 'GC pen')]
-XP_PART_COLOURS = {'Appear': '#9e9e9e', 'Goals': COLORS['accent'], 'Assists': '#ff8a65',
-                   'CS': COLORS['primary'], 'DEFCON': COLORS['info'], 'Saves': '#7e57c2',
-                   'Bonus': COLORS['secondary'], 'GC pen': COLORS['danger']}
-
-
-@callback(
-    [Output('lab-bd-chart', 'figure'), Output('lab-bd-table', 'children')],
-    [Input('visit-model-lab', 'data'), Input('lab-bd-position', 'value'),
-     Input('lab-bd-team', 'value'), Input('lab-bd-search', 'value')],
-    prevent_initial_call=True
-)
-def render_projection_breakdown(page, position, team, search):
-    """Split each next-GW projection into its eight scoring components."""
-    _need_visit(page)
-    blank = go.Figure()
-    blank.update_layout(template='plotly_white', height=320)
-
-    dfa = get_data().get('df_active')
-    if dfa is None or dfa.empty or 'xp_goals' not in dfa.columns:
-        blank.add_annotation(text="Breakdown appears after the next data refresh",
-                             xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
-                             font=dict(size=15, color=COLORS['text_light']))
-        return blank, html.P("The component columns are written during a refresh. If this "
-                             "persists, the projection pass did not run.",
-                             style={'color': COLORS['text_light']})
-
-    d = dfa.copy()
-    if position != 'All':
-        d = d[d['position'] == position]
-    if team != 'All':
-        d = d[d['team_name'] == team]
-    if search:
-        d = d[d['web_name'].str.contains(str(search).strip(), case=False, na=False)]
-    d = d[pd.to_numeric(d['proj_pts_next'], errors='coerce').notna()]
-    if d.empty:
-        blank.add_annotation(text="No players match these filters", xref="paper", yref="paper",
-                             x=0.5, y=0.5, showarrow=False,
-                             font=dict(size=15, color=COLORS['text_light']))
-        return blank, html.Div()
-
-    top = d.nlargest(20, 'proj_pts_next').iloc[::-1]
-    fig = go.Figure()
-    for col, label in XP_PARTS:
-        if col not in top.columns:
-            continue
-        fig.add_trace(go.Bar(
-            y=top['web_name'], x=pd.to_numeric(top[col], errors='coerce').fillna(0),
-            name=label, orientation='h',
-            marker_color=XP_PART_COLOURS.get(label, COLORS['text_light']),
-            hovertemplate='%{y}<br>' + label + ': %{x:.2f} pts<extra></extra>'))
-    fig.update_layout(barmode='relative', template='plotly_white',
-                      height=max(360, 22 * len(top) + 120),
-                      xaxis_title='Projected points (next GW), by component',
-                      legend=dict(orientation='h', yanchor='bottom', y=1.02,
-                                  xanchor='center', x=0.5),
-                      margin=dict(t=60, b=40, l=110, r=20),
-                      font=dict(family=FONT_FAMILY))
-
-    d = d.copy()
-    d['fix_effect'] = (pd.to_numeric(d['proj_pts_next'], errors='coerce')
-                       - pd.to_numeric(d.get('proj_neutral_gw'), errors='coerce'))
-    cols = ['web_name', 'team_name', 'position', 'price', 'proj_pts_next',
-            'proj_neutral_gw', 'fix_effect', 'xp_att_mult', 'exp_mins_next',
-            'xp_appear', 'xp_goals', 'xp_assists', 'xp_cs', 'xp_defcon',
-            'xp_saves', 'xp_bonus', 'xp_gc']
-    cols = [c for c in cols if c in d.columns]
-    table = dash_table.DataTable(
-        data=prepare_table_data(d.nlargest(60, 'proj_pts_next'), cols),
-        columns=[
-            {'name': 'Player', 'id': 'web_name'},
-            {'name': 'Team', 'id': 'team_name'},
-            {'name': 'Pos', 'id': 'position'},
-            {'name': 'Price', 'id': 'price', 'type': 'numeric', 'format': {'specifier': '.1f'}},
-            {'name': 'Proj', 'id': 'proj_pts_next', 'type': 'numeric', 'format': {'specifier': '.2f'}},
-            {'name': 'Neutral', 'id': 'proj_neutral_gw', 'type': 'numeric', 'format': {'specifier': '.2f'}},
-            {'name': 'Fixture +/-', 'id': 'fix_effect', 'type': 'numeric', 'format': {'specifier': '+.2f'}},
-            {'name': 'Fix x', 'id': 'xp_att_mult', 'type': 'numeric', 'format': {'specifier': '.2f'}},
-            {'name': 'Mins', 'id': 'exp_mins_next', 'type': 'numeric', 'format': {'specifier': '.0f'}},
-            {'name': 'Appear', 'id': 'xp_appear', 'type': 'numeric', 'format': {'specifier': '.2f'}},
-            {'name': 'Goals', 'id': 'xp_goals', 'type': 'numeric', 'format': {'specifier': '.2f'}},
-            {'name': 'Assists', 'id': 'xp_assists', 'type': 'numeric', 'format': {'specifier': '.2f'}},
-            {'name': 'CS', 'id': 'xp_cs', 'type': 'numeric', 'format': {'specifier': '.2f'}},
-            {'name': 'DEFCON', 'id': 'xp_defcon', 'type': 'numeric', 'format': {'specifier': '.2f'}},
-            {'name': 'Saves', 'id': 'xp_saves', 'type': 'numeric', 'format': {'specifier': '.2f'}},
-            {'name': 'Bonus', 'id': 'xp_bonus', 'type': 'numeric', 'format': {'specifier': '.2f'}},
-            {'name': 'GC pen', 'id': 'xp_gc', 'type': 'numeric', 'format': {'specifier': '.2f'}},
-        ],
-        sort_action='native', page_size=20,
-        style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
-        style_data=TABLE_STYLE_DATA,
-        style_data_conditional=[
-            {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
-            {'if': {'filter_query': '{fix_effect} > 1', 'column_id': 'fix_effect'},
-             'backgroundColor': '#e6fff2'},
-            {'if': {'filter_query': '{fix_effect} < -1', 'column_id': 'fix_effect'},
-             'backgroundColor': '#fde8ef'},
-        ])
-    return fig, table
-
-
 # --- MODEL LAB ---
-def _london(ts_iso):
-    """'Sat 14:02' (UK time) from a naive-UTC ISO timestamp."""
+# One job: how close the app's projections and FPL's xP came to the points
+# actually scored. Both are the last numbers saved before each deadline
+# (record_predictions); refresh_model_scoreboard scores finished gameweeks.
+
+def _uk_when(ts_iso):
+    """'Sat 7 Nov, 11:00' (UK time) from a UTC ISO timestamp."""
     dt = _to_utc_naive(ts_iso) if ts_iso else None
     if not dt:
         return None
-    return dt.replace(tzinfo=timezone.utc).astimezone(ZoneInfo('Europe/London')).strftime('%a %H:%M')
+    dt = dt.replace(tzinfo=timezone.utc).astimezone(ZoneInfo('Europe/London'))
+    return f"{dt:%a} {dt.day} {dt:%b}, {dt:%H:%M}"
 
 
-def _model_status_lines(board):
-    """Where the projections are being saved, and what's waiting to be scored."""
-    lines = []
+def _lab_tracked_gws():
+    """Gameweeks with projections locked in at the deadline: the GitHub log
+    when it's set up, otherwise whatever this server has saved."""
+    logs = DATA.get('pred_logs') or {}
+    return sorted(gw for gw, v in logs.items() if v.get('source') == 'github' or not model_log_enabled())
+
+
+def _lab_footer(board):
+    """A quiet line on what's tracked and what's next, plus a warning only
+    if this gameweek's projections couldn't be saved."""
+    parts, tracked = [], _lab_tracked_gws()
+    if tracked:
+        parts.append(f"Tracked since Gameweek {tracked[0]}")
+    nxt, dl = board.get('next_gw'), _uk_when(board.get('next_deadline'))
+    live = [g for g in board.get('pending') or [] if g != nxt]
+    if live:
+        parts.append(f"Gameweek {live[-1]} is scored once it finishes")
+    if nxt and dl:
+        parts.append(f"Gameweek {nxt} projections lock at the deadline, {dl}")
     st = DATA.get('model_log_status') or {}
-    rd = DATA.get('model_log_read') or {}
-    if model_log_enabled():
-        if st and not st.get('ok'):
-            lines.append(("Couldn't save to GitHub (" + str(st.get('error', '')) + ") \u2014 kept on the "
-                          "server for now; it retries after the next refresh.", 'danger'))
-        elif rd and not rd.get('ok'):
-            lines.append(("Couldn't read the saved projections from GitHub (" + str(rd.get('error', '')) +
-                          ").", 'danger'))
-        else:
-            lines.append((f"Projections are saved permanently to GitHub ({MODEL_LOG_REPO}).", 'ok'))
-    else:
-        lines.append(("Projections are saved on the server only, which Render clears on every deploy. "
-                      "Add FPL_LOG_GITHUB_TOKEN and FPL_LOG_REPO in Render to keep them permanently.", 'warn'))
-    nxt, logged = board.get('next_gw'), board.get('logged_at') or {}
-    if nxt:
-        when = _london(logged.get(nxt))
-        dl = _london(board.get('next_deadline'))
-        lines.append((f"GW{nxt}: projections " + (f"last saved {when}" if when else "not saved yet") +
-                      (f" (deadline {dl}). The last save before the deadline is the one scored." if dl else "."),
-                      'info'))
-    waiting = [gw for gw in board.get('pending') or [] if gw != nxt]
-    if waiting:
-        lines.append((", ".join(f"GW{g}" for g in waiting) + (" is" if len(waiting) == 1 else " are") +
-                      " in progress \u2014 scored once the gameweek has finished.", 'info'))
-    return lines
-
-
-def _vs_card(title, model_val, fpl_val, better, fmt, note):
-    """One headline comparison: model vs FPL, the better one highlighted."""
-    if model_val is None or fpl_val is None:
-        win = None
-    elif better == 'lower':
-        win = 'model' if model_val < fpl_val else 'fpl' if fpl_val < model_val else None
-    else:
-        win = 'model' if model_val > fpl_val else 'fpl' if fpl_val > model_val else None
-    def side(label, val, key):
-        on = win == key
-        return html.Div([
-            html.Div(label, style={'fontSize': '12px', 'color': COLORS['text_light'], 'fontWeight': '600'}),
-            html.Div(fmt(val) if val is not None else '\u2014',
-                     style={'fontSize': '24px', 'fontWeight': '800',
-                            'color': COLORS['success_text'] if on else COLORS['primary']}),
-        ], style={'flex': '1', 'textAlign': 'center', 'padding': '6px', 'borderRadius': '8px',
-                  'backgroundColor': '#e6fff2' if on else 'transparent'})
+    warn = bool(model_log_enabled() and st and not st.get('ok'))
     return html.Div([
-        html.Div(title, style={'fontWeight': '700', 'color': COLORS['primary'], 'marginBottom': '6px'}),
-        html.Div([side('Model', model_val, 'model'), side('FPL xP', fpl_val, 'fpl')],
-                 style={'display': 'flex', 'gap': '6px'}),
-        html.Div(note, style={'fontSize': '12px', 'color': COLORS['text_light'], 'marginTop': '6px'}),
-    ], style={'flex': '1 1 220px', 'minWidth': '0', 'border': '1px solid #e8e0ec', 'borderRadius': '10px',
-              'padding': '12px', 'backgroundColor': 'white'})
+        html.Div("This gameweek's projections couldn't be saved yet. It tries again at the next refresh.",
+                 className='lab-warn') if warn else None,
+        html.P(" \u00b7 ".join(parts) + ".", className='lab-note') if parts else None,
+    ])
+
+
+def _lab_vs(label, m, f, better, fmt, note):
+    """One head-to-head tile: model vs FPL xP, the better one in green."""
+    win = None
+    if m is not None and f is not None and m != f:
+        win = 'model' if (m < f) == (better == 'lower') else 'fpl'
+
+    def side(key, name, v):
+        return html.Div([html.Div(name, className='vs-who'),
+                         html.Div(fmt(v) if v is not None else '\u2013', className='vs-num')],
+                        className='vs-side win' if win == key else 'vs-side')
+    return html.Div([html.P(label, className='tile-label'),
+                     html.Div([side('model', 'Model', m), side('fpl', 'FPL xP', f)], className='vs-row'),
+                     html.Div(note, className='tile-sub')], className='tile')
 
 
 @callback(
-    Output('lab-scoreboard', 'children'),
+    [Output('lab-scoreboard', 'children'), Output('lab-gw', 'options'), Output('lab-gw', 'value'),
+     Output('lab-gw-section', 'style')],
     Input('visit-model-lab', 'data'),
+    State('lab-gw', 'value'),
     prevent_initial_call=True
 )
-def render_lab_scoreboard(page):
+def render_lab_scoreboard(page, chosen):
     _need_visit(page)
     board = DATA.get('model_scoreboard')
     if board is None and DATA.get('bootstrap_data'):
         board = refresh_model_scoreboard()
     board = board or {}
-    tone = {'ok': (COLORS['success_text'], '#e6fff2'), 'warn': ('#7a5600', '#fff8e1'),
-            'danger': (COLORS['danger_text'], '#fde8ef'), 'info': (COLORS['text_dark'], '#f4f0f6')}
-    status = html.Div([html.Div(t, style={'color': tone[k][0], 'backgroundColor': tone[k][1],
-                                          'padding': '8px 12px', 'borderRadius': '8px', 'fontSize': '13px',
-                                          'marginBottom': '6px', 'lineHeight': '1.4'})
-                       for t, k in _model_status_lines(board)], style={'marginBottom': '12px'})
+    hidden = {'display': 'none'}
+
     if not board.get('gws'):
-        return html.Div([status, html.P(
-            "No finished gameweek has been scored yet. Projections are saved before every deadline; each "
-            "gameweek is scored automatically once it has finished, and this panel fills in from then on.",
-            style={'color': COLORS['text_dark'], 'margin': 0})])
+        tracked = [g for g in _lab_tracked_gws() if g in (board.get('pending') or [])]
+        first = tracked[0] if tracked else board.get('next_gw')
+        return html.Div([
+            html.Div([
+                html.P("No results yet", className='tile-label'),
+                html.Div(f"The first comparison arrives when Gameweek {first} finishes." if first else
+                         "The first comparison arrives after the next gameweek.", className='lab-empty-title'),
+                html.P("Before every deadline, the app's projection and FPL's xP for every player are locked "
+                       "in. Once the gameweek is over, both are checked against the points scored, and the "
+                       "results build up here week by week.", className='lab-empty-text'),
+            ], className='lab-empty'),
+            _lab_footer(board),
+        ]), [], None, hidden
 
-    b = board
-    n_gw = b['gws']
-    better_err = b['rmse_model'] < b['rmse_fpl']
-    diff_pct = abs(b['rmse_fpl'] - b['rmse_model']) / max(b['rmse_fpl'], 1e-9) * 100
-    verdict = (f"Over {n_gw} finished gameweek{'s' if n_gw != 1 else ''} ({b['n']:,} player projections), "
-               + (f"the model has been more accurate than FPL's xP: typical error {b['rmse_model']:.2f} vs "
-                  f"{b['rmse_fpl']:.2f} points ({diff_pct:.0f}% lower)."
-                  if better_err else
-                  f"FPL's xP has been more accurate than the model: typical error {b['rmse_fpl']:.2f} vs "
-                  f"{b['rmse_model']:.2f} points ({diff_pct:.0f}% lower).")
-               + f" Its top 10 picks averaged {b['top10_model']:.1f} points each, FPL's {b['top10_fpl']:.1f}.")
-    f2 = lambda v: f"{v:.2f}"
-    cards = html.Div([
-        _vs_card("Typical error (points)", b['rmse_model'], b['rmse_fpl'], 'lower', f2,
-                 "How far off a player's projection usually is. Lower is better."),
-        _vs_card("Closer to the real score", b['closer_model'], b['closer_fpl'], 'higher',
-                 lambda v: f"{v:.0f}%", "Share of players whose projection was nearer than the other's."),
-        _vs_card("Ranking accuracy", b['rank_model'], b['rank_fpl'], 'higher', f2,
-                 "How well it ordered the players who played (1 = perfect order)."),
-        _vs_card("Top 10 picks (avg pts)", b['top10_model'], b['top10_fpl'], 'higher',
-                 lambda v: f"{v:.1f}", "Average points of each one's 10 highest projections."),
-        _vs_card(f"Captain test ({n_gw} GW{'s' if n_gw != 1 else ''})", b['cap_model_pts'], b['cap_fpl_pts'],
-                 'higher', lambda v: f"{v:d}", "Total points of each one's number-one projection."),
-        _vs_card("Gameweeks won", b['won_model'], b['won_fpl'], 'higher', lambda v: f"{v:d}",
-                 "Gameweeks where its typical error was lower."),
-    ], style={'display': 'flex', 'flexWrap': 'wrap', 'gap': '10px', 'marginBottom': '14px'})
+    b, per = board, board['per_gw']
+    n = b['gws']
+    plural = 's' if n != 1 else ''
+    ahead, behind = b['rmse_model'] < b['rmse_fpl'], b['rmse_model'] > b['rmse_fpl']
+    pct = abs(b['rmse_fpl'] - b['rmse_model']) / max(b['rmse_fpl'], 1e-9) * 100
+    title = "The model is ahead" if ahead else ("FPL's xP is ahead" if behind else "Level so far")
+    text = (f"Its typical error is {pct:.0f}% {'lower' if ahead else 'higher'} than FPL's xP "
+            f"({b['rmse_model']:.2f} vs {b['rmse_fpl']:.2f} points), and it was the more accurate of the two "
+            f"in {b['won_model']} of {n} gameweek{plural}." if (ahead or behind) else
+            f"Both have a typical error of {b['rmse_model']:.2f} points.")
+    verdict = html.Div([
+        html.P(f"After {n} gameweek{plural} \u00b7 {b['n']:,} player projections", className='tile-label'),
+        html.H2(title), html.P(text, className='lab-verdict-text'),
+        _lab_footer(board),
+    ], className='lab-verdict behind' if behind else 'lab-verdict')
 
-    per = b['per_gw']
+    tiles = html.Div([
+        _lab_vs("Typical error", b['rmse_model'], b['rmse_fpl'], 'lower', lambda v: f"{v:.2f}",
+                "Points a projection is usually out by. Lower is better."),
+        _lab_vs("Closer to the score", b['closer_model'], b['closer_fpl'], 'higher', lambda v: f"{v:.0f}%",
+                "Share of players whose projection was nearer."),
+        _lab_vs("Top 10 picks", b['top10_model'], b['top10_fpl'], 'higher', lambda v: f"{v:.1f}",
+                "Average points of each one's 10 highest projections."),
+        _lab_vs("Captain pick", b['cap_model_pts'], b['cap_fpl_pts'], 'higher', lambda v: f"{v:d}",
+                f"Points from each one's top projection, {n} gameweek{plural}."),
+    ], className='tile-grid')
+
+    x = [f"GW{g['gw']}" for g in per]
     fig = go.Figure()
-    fig.add_trace(go.Bar(name='Model', x=[f"GW{g['gw']}" for g in per], y=[g['rmse_model'] for g in per],
-                         marker_color=COLORS['primary'], text=[f"{g['rmse_model']:.2f}" for g in per],
-                         textposition='outside'))
-    fig.add_trace(go.Bar(name="FPL xP", x=[f"GW{g['gw']}" for g in per], y=[g['rmse_fpl'] for g in per],
-                         marker_color=COLORS['info'], text=[f"{g['rmse_fpl']:.2f}" for g in per],
-                         textposition='outside'))
+    fig.add_trace(go.Bar(name='Model', x=x, y=[g['rmse_model'] for g in per], marker_color=COLORS['primary'],
+                         text=[f"{g['rmse_model']:.2f}" for g in per], textposition='outside',
+                         hovertemplate='%{x}<br>Model: %{y:.2f} pts<extra></extra>'))
+    fig.add_trace(go.Bar(name='FPL xP', x=x, y=[g['rmse_fpl'] for g in per], marker_color='#00a5b5',
+                         text=[f"{g['rmse_fpl']:.2f}" for g in per], textposition='outside',
+                         hovertemplate='%{x}<br>FPL xP: %{y:.2f} pts<extra></extra>'))
     top = max(max(g['rmse_model'], g['rmse_fpl']) for g in per)
-    fig.update_layout(template='plotly_white', barmode='group', height=300, font=dict(family=FONT_FAMILY),
-                      yaxis=dict(title='Typical error (pts)', range=[0, top * 1.2]),
-                      legend=dict(orientation='h', y=1.12, x=0.5, xanchor='center'),
-                      margin=dict(t=40, b=40, l=50, r=10))
-    rows = [{'gw': f"GW{g['gw']}" + ('' if g.get('final', True) else ' (provisional)'), 'n': g['n'],
+    fig.update_layout(template='plotly_white', barmode='group', height=280, bargap=0.35,
+                      font=dict(family=FONT_FAMILY), yaxis=dict(title='Typical error (pts)', range=[0, top * 1.25]),
+                      legend=dict(orientation='h', y=1.14, x=0.5, xanchor='center'),
+                      margin=dict(t=40, b=30, l=50, r=10))
+    chart = html.Div([
+        html.Div([html.Div([html.H3("Typical error by gameweek"),
+                            html.P("How far off each one was, week by week. Lower is better.")])],
+                 className='lab-card-head'),
+        dcc.Graph(figure=fig, config={'displayModeBar': False}),
+    ], style=CARD_STYLE)
+
+    rows = [{'gw': f"GW{g['gw']}" + ('' if g.get('final', True) else ' (provisional)'),
              'err_m': g['rmse_model'], 'err_f': g['rmse_fpl'],
              'top_m': g['top10_model'], 'top_f': g['top10_fpl'],
-             'cap_m': f"{g['cap_model']} ({g['cap_model_pts']})", 'cap_f': f"{g['cap_fpl']} ({g['cap_fpl_pts']})",
-             'win': {'model': 'Model', 'fpl': 'FPL', 'tie': 'Tie'}[g['winner']]} for g in reversed(per)]
-    table = dash_table.DataTable(
-        data=rows,
-        columns=[{'name': 'GW', 'id': 'gw'}, {'name': 'Players', 'id': 'n', 'type': 'numeric'},
-                 {'name': 'Error: model', 'id': 'err_m', 'type': 'numeric', 'format': {'specifier': '.2f'}},
-                 {'name': 'Error: FPL', 'id': 'err_f', 'type': 'numeric', 'format': {'specifier': '.2f'}},
-                 {'name': 'Top 10: model', 'id': 'top_m', 'type': 'numeric', 'format': {'specifier': '.1f'}},
-                 {'name': 'Top 10: FPL', 'id': 'top_f', 'type': 'numeric', 'format': {'specifier': '.1f'}},
-                 {'name': 'No.1 pick: model', 'id': 'cap_m'}, {'name': 'No.1 pick: FPL', 'id': 'cap_f'},
-                 {'name': 'More accurate', 'id': 'win'}],
-        style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER, style_data=TABLE_STYLE_DATA,
-        style_table={'overflowX': 'auto'},
-        style_data_conditional=[
-            {'if': {'filter_query': '{win} = "Model"', 'column_id': 'win'}, 'backgroundColor': '#e6fff2',
-             'fontWeight': '700'},
-            {'if': {'filter_query': '{win} = "FPL"', 'column_id': 'win'}, 'backgroundColor': '#fde8ef',
-             'fontWeight': '700'},
-        ])
-    return html.Div([
-        status,
-        html.P(verdict, style={'color': COLORS['text_dark'], 'fontWeight': '600', 'fontSize': '15px'}),
-        cards,
-        html.H4("Typical error by gameweek (lower is better)", style={'color': COLORS['primary'],
-                                                                    'margin': '6px 0 0 0'}),
-        dcc.Graph(figure=fig, config={'displayModeBar': False}),
-        table,
-        html.P("Both are scored on the same players: everyone with both projections, using the last numbers "
-               "saved before each deadline and FPL's final points for the gameweek. Typical error is the "
-               "root-mean-square error, the fair score for a projected average.",
-               style={'color': COLORS['text_light'], 'fontSize': '12px', 'marginTop': '10px', 'marginBottom': 0}),
-    ])
+             'cap_m': f"{g['cap_model']} ({g['cap_model_pts']})",
+             'cap_f': f"{g['cap_fpl']} ({g['cap_fpl_pts']})",
+             'win': {'model': 'Model', 'fpl': 'FPL', 'tie': 'Level'}[g['winner']]} for g in reversed(per)]
+    gw_table = html.Div([
+        html.Div([html.Div([html.H3("Every gameweek"),
+                            html.P("Typical error, the average points of each one's top 10, and its "
+                                   "number-one pick.")])], className='lab-card-head'),
+        dash_table.DataTable(
+            data=rows,
+            columns=[{'name': 'GW', 'id': 'gw'},
+                     {'name': 'Error: Model', 'id': 'err_m', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                     {'name': 'Error: FPL', 'id': 'err_f', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                     {'name': 'Top 10: Model', 'id': 'top_m', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                     {'name': 'Top 10: FPL', 'id': 'top_f', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                     {'name': 'No.1 pick: Model', 'id': 'cap_m'}, {'name': 'No.1 pick: FPL', 'id': 'cap_f'},
+                     {'name': 'More accurate', 'id': 'win'}],
+            style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER, style_data=TABLE_STYLE_DATA,
+            style_data_conditional=[
+                {'if': {'filter_query': '{win} = "Model"', 'column_id': 'win'},
+                 'backgroundColor': '#e6fff2', 'color': COLORS['success_text'], 'fontWeight': '700'},
+                {'if': {'filter_query': '{win} = "FPL"', 'column_id': 'win'},
+                 'backgroundColor': '#e6f6f8', 'color': COLORS['info_text'], 'fontWeight': '700'},
+            ]),
+        html.Details([
+            html.Summary("How this is measured"),
+            html.P("Every player with both projections counts, using the last numbers saved before the "
+                   "deadline and the points FPL awarded. Typical error is the root-mean-square miss: the usual "
+                   "size of the gap between projection and score, with big misses weighing more. A haul nobody "
+                   "could see coming still counts, for both sides alike. Results marked provisional are "
+                   "re-checked once FPL confirms the gameweek's bonus points."),
+        ], className='lab-how'),
+    ], style=CARD_STYLE)
+
+    gws = [g['gw'] for g in per]
+    value = chosen if chosen in gws else gws[-1]
+    options = [{'label': f"Gameweek {g}", 'value': g} for g in reversed(gws)]
+    return html.Div([verdict, tiles, chart, gw_table]), options, value, {'display': 'block'}
 
 
 @callback(
-    Output('lab-sweep-result', 'children'),
-    Input('lab-sweep-btn', 'n_clicks'),
+    [Output('lab-gw-table', 'data'), Output('lab-gw-summary', 'children')],
+    [Input('lab-gw', 'value'), Input('lab-played', 'value'), Input('lab-search', 'value')],
     prevent_initial_call=True
 )
-def run_lab_sweep(n_clicks):
-    try:
-        return _run_lab_sweep_inner()
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return html.P(f"Sweep failed: {type(e).__name__}: {e}",
-                      style={'color': COLORS['danger_text'], 'marginTop': '12px'})
-
-
-def _run_lab_sweep_inner():
-    muted = {'color': COLORS['text_light'], 'marginTop': '12px'}
-    data = get_data()
-    dfa, fixtures, teams_df = data.get('df_active'), data.get('fixtures_data'), data.get('teams_df')
-    if dfa is None or dfa.empty or not fixtures or teams_df is None:
-        return html.P("Data not loaded yet.", style=muted)
-    inp = _gather_backtest_inputs(data, dfa, fixtures)
-    if isinstance(inp, str):
-        return html.P(inp, style=muted)
-    # gunicorn kills a request at 120s: whatever the fetch used comes off
-    # the sweep's own budget
-    remaining = max(20.0, min(SWEEP_BUDGET, 100.0 - (time.time() - inp['t_start'])))
-    sw = run_backtest_sweep(inp['histories'], inp['meta'], fixtures, teams_df, inp['gws'],
-                            priors=inp['priors'], xg_ledger=data.get('xg_ledger'),
-                            team_records=data.get('team_match_records'), budget=remaining)
-    if not sw:
-        return html.P("Not enough reconstructable history yet.", style=muted)
-
-    best, live, live_row = sw['best'], sw['live'], sw['live_row']
-    old = next((r for r in sw['stage1'] if r['model'] == 'v1'), None)
-    num = lambda i, n, f: {'name': n, 'id': i, 'type': 'numeric', 'format': {'specifier': f}}
-    cols = [num('rmse', 'RMSE', '.3f'), num('mae', 'Avg miss', '.3f'),
-            num('spearman', 'Ranking', '.3f'), num('captain', 'Captain pts', '.2f'),
-            num('mins_miss', 'Minutes miss', '.1f')]
-    best_cond = [{'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
-                 {'if': {'filter_query': '{tag} contains "Best"'},
-                  'backgroundColor': '#e6fff2', 'fontWeight': '600'}]
-
-    def is_live(r):
-        return (r['model'] == live['model'] and float(r['shrink_k']) == float(live['shrink_k'])
-                and (r['model'] == 'v1' or float(r['half_life']) == float(live['half_life'])))
-
-    def tag(r):
-        t = []
-        if r is best:
-            t.append('Best')
-        if is_live(r):
-            t.append('Live')
-        return ' / '.join(t)
-
-    s1 = [{**r, 'tag': tag(r)} for r in sw['stage1']]
-    s2 = [{**r, 'tag': tag(r)} for r in sw['stage2']]
-
-    out = []
-    # Headline: did the new minutes model help?
-    new_rows = [r for r in sw['stage1'] if r['model'] == 'v2']
-    if old and new_rows:
-        nb = min(new_rows, key=lambda r: r['rmse'])
-        better = nb['rmse'] < old['rmse']
-        out.append(html.P([
-            html.Strong("New minutes model: "),
-            (f"RMSE {nb['rmse']:.3f} vs {old['rmse']:.3f} for the old one "
-             f"({'better' if better else 'worse'} by {abs(old['rmse'] - nb['rmse']):.3f}). "
-             f"Minutes miss {nb['mins_miss']:.1f} vs {old['mins_miss']:.1f} per player; "
-             f"captain pick averaged {nb['captain']:.2f} vs {old['captain']:.2f} pts.")],
-            style={'color': COLORS['text_dark'], 'marginTop': '12px'}))
-
-    out += [
-        html.H5("Minutes model", style={'color': COLORS['primary'], 'margin': '16px 0 6px 0'}),
-        dash_table.DataTable(data=s1, columns=[{'name': 'Setting', 'id': 'label'}] + cols +
-                             [{'name': '', 'id': 'tag'}],
-                             style_table={'overflowX': 'auto'},
-                             style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
-                             style_data=TABLE_STYLE_DATA, style_data_conditional=best_cond),
-    ]
-    if s2:
-        out += [
-            html.H5("Shrinkage strength (with the best minutes model)",
-                    style={'color': COLORS['primary'], 'margin': '16px 0 6px 0'}),
-            html.P("How many minutes of this season's evidence it takes before a player's own "
-                   "numbers outweigh his starting estimate. Lower trusts this season sooner.",
-                   style={'color': COLORS['text_light'], 'fontSize': '14px'}),
-            dash_table.DataTable(data=s2, columns=[num('shrink_k', 'Shrinkage (mins)', '.0f')] + cols +
-                                 [{'name': '', 'id': 'tag'}],
-                                 style_table={'overflowX': 'auto'},
-                                 style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
-                                 style_data=TABLE_STYLE_DATA, style_data_conditional=best_cond),
-        ]
-
-    cur_rmse = live_row['rmse'] if live_row else None
-    if cur_rmse is not None and best['rmse'] < cur_rmse - 0.005:
-        env = []
-        if best['model'] != live['model']:
-            env.append(f"FPL_MINUTES_MODEL={best['model']}")
-        if best['model'] == 'v2' and (live['model'] != 'v2'
-                                      or float(best['half_life']) != float(live['half_life'])):
-            env.append(f"FPL_MINS_HALFLIFE={best['half_life']:g}")
-        if float(best['shrink_k']) != float(live['shrink_k']):
-            env.append(f"FPL_SHRINK_K={best['shrink_k']:g}")
-        out.append(html.P([
-            html.Strong("Suggested change: "),
-            f"the best setting would have cut RMSE from {cur_rmse:.3f} to {best['rmse']:.3f}. "
-            f"To apply it, add these in Render under Environment: {', '.join(env)}. "
-            f"Render redeploys automatically when you save."],
-            style={'color': COLORS['text_dark'], 'marginTop': '12px',
-                   'backgroundColor': '#f0e6f5', 'padding': '10px', 'borderRadius': '6px'}))
-    else:
-        out.append(html.P("Your live settings are already the best tested, or within noise of "
-                          "it. No change recommended.",
-                          style={'color': COLORS['success_text'], 'fontWeight': '600',
-                                 'marginTop': '12px'}))
-    if sw['gws'] < 6:
-        out.append(html.P(f"Caution: only {sw['gws']} gameweek(s) scored. Treat this as "
-                          f"directional until 6+ are in; early-season tuning can chase noise.",
-                          style={'color': COLORS['warning_text'], 'fontSize': '13px'}))
-    out.append(html.P(f"Scored over {sw['gws']} gameweek(s) and {sw['players']} players. "
-                      f"Captain pts = actual points of the top projection each week (before "
-                      f"doubling). Minutes miss = average gap between expected and actual minutes.",
-                      style={'color': COLORS['text_light'], 'fontSize': '13px'}))
-    return html.Div(out)
+def render_lab_gw_table(gw, played, search):
+    """Player-by-player for one scored gameweek."""
+    if gw is None:
+        raise PreventUpdate
+    gw = int(gw)
+    log = (DATA.get('pred_logs') or {}).get(gw) or {}
+    res = ((DATA.get('gw_actuals') or {}).get(gw) or {}).get('points') or {}
+    df = DATA.get('df')
+    info = ({int(r.id): (r.web_name, r.team_name, r.position) for r in
+             df[['id', 'web_name', 'team_name', 'position']].itertuples(index=False)}
+            if df is not None and not df.empty else {})
+    q = (search or '').strip().lower()
+    rows = []
+    for pid, (p, f) in (log.get('rows') or {}).items():
+        if pid not in res or p is None or f is None:
+            continue
+        pts, mins = res[pid]
+        if played and not mins:
+            continue
+        name, team, pos = info.get(int(pid), (f"#{pid}", '', ''))
+        if q and q not in str(name).lower():
+            continue
+        dm, dfp = abs(p - pts), abs(f - pts)
+        rows.append({'name': name, 'team': team, 'pos': pos, 'proj': round(float(p), 1),
+                     'ep': round(float(f), 1), 'pts': int(pts),
+                     'closer': 'Model' if dm < dfp else ('FPL' if dfp < dm else 'Level')})
+    g = next((x for x in (DATA.get('model_scoreboard') or {}).get('per_gw') or [] if x['gw'] == gw), None)
+    summary = (f"Gameweek {gw}: typical error {g['rmse_model']:.2f} for the model and {g['rmse_fpl']:.2f} for "
+               f"FPL across {g['n']:,} players. The model was closer for {g['closer_model']:.0f}% of them, "
+               f"FPL for {g['closer_fpl']:.0f}%." if g else "")
+    return rows, summary
 
 
 # --- DEADLINE DASHBOARD ---
