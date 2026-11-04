@@ -10811,7 +10811,7 @@ def _home_hero(next_gw, current_gw, avg_gw, highest_gw):
         ], className='home-countdown')
     else:
         title, sub, countdown = "Season complete", "No more deadlines this season", None
-    last = (f" | {current_gw['name']}: average {avg_gw} pts, highest {highest_gw}"
+    last = (f" | {current_gw['name']}: Average: {avg_gw} pts | Highest: {highest_gw}"
             if current_gw else "")
     return html.Div([
         html.Div([
