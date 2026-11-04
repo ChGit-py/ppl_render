@@ -7321,7 +7321,8 @@ app.index_string = '''
                         if (ms <= 0) { return 'Passed'; }
                         var s = Math.floor(ms / 1000), d = Math.floor(s / 86400),
                             h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
-                        return d ? d + 'd ' + h + 'h' : (h ? h + 'h ' + m + 'm' : m + 'm');
+                        if (s < 60) { return '<1m'; }
+                        return d ? d + 'd ' + h + 'h ' + m + 'm' : (h ? h + 'h ' + m + 'm' : m + 'm');
                     }
                     function tick() {
                         var els = document.querySelectorAll('[data-deadline]');
@@ -7330,7 +7331,7 @@ app.index_string = '''
                             if (!isNaN(t)) { els[i].textContent = fmt(t - Date.now()); }
                         }
                     }
-                    setInterval(tick, 20000);
+                    setInterval(tick, 10000);
                 })();
             </script>
             <script>
@@ -10794,7 +10795,9 @@ def _countdown_text(deadline_utc, now=None):
     if secs <= 0:
         return "Passed"
     d, h, m = int(secs // 86400), int(secs % 86400 // 3600), int(secs % 3600 // 60)
-    return f"{d}d {h}h" if d else (f"{h}h {m}m" if h else f"{m}m")
+    if secs < 60:
+        return "<1m"
+    return f"{d}d {h}h {m}m" if d else (f"{h}h {m}m" if h else f"{m}m")
 
 
 def _home_hero(next_gw, current_gw, avg_gw, highest_gw):
