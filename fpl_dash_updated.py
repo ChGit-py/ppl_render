@@ -10922,14 +10922,14 @@ def _home_chips(chips, season_chips):
 
 # RANK CONGESTION TOOL
 OVERALL_PAGE_SIZE = 50                  # managers per overall-standings page
-# Distances above/below you on the Rank Tracker: the four largest of these
-# that fit above your rank (capped at 500k), so ~1M shows 50k/100k/250k/500k
-# and 150k shows 10k/25k/50k/100k.
+# Distances above/below you on the Rank Tracker: the five largest of these
+# that fit above your rank (capped at 500k), so ~268k shows
+# 25k/50k/100k/150k/250k and ~1M shows 50k/100k/150k/250k/500k.
 RANK_LADDER = (1, 2, 5, 10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000, 25_000,
-               50_000, 100_000, 250_000, 500_000)
+               50_000, 100_000, 150_000, 250_000, 500_000)
 
 
-def rank_ladder_steps(rank, n=4):
+def rank_ladder_steps(rank, n=5):
     fit = [d for d in RANK_LADDER if d < rank]
     return fit[-n:] if len(fit) >= n else list(RANK_LADDER[:n])
 
