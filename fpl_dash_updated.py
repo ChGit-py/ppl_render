@@ -12534,7 +12534,7 @@ def render_lab_scoreboard(page, chosen):
             f"in {b['won_model']} of {n} gameweek{plural}." if (ahead or behind) else
             f"Both have a typical error of {b['rmse_model']:.2f} points.")
     verdict = html.Div([
-        html.P(f"After {n} gameweek{plural} \u00b7 {b['n']:,} player projections", className='tile-label'),
+        html.P(f"After {n} gameweek{plural} | {b['n']:,} player projections", className='tile-label'),
         html.H2(title), html.P(text, className='lab-verdict-text'),
         _lab_footer(board),
     ], className='lab-verdict behind' if behind else 'lab-verdict')
