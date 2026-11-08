@@ -10913,7 +10913,7 @@ def _home_chips(chips, season_chips):
         html.Div([
             html.Div(r['chip'], className='chip-name'),
             html.Div(f"{this_gw.get(r['chip'], 0):,}", className='chip-num'),
-            html.Div(f"this GW | {r['pct']:.1f}% of teams this season", className='chip-sub'),
+            html.Div(f"This GW | {r['pct']:.1f}% of teams this season", className='chip-sub'),
             html.Div(html.Div(style={'width': f"{min(r['pct'], 100):.1f}%"}), className='chip-bar'),
         ], className='chip-tile')
         for r in rows
