@@ -12474,7 +12474,7 @@ def _lab_footer(board):
     return html.Div([
         html.Div("This gameweek's projections couldn't be saved yet. It tries again at the next refresh.",
                  className='lab-warn') if warn else None,
-        html.P(" \u00b7 ".join(parts) + ".", className='lab-note') if parts else None,
+        html.P(" | ".join(parts) + ".", className='lab-note') if parts else None,
     ])
 
 
