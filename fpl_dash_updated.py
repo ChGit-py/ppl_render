@@ -13244,12 +13244,8 @@ def load_my_squad(n_clicks, team_id, free_transfers=1):
     # --- Manager info card ---
     mgr_name     = (entry.get('player_first_name', '') + ' ' + entry.get('player_last_name', '')).strip()
     team_name_e  = entry.get('name', 'My Team')
-    # The gameweek's own figures update as soon as FPL processes the points;
-    # the profile summary (summary_overall_*) waits until every league table
-    # has been recalculated, often hours later. Use the summary only as a
-    # fallback for a gameweek that hasn't been processed yet.
-    overall_rank = entry_history.get('overall_rank') or entry.get('summary_overall_rank')
-    total_pts    = entry_history.get('total_points') or entry.get('summary_overall_points', 0)
+    overall_rank = entry.get('summary_overall_rank')
+    total_pts    = entry.get('summary_overall_points', 0)
     gw_pts       = entry_history.get('points', 0)
     bank_m       = entry_history.get('bank', entry.get('last_deadline_bank', 0)) / 10
     team_value_m = entry_history.get('value', entry.get('last_deadline_value', 0)) / 10
