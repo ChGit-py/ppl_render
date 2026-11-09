@@ -7232,6 +7232,17 @@ app.index_string = '''
             }
             .lab-empty-title { font-size: 21px; font-weight: 800; color: var(--brand); margin: 4px 0 8px; letter-spacing: -0.01em; }
             .lab-empty-text { color: var(--muted); max-width: 640px; margin: 0 auto; }
+            /* Segmented control (radio buttons shown as a two-way switch) */
+            .seg { display: inline-flex; background: #f1ecf4; border-radius: 12px; padding: 4px; gap: 4px; max-width: 100%; }
+            .seg label {
+                display: inline-flex !important; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 9px;
+                font-weight: 600; font-size: 14px; color: var(--muted); cursor: pointer; white-space: nowrap;
+            }
+            @supports selector(:has(*)) {
+                .seg label input { position: absolute; opacity: 0; pointer-events: none; }
+                .seg label:has(input:checked) { background: #ffffff; color: var(--brand); box-shadow: 0 1px 3px rgba(55, 0, 60, 0.14); }
+                .seg label:has(input:focus-visible) { box-shadow: var(--focus); }
+            }
             .lab-how { margin-top: 14px; }
             .lab-how summary { font-weight: 700; color: var(--brand); font-size: 14px; list-style: none; }
             .lab-how summary::-webkit-details-marker { display: none; }
@@ -7725,7 +7736,7 @@ NAV_SECTIONS = [
     ('team', 'My Team', [('my-squad', 'My Squad'), ('transfer-planner', 'Transfer Planner'),
                          ('chip-planner', 'Chip Planner'), ('squad-builder', 'Squad Builder'),
                          ('rivals', 'Mini-League Rivals')]),
-    ('players', 'Players', [('captain', 'Captaincy'), ('differentials', 'Differentials'),
+    ('players', 'Players', [('projections', 'Projections'), ('captain', 'Captaincy'), ('differentials', 'Differentials'),
                             ('value', 'Value'), ('form', 'Form'), ('transfers', 'Transfer Trends')]),
     ('fixtures', 'Fixtures', [('fixture-ticker', 'Ticker'), ('fixture-outlook', 'Outlook'),
                               ('fixtures', 'Difficulty'), ('matchups', 'Matchups')]),
@@ -7767,7 +7778,7 @@ LAZY_PAGES = [
     'home', 'defcon-bonus', 'bonus-consistency', 'defcon', 'xg', 'underlying',
     'value', 'form', 'cs', 'fixtures', 'fixture-ticker', 'fixture-outlook',
     'differentials', 'captain', 'transfers', 'model-lab', 'transfer-planner',
-    'squad-builder', 'xcs', 'shot-profiles', 'matchups', 'chance-quality',
+    'squad-builder', 'xcs', 'shot-profiles', 'matchups', 'chance-quality', 'projections',
 ]
 
 
@@ -9422,6 +9433,69 @@ app.layout = html.Div([
             # CAPTAIN OPTIMISER TAB
             # =================================================================
             # CAPTAIN OPTIMISER PAGE
+            # PROJECTIONS PAGE
+            html.Div(id='page-projections', style={'display': 'none'}, children=[
+                _page_heading(
+                    "Projections",
+                    "Projected points for every player, for the next gameweek or the next five. They come "
+                    "from the app's full model and are recalculated as new results, injury news, prices "
+                    "and odds arrive."),
+                html.Div([
+                    html.Div([
+                        html.Div([
+                            html.Label("Show", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                            dcc.RadioItems(id='pj-view', value='next', className='seg',
+                                           options=[{'label': 'Next gameweek', 'value': 'next'},
+                                                    {'label': 'Next 5 gameweeks', 'value': 'five'}]),
+                        ], style={'flex': '2', 'minWidth': '260px', 'padding': '0 10px'}),
+                        html.Div([
+                            html.Label("Position", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                            dcc.Dropdown(id='pj-position', value='All', clearable=False,
+                                         options=[{'label': 'All', 'value': 'All'}] +
+                                                 [{'label': x, 'value': x} for x in ['GKP', 'DEF', 'MID', 'FWD']]),
+                        ], style={'flex': '1', 'minWidth': '130px', 'padding': '0 10px'}),
+                        html.Div([
+                            html.Label("Team", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                            dcc.Dropdown(id='pj-team', value='All', clearable=False,
+                                         options=[{'label': 'All', 'value': 'All'}] +
+                                                 [{'label': t, 'value': t} for t in sorted(df['team_name'].unique())]),
+                        ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
+                        html.Div([
+                            html.Label("Max. price (£m)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                            dcc.Input(id='pj-price', type='number', value=None, placeholder='Any', debounce=True,
+                                      style={'width': '100%', 'padding': '8px', 'fontSize': '14px'}),
+                        ], style={'flex': '1', 'minWidth': '120px', 'padding': '0 10px'}),
+                        html.Div([
+                            html.Label("Player", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                            dcc.Input(id='pj-search', type='search', placeholder='Search', debounce=True,
+                                      style={'width': '100%', 'padding': '8px', 'fontSize': '14px'}),
+                        ], style={'flex': '1', 'minWidth': '140px', 'padding': '0 10px'}),
+                    ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-end'}),
+                ], style=CARD_STYLE),
+                dcc.Loading(html.Div(id='pj-top'), type='circle', color=COLORS['primary']),
+                html.Div([
+                    html.Div([html.Div([html.H3(id='pj-title'), html.P(id='pj-sub')])], className='lab-card-head'),
+                    dash_table.DataTable(
+                        id='pj-table', data=[], columns=[],
+                        sort_action='native', page_size=25,
+                        style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER, style_data=TABLE_STYLE_DATA,
+                    ),
+                    html.P(id='pj-note', className='lab-note', style={'marginTop': '12px'}),
+                    html.Details([
+                        html.Summary("How a projection is built"),
+                        html.P("Each projection adds up the points a player is expected to earn from playing "
+                               "(his chance of starting and expected minutes), goals and assists (his xG and xA, "
+                               "adjusted for the opponent), clean sheets and goals conceded (from each fixture's "
+                               "expected goals), defensive contributions, saves and bonus. Team strength comes "
+                               "from xG and bookmaker prices. A double gameweek counts both matches and a blank "
+                               "counts nothing. A player flagged as doubtful or injured is scaled down by his "
+                               "chance of playing. The next five gameweeks are projected one week at a time, each "
+                               "against that week's opponent. Every gameweek's projections are checked against "
+                               "the real points in the Model Lab."),
+                    ], className='lab-how'),
+                ], style=CARD_STYLE),
+            ]),
+
             html.Div(id='page-captain', style={'display': 'none'}, children=[
                 html.Div([
                     html.Div([
@@ -10442,7 +10516,7 @@ ALL_PAGES = [
     'fixture-ticker', 'fixture-outlook', 'fixtures', 'xcs', 'differentials',
     'captain', 'transfers', 'transfer-planner', 'chip-planner',
     'rivals', 'deadline', 'my-squad', 'squad-builder',
-    'shot-profiles', 'matchups', 'chance-quality',
+    'shot-profiles', 'matchups', 'chance-quality', 'projections',
 ]
 assert sorted(PAGE_SECTION) == sorted(ALL_PAGES), 'every page needs a section'
 
@@ -12412,6 +12486,186 @@ def show_outlook_why(click, why):
             'marginBottom': '6px' if i == 0 else '2px'}))
     return html.Div(body, style={'backgroundColor': '#f8f9fa', 'border': '1px solid #e0e0e0',
                                  'borderRadius': '10px', 'padding': '12px 14px'})
+
+
+# --- PROJECTIONS ---
+# Every player's projected points for the next gameweek (with the parts
+# behind the number) or the next five, week by week. Same figures as the
+# rest of the app and the ones the Model Lab scores.
+PJ_HORIZON = 5
+PJ_PARTS = [('xp_appear', 'Playing'), ('xp_goals', 'Goals'), ('xp_assists', 'Assists'),
+            ('xp_cs', 'Clean sheet'), ('xp_defcon', 'DEFCON'), ('xp_saves', 'Saves'),
+            ('xp_bonus', 'Bonus'), ('xp_gc', 'Conceded')]
+
+
+def _pj_num(v, nd=1):
+    """Rounded float, or None for a missing value (NaN isn't valid JSON)."""
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if (v != v or v in (float('inf'), float('-inf'))) else round(v, nd)
+
+
+def _pj_fixtures(fixtures_data, teams_df, gws):
+    """{team id: {gameweek: 'LIV (H)'}}; a double reads 'LIV (H) + EVE (A)',
+    a blank gameweek is simply missing."""
+    short = dict(zip(teams_df['id'], teams_df['short_name'])) if teams_df is not None and len(teams_df) else {}
+    out = {}
+    for f in fixtures_data or []:
+        g = f.get('event')
+        if g not in gws:
+            continue
+        for me, opp, venue in ((f['team_h'], f['team_a'], 'H'), (f['team_a'], f['team_h'], 'A')):
+            out.setdefault(me, {}).setdefault(g, []).append(f"{short.get(opp, '?')} ({venue})")
+    return {t: {g: ' + '.join(v) for g, v in d.items()} for t, d in out.items()}
+
+
+def projection_rows(data, view):
+    """(rows, gameweeks) for the Projections table: one dict per player."""
+    dfa, nxt = data.get('df_active'), data.get('next_gw_num')
+    if dfa is None or dfa.empty or not nxt:
+        return [], []
+    last = max((e.get('id') or 0 for e in (data.get('bootstrap_data') or {}).get('events') or []), default=38) or 38
+    gws = [g for g in range(int(nxt), int(nxt) + (PJ_HORIZON if view == 'five' else 1)) if g <= last]
+    if not gws:
+        return [], []
+    fx = _pj_fixtures(data.get('fixtures_data'), data.get('teams_df'), set(gws))
+    proj = None
+    if view == 'five':
+        proj, _ = planner_projections(data, gws)
+    start_scale = 100.0 if pd.to_numeric(dfa.get('start_rate'), errors='coerce').max() <= 1.5 else 1.0
+    rows = []
+    for r in dfa.to_dict('records'):
+        pid, team = int(r['id']), r.get('team')
+        avail = _pj_num(r.get('avail_pct'), 0)
+        row = {'id': pid, 'name': r.get('web_name'), 'team': r.get('team_name'), 'pos': r.get('position'),
+               'price': _pj_num(r.get('price')), 'own': _pj_num(r.get('ownership')),
+               'avail': 100 if avail is None else avail,
+               'news': (r.get('news') or '') if (avail is not None and avail < 100) else ''}
+        team_fx = fx.get(team, {})
+        if view == 'five':
+            if pid not in proj.index:
+                continue
+            week = [float(proj.at[pid, g]) for g in gws]
+            row.update({f'g{g}': round(v, 1) for g, v in zip(gws, week)})
+            row['total'] = round(sum(week), 1)
+            row['avg'] = round(sum(week) / len(gws), 1)
+            row['fixtures'] = ', '.join(team_fx.get(g, 'none') for g in gws)
+        else:
+            p, ep = _pj_num(r.get('proj_pts_next'), 2), _pj_num(r.get('ep_next'))
+            sr = _pj_num(r.get('start_rate'), 3)
+            row.update({'proj': _pj_num(p), 'ep': ep,
+                        'diff': round(p - ep, 1) if p is not None and ep is not None else None,
+                        'fixture': team_fx.get(gws[0], 'No fixture'),
+                        'mins': _pj_num(r.get('exp_mins_next'), 0),
+                        'start': None if sr is None else round(sr * start_scale),
+                        'p10': _pj_num(r.get('p_10'), 0)})
+            row.update({c: _pj_num(r.get(c)) for c, _ in PJ_PARTS})
+        rows.append(row)
+    return rows, gws
+
+
+def _pj_columns(view, gws):
+    num = lambda name, cid, spec='.1f': {'name': name, 'id': cid, 'type': 'numeric', 'format': {'specifier': spec}}
+    head = [{'name': 'Player', 'id': 'name'}, {'name': 'Team', 'id': 'team'}, {'name': 'Pos', 'id': 'pos'},
+            num('£m', 'price')]
+    tail = [num('Owned %', 'own'), {'name': 'News', 'id': 'news'}]
+    if view == 'five':
+        return (head + [num('Total', 'total'), num('Per GW', 'avg')] + [num(f'GW{g}', f'g{g}') for g in gws]
+                + [{'name': 'Fixtures', 'id': 'fixtures'}] + tail)
+    return (head + [{'name': 'Fixture', 'id': 'fixture'}, num('Projected', 'proj'), num('FPL xP', 'ep'),
+                    num('vs FPL', 'diff', '+.1f'), num('Mins', 'mins', '.0f'), num('Start %', 'start', '.0f')]
+            + [num(label, c) for c, label in PJ_PARTS] + [num('10+ pts %', 'p10', '.0f')] + tail)
+
+
+def _pj_styles(view, gws):
+    st = [{'if': {'column_id': 'name'}, 'fontWeight': '700'},
+          {'if': {'column_id': 'total' if view == 'five' else 'proj'}, 'fontWeight': '800',
+           'backgroundColor': '#f6f0f8'},
+          {'if': {'filter_query': '{avail} < 100', 'column_id': 'news'}, 'backgroundColor': '#fff8e1',
+           'color': '#7a5600'},
+          {'if': {'filter_query': '{avail} < 50', 'column_id': 'news'}, 'backgroundColor': '#fde8ef',
+           'color': COLORS['danger_text']}]
+    if view == 'five':
+        for g in gws:
+            c = f'g{g}'
+            st += [{'if': {'filter_query': f'{{{c}}} >= 4.5', 'column_id': c}, 'backgroundColor': '#e6fff2'},
+                   {'if': {'filter_query': f'{{{c}}} >= 6', 'column_id': c}, 'backgroundColor': '#b9f5d3',
+                    'fontWeight': '700'},
+                   {'if': {'filter_query': f'{{{c}}} < 1', 'column_id': c}, 'color': '#a99fae'}]
+    else:
+        st += [{'if': {'filter_query': '{diff} >= 1', 'column_id': 'diff'}, 'color': COLORS['success_text'],
+                'fontWeight': '700'},
+               {'if': {'filter_query': '{diff} <= -1', 'column_id': 'diff'}, 'color': COLORS['danger_text'],
+                'fontWeight': '700'}]
+    return st
+
+
+@callback(
+    [Output('pj-top', 'children'), Output('pj-title', 'children'), Output('pj-sub', 'children'),
+     Output('pj-table', 'columns'), Output('pj-table', 'data'), Output('pj-table', 'style_data_conditional'),
+     Output('pj-table', 'sort_by'), Output('pj-table', 'page_current'), Output('pj-note', 'children')],
+    [Input('visit-projections', 'data'), Input('pj-view', 'value'), Input('pj-position', 'value'),
+     Input('pj-team', 'value'), Input('pj-price', 'value'), Input('pj-search', 'value')],
+    prevent_initial_call=True
+)
+def render_projections(visit, view, position, team, max_price, search):
+    _need_visit(visit)
+    view = 'five' if view == 'five' else 'next'
+    data = get_data()
+    rows, gws = projection_rows(data, view)
+    if not rows:
+        return (html.Div(), "No upcoming gameweek", "Projections return when the next gameweek is scheduled.",
+                [], [], [], [], 0, "")
+    key = 'total' if view == 'five' else 'proj'
+    if team and team != 'All':
+        rows = [r for r in rows if r['team'] == team]
+    if max_price not in (None, ''):
+        try:
+            rows = [r for r in rows if r['price'] is not None and r['price'] <= float(max_price)]
+        except (TypeError, ValueError):
+            pass
+    # Best pick per position, within the team and price filters
+    names = {'GKP': 'Goalkeeper', 'DEF': 'Defender', 'MID': 'Midfielder', 'FWD': 'Forward'}
+    tiles = []
+    for pos, label in names.items():
+        pool = [r for r in rows if r['pos'] == pos and r.get(key) is not None]
+        if not pool:
+            continue
+        b = max(pool, key=lambda r: r[key])
+        where = b['fixture'] if view == 'next' else f"{b['avg']:.1f} a week"
+        tiles.append(html.Div([html.P(f"Top {label.lower()}", className='tile-label'),
+                               html.Div(b['name'], className='tile-value', style={'fontSize': '22px'}),
+                               html.Div(f"{b[key]:.1f} pts | {where}", className='tile-sub')], className='tile'))
+    top = html.Div(tiles, className='tile-grid') if tiles else html.Div()
+
+    if position and position != 'All':
+        rows = [r for r in rows if r['pos'] == position]
+    q = (search or '').strip().lower()
+    if q:
+        rows = [r for r in rows if q in str(r['name']).lower()]
+    rows.sort(key=lambda r: -(r.get(key) or 0))
+
+    if view == 'five':
+        title = f"Gameweeks {gws[0]} to {gws[-1]}" if len(gws) > 1 else f"Gameweek {gws[0]}"
+        sub = ("Projected points week by week, each against that week's opponent. Greener cells are bigger "
+               "weeks; doubles count both matches and blanks count nothing.")
+    else:
+        title = f"Gameweek {gws[0]}"
+        sub = ("Projected points and where they come from. The eight parts from Playing to Conceded add up to "
+               "the projection. vs FPL is the model minus FPL's own xP.")
+    parts = []
+    dl = _uk_when((data.get('next_gw') or {}).get('deadline_time'))
+    if dl:
+        parts.append(f"Gameweek {gws[0]} deadline: {dl}")
+    last = data.get('last_refresh') or 0
+    if last:
+        when = datetime.fromtimestamp(last, tz=ZoneInfo('Europe/London'))
+        parts.append(f"Projections updated {when:%a} {when:%H:%M}")
+    parts.append("Refreshed about every 3 hours")
+    return (top, title, sub, _pj_columns(view, gws), rows, _pj_styles(view, gws),
+            [{'column_id': key, 'direction': 'desc'}], 0, " | ".join(parts) + ".")
 
 
 # --- SEASON REPLAY INPUTS (offline tuning) ---

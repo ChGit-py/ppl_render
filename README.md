@@ -47,6 +47,7 @@ Pages are grouped into five sections. On desktop the sections run down a slim ra
 
 | Page | What it does |
 |---|---|
+| **Projections** | Projected points for every player: the next gameweek with the parts behind each number (minutes, goals, assists, clean sheet, bonus and so on) next to FPL's xP, or the next five gameweeks week by week. |
 | **Captaincy** | Ranks captain picks by projected points, with **Protect**, **Chase** and **Ceiling** modes (the last ranks by the chance of a 15+ point haul). |
 | **Differentials** | Low-owned players ranked by projected points, with a **Swing** column (what owning him gains you on everyone who doesn't), chance of a big week and start security. Max ownership can be set to any value from 0 to 100. |
 | **Value** | Points returned per £1m spent. |
