@@ -4248,6 +4248,9 @@ MODEL_LOG_BRANCH = os.environ.get('FPL_LOG_BRANCH', '').strip()
 MODEL_LOG_DIR = 'projections'
 MODEL_LOG_FINAL_HOURS = 24      # save after every refresh this close to the deadline
 MODEL_SCORE_MIN_PLAYERS = 50
+# While a saved gameweek is waiting for its results, check this often
+# (one small fixtures request) instead of only on the 3-hourly refresh
+MODEL_SCORE_CHECK_SECONDS = 20 * 60
 GITHUB_API = 'https://api.github.com'
 _PRED_FIELDS = ['player_id', 'web_name', 'team', 'position', 'proj', 'fpl_ep', 'logged_at']
 
@@ -4468,6 +4471,47 @@ def record_predictions(df_active, bootstrap_data, target_gw):
         print(f"  GitHub projection save failed (kept on the server): {e}")
 
 
+def _deadline_passed(ev):
+    dl = _to_utc_naive((ev or {}).get('deadline_time'))
+    return bool(dl and dl < datetime.utcnow())
+
+
+def _gw_matches_over(gw):
+    """True once every match in the gameweek has reached full time. FPL's
+    gameweek-level 'finished' flag can stay off for hours after that."""
+    try:
+        r = requests.get(f"{FPL_BASE_URL}/fixtures/", params={'event': int(gw)}, timeout=15)
+        r.raise_for_status()
+        fx = [f for f in (r.json() or []) if f.get('event') == int(gw)]
+    except Exception as e:
+        print(f"  GW{gw} fixture status unavailable ({e})")
+        return False
+    return bool(fx) and all(f.get('finished') or f.get('finished_provisional') for f in fx)
+
+
+def model_scoreboard_due():
+    """A saved gameweek is past its deadline but not yet scored as final,
+    and the last check was long enough ago."""
+    if DATA.get('model_score_running') or time.time() < DATA.get('model_score_next', 0):
+        return False
+    events = {e.get('id'): e for e in (DATA.get('bootstrap_data') or {}).get('events') or []}
+    actuals = DATA.get('gw_actuals') or {}
+    return any(_deadline_passed(events.get(gw)) and not (actuals.get(gw) or {}).get('final')
+               for gw in (DATA.get('pred_logs') or {}))
+
+
+def _run_model_scoreboard_check():
+    with DATA_LOCK:
+        DATA['model_score_running'] = True
+        DATA['model_score_next'] = time.time() + MODEL_SCORE_CHECK_SECONDS
+    try:
+        refresh_model_scoreboard()
+    except Exception as e:
+        print(f"  Model vs FPL check failed (non-fatal): {e}")
+    finally:
+        DATA['model_score_running'] = False
+
+
 def refresh_model_scoreboard():
     """Pull any saved projections we don't have, fetch results for finished
     gameweeks we haven't scored, and rebuild the Model vs FPL scoreboard."""
@@ -4499,11 +4543,15 @@ def refresh_model_scoreboard():
         for gw, v in load_predictions_local().items():
             logs.setdefault(gw, v)
     events = {e.get('id'): e for e in boot.get('events') or []}
+    played = {}
     for gw in sorted(logs):
         ev = events.get(gw) or {}
-        if not ev.get('finished'):
+        # Scored once every match has reached full time (provisional), then
+        # again as final once FPL marks the gameweek finished and checked
+        played[gw] = bool(ev.get('finished') or (_deadline_passed(ev) and _gw_matches_over(gw)))
+        if not played[gw]:
             continue
-        final = bool(ev.get('data_checked', True))
+        final = bool(ev.get('finished') and ev.get('data_checked', True))
         if gw in actuals and actuals[gw].get('final'):
             continue
         try:
@@ -4513,7 +4561,7 @@ def refresh_model_scoreboard():
     names = dict(zip(df_all['id'].astype(int), df_all['web_name'])) if df_all is not None else {}
     board = score_model_vs_fpl(logs, actuals, names)
     nxt = next((e for e in boot.get('events') or [] if e.get('is_next')), None)
-    pending = sorted(gw for gw in logs if not (events.get(gw) or {}).get('finished'))
+    pending = sorted(gw for gw in logs if not played.get(gw))
     board.update({'pending': pending, 'next_gw': nxt.get('id') if nxt else None,
                   'next_deadline': nxt.get('deadline_time') if nxt else None,
                   'logged_at': {gw: logs[gw].get('logged_at') for gw in logs},
@@ -6680,6 +6728,8 @@ def check_and_refresh():
         with DATA_LOCK:
             DATA['price_tracker_next'] = time.time() + PRICE_TRACKER_INTERVAL   # debounce
         threading.Thread(target=refresh_price_tracker, daemon=True).start()
+    if not DATA.get('refreshing') and model_scoreboard_due():
+        threading.Thread(target=_run_model_scoreboard_check, daemon=True).start()
     age = time.time() - DATA.get('last_refresh', 0)
     if age > REFRESH_INTERVAL and not DATA.get('refreshing', False):
         print(f"Data is {age / 3600:.1f}h old. Triggering background refresh...")
