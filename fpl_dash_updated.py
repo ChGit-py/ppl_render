@@ -13246,7 +13246,11 @@ def load_my_squad(n_clicks, team_id, free_transfers=1):
     team_name_e  = entry.get('name', 'My Team')
     overall_rank = entry.get('summary_overall_rank')
     total_pts    = entry.get('summary_overall_points', 0)
-    gw_pts       = entry_history.get('points', 0)
+    # Same source as rank and total (the profile summary), so all three move
+    # together; the picks' gameweek figure can lag behind it
+    gw_pts       = (entry['summary_event_points']
+                    if entry.get('current_event') == gw_num and entry.get('summary_event_points') is not None
+                    else entry_history.get('points', 0))
     bank_m       = entry_history.get('bank', entry.get('last_deadline_bank', 0)) / 10
     team_value_m = entry_history.get('value', entry.get('last_deadline_value', 0)) / 10
     transfer_cost = entry_history.get('event_transfers_cost', 0)
