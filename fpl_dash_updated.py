@@ -9466,6 +9466,14 @@ app.layout = html.Div([
                                       style={'width': '100%', 'padding': '8px', 'fontSize': '14px'}),
                         ], style={'flex': '1', 'minWidth': '120px', 'padding': '0 10px'}),
                         html.Div([
+                            html.Label("Max. owned (%)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                            # No min/max on the box itself: the browser would reject
+                            # half-typed values. The callback clamps to 0-100.
+                            dcc.Input(id='pj-own', type='number', value=None, placeholder='Any (0 to 100)',
+                                      debounce=True, inputMode='decimal',
+                                      style={'width': '100%', 'padding': '8px', 'fontSize': '14px'}),
+                        ], style={'flex': '1', 'minWidth': '120px', 'padding': '0 10px'}),
+                        html.Div([
                             html.Label("Player", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                             dcc.Input(id='pj-search', type='search', placeholder='Search', debounce=True,
                                       style={'width': '100%', 'padding': '8px', 'fontSize': '14px'}),
@@ -12607,10 +12615,11 @@ def _pj_styles(view, gws):
      Output('pj-table', 'columns'), Output('pj-table', 'data'), Output('pj-table', 'style_data_conditional'),
      Output('pj-table', 'sort_by'), Output('pj-table', 'page_current'), Output('pj-note', 'children')],
     [Input('visit-projections', 'data'), Input('pj-view', 'value'), Input('pj-position', 'value'),
-     Input('pj-team', 'value'), Input('pj-price', 'value'), Input('pj-search', 'value')],
+     Input('pj-team', 'value'), Input('pj-price', 'value'), Input('pj-search', 'value'),
+     Input('pj-own', 'value')],
     prevent_initial_call=True
 )
-def render_projections(visit, view, position, team, max_price, search):
+def render_projections(visit, view, position, team, max_price, search, max_own=None):
     _need_visit(visit)
     view = 'five' if view == 'five' else 'next'
     data = get_data()
@@ -12626,7 +12635,13 @@ def render_projections(visit, view, position, team, max_price, search):
             rows = [r for r in rows if r['price'] is not None and r['price'] <= float(max_price)]
         except (TypeError, ValueError):
             pass
-    # Best pick per position, within the team and price filters
+    if max_own not in (None, ''):
+        try:
+            cap = min(max(float(max_own), 0.0), 100.0)
+            rows = [r for r in rows if r['own'] is not None and r['own'] <= cap]
+        except (TypeError, ValueError):
+            pass
+    # Best pick per position, within the team, price and ownership filters
     names = {'GKP': 'Goalkeeper', 'DEF': 'Defender', 'MID': 'Midfielder', 'FWD': 'Forward'}
     tiles = []
     for pos, label in names.items():
