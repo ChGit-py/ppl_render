@@ -6955,6 +6955,10 @@ app.index_string = '''
                 max-width: 1400px; margin-left: auto; margin-right: auto;
             }
 
+            /* Footer link: small text, but a comfortable tap target */
+            #app-footer { text-align: center; font-size: 11px; color: var(--muted); padding: 20px 0 0; }
+            #app-footer a { display: inline-block; padding: 10px 6px; font-weight: 600; }
+
             /* Page tabs: a fixed row above the scrolling content. It scrolls
                sideways only: overflow-y hidden, and nothing pokes out below. */
             .page-tabs {
@@ -10443,18 +10447,19 @@ app.layout = html.Div([
                 ], style={'padding': '20px 0'})
             ]),
 
+            # Footer: a very small data-source link at the end of every page.
+            # It lives inside the scrolling content so it clears the phone's
+            # bottom tab bar (outside it, the bar covered the link).
+            html.Div([
+                html.Span("Data from "),
+                html.A("Official FPL API", href="https://fantasy.premierleague.com/api/bootstrap-static/",
+                       target="_blank", rel="noopener"),
+            ], id='app-footer'),
+
         ]),  # end content-area
         ]),  # end main-col
 
     ], id='app-body'),  # end app-body (sidebar + content)
-
-    # Footer: Very small footer showing the link to the data source
-    html.Div([
-        html.Span(["Data from ",
-                   html.A("Official FPL API", href="https://fantasy.premierleague.com/api/bootstrap-static/",
-                          target="_blank", style={'color': COLORS['secondary']})]),
-    ], id='app-footer', style={'backgroundColor': COLORS['primary'], 'padding': '3px 8px', 'textAlign': 'center',
-                               'color': 'rgba(255,255,255,0.55)', 'fontSize': '10px', 'lineHeight': '1.3'})
 
 ], style={'fontFamily': FONT_FAMILY, 'backgroundColor': COLORS['background'], 'margin': '0', 'padding': '0'})
 
