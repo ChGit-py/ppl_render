@@ -7247,6 +7247,57 @@ app.index_string = '''
                 .seg label:has(input:checked) { background: #ffffff; color: var(--brand); box-shadow: 0 1px 3px rgba(55, 0, 60, 0.14); }
                 .seg label:has(input:focus-visible) { box-shadow: var(--focus); }
             }
+            /* Transfer Planner */
+            .tp-controls { display: flex; flex-wrap: wrap; gap: 14px 18px; align-items: flex-end; margin-bottom: 4px; }
+            .tp-field { flex: 1 1 160px; min-width: 0; }
+            .tp-field.tp-wide { flex: 2 1 260px; }
+            .tp-field.tp-narrow { flex: 0 1 140px; }
+            .tp-field.tp-auto { flex: 0 0 auto; }
+            .tp-verdict { border-radius: 14px; padding: 14px 18px; margin: 14px 0 12px; }
+            .tp-verdict.good { background: #e6fff2; color: var(--green-ink); }
+            .tp-verdict.meh { background: #fff8e1; color: #7a5600; }
+            .tp-verdict.bad { background: #fde8ef; color: var(--danger-ink, #c4003f); }
+            .tp-verdict-title { font-size: 19px; font-weight: 800; letter-spacing: -0.01em; }
+            .tp-verdict-sub { font-size: 14px; margin-top: 3px; color: var(--text); opacity: 0.85; }
+            .tp-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+            .tp-side { border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px; min-width: 0; }
+            .tp-side .tag { font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+            .tp-side.out .tag { color: var(--accent); }
+            .tp-side.in .tag { color: var(--green-ink); }
+            .tp-side .nm { font-size: 18px; font-weight: 800; color: var(--brand); margin: 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+            .tp-side .meta { font-size: 13px; color: var(--muted); }
+            .tp-side .big { font-size: 24px; font-weight: 800; color: var(--brand); margin-top: 6px; }
+            .tp-side .big span { font-size: 13px; font-weight: 600; color: var(--muted); }
+            .tp-flag { font-size: 12.5px; margin-top: 6px; padding: 4px 8px; border-radius: 8px; background: #fff8e1; color: #7a5600; display: inline-block; }
+            .tp-weeks { width: 100%; border-collapse: collapse; font-size: 14px; }
+            .tp-weeks th { text-align: left; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); padding: 8px 6px; border-bottom: 1px solid var(--border); }
+            .tp-weeks td { padding: 9px 6px; border-bottom: 1px solid #f1ecf3; vertical-align: top; }
+            .tp-weeks td.num { font-weight: 700; white-space: nowrap; }
+            .tp-weeks td.win { background: #e6fff2; color: var(--green-ink); }
+            .tp-weeks .fx { display: block; font-size: 12px; color: var(--muted); font-weight: 500; }
+            .tp-hint { color: var(--muted); font-size: 14px; margin: 14px 0 0; }
+            .tp-week { border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px; margin-top: 10px; }
+            .tp-week-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; }
+            .tp-week-head .gw { font-weight: 800; color: #ffffff; background: var(--brand); border-radius: 8px; padding: 2px 9px; font-size: 13px; }
+            .tp-week-head .pts { font-weight: 800; color: var(--brand); }
+            .tp-week-head .muted { color: var(--muted); font-size: 13px; }
+            .tp-week-act { font-weight: 700; margin: 8px 0 2px; font-size: 14px; }
+            .tp-move { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 0; border-top: 1px solid #f1ecf3; }
+            .tp-move:first-of-type { border-top: 0; }
+            .tp-move .who { min-width: 0; font-size: 14px; line-height: 1.4; }
+            .tp-move .o { color: var(--accent); font-weight: 700; }
+            .tp-move .i { color: var(--green-ink); font-weight: 700; }
+            .tp-move .m { color: var(--muted); font-size: 12.5px; }
+            .tp-cmp { flex: 0 0 auto; border: 1px solid var(--border-strong); background: #ffffff; color: var(--brand);
+                      border-radius: 999px; padding: 6px 12px; font-weight: 700; font-size: 13px; cursor: pointer; }
+            .tp-cmp:hover { border-color: var(--brand); }
+            @media (max-width: 700px) {
+                .tp-field.tp-narrow { flex: 1 1 120px; }
+                .tp-field.tp-auto:last-child { flex: 1 1 100%; }
+                .tp-side .nm { font-size: 16px; }
+                .tp-side .big { font-size: 21px; }
+            }
+
             .lab-how { margin-top: 14px; }
             .lab-how summary { font-weight: 700; color: var(--brand); font-size: 14px; list-style: none; }
             .lab-how summary::-webkit-details-marker { display: none; }
@@ -7802,6 +7853,8 @@ app.layout = html.Div([
     dcc.Store(id='page-rendered', data={}),
     *[dcc.Store(id=f'visit-{p}') for p in LAZY_PAGES],
     dcc.Store(id='my-squad-store', data=None),
+    # Your FPL team ID, remembered on this device and filled in on every page that asks
+    dcc.Store(id='saved-team-id', storage_type='local'),
 
     # Header
     html.Div([
@@ -10003,103 +10056,84 @@ app.layout = html.Div([
 
             # TRANSFER PLANNER PAGE
             html.Div(id='page-transfer-planner', style={'display': 'none'}, children=[
+                _page_heading(
+                    "Transfer Planner",
+                    "Plan your next few gameweeks of transfers for your own squad: when to make one, when to "
+                    "roll the free transfer, and when a -4 hit pays for itself. Then check any single move "
+                    "player against player."),
+
+                # 1. Plan my transfers
                 html.Div([
-                    html.Div([
-                        html.H3("Transfer Gain Calculator", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
-                        html.P([
-                            "The most expensive habit in FPL is paying 4 points for transfers that don't return 4 points. ",
-                            "This compares any two players on ", html.Strong("projected points over your chosen horizon"),
-                            " and tells you the net gain of the move — including the hit, if you're taking one."
-                        ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
-                    ], className='page-intro'),
-
+                    html.Div([html.Div([
+                        html.H3("Plan my transfers"),
+                        html.P("Each week is scored on your best XI and captain for that week's fixtures, so "
+                               "doubles, blanks and injury returns all count."),
+                    ])], className='lab-card-head'),
                     html.Div([
                         html.Div([
-                            html.Div([
-                                html.Label("Player OUT", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Dropdown(id='tp-player-out', options=[], placeholder='Search player to sell...',
-                                             optionHeight=50)
-                            ], style={'flex': '2', 'minWidth': '260px', 'padding': '0 10px'}),
-                            html.Div([
-                                html.Label("Player IN", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Dropdown(id='tp-player-in', options=[], placeholder='Search player to buy...',
-                                             optionHeight=50)
-                            ], style={'flex': '2', 'minWidth': '260px', 'padding': '0 10px'}),
-                            html.Div([
-                                html.Label("Horizon", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.RadioItems(
-                                    id='tp-horizon',
-                                    options=[{'label': ' Next GW', 'value': 'next'},
-                                             {'label': ' Next 5 GWs', 'value': 'five'}],
-                                    value='five', inline=True,
-                                    inputStyle={'marginRight': '4px', 'marginLeft': '10px'}
-                                )
-                            ], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
-                            html.Div([
-                                html.Label("Transfer cost", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.RadioItems(
-                                    id='tp-hit',
-                                    options=[{'label': ' Free transfer', 'value': 0},
-                                             {'label': ' -4 hit', 'value': 4}],
-                                    value=0, inline=True,
-                                    inputStyle={'marginRight': '4px', 'marginLeft': '10px'}
-                                )
-                            ], style={'flex': '1', 'minWidth': '220px', 'padding': '0 10px'}),
-                        ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-end'})
-                    ], style=CARD_STYLE),
-
-                    html.Div(id='tp-result'),
-
-                    html.Div([
-                        html.H3("Multi-Week Transfer Plan", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
-                        html.P([
-                            "Plans your next few gameweeks of transfers together: when to make one, when to ",
-                            html.Strong("roll"), " the free transfer, and when a ", html.Strong("-4 hit"),
-                            " pays for itself over the horizon. Each week is scored on its best XI plus "
-                            "captain for that week's fixtures, so doubles, blanks and injury returns count."
-                        ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '12px'}),
+                            html.Label("FPL team ID", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                            dcc.Input(id='tp-team-id', type='number', placeholder='e.g. 1234567',
+                                      inputMode='numeric', style={'width': '100%', 'padding': '8px'}),
+                        ], className='tp-field'),
                         html.Div([
-                            html.Div([
-                                html.Label("FPL Team ID", style={'fontWeight': '600', 'marginBottom': '6px',
-                                                                 'display': 'block'}),
-                                dcc.Input(id='tp-team-id', type='number', placeholder='e.g. 1234567',
-                                          persistence=True, persistence_type='local',
-                                          style={'padding': '8px', 'borderRadius': '4px', 'width': '100%',
-                                                 'border': '1px solid #ccc'}),
-                            ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
-                            html.Div([
-                                html.Label("Free transfers you have now",
-                                           style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                                dcc.Dropdown(id='tp-ft', options=[{'label': str(i), 'value': i} for i in range(0, 6)],
-                                             value=1, clearable=False, persistence=True, persistence_type='local'),
-                            ], style={'flex': '1', 'minWidth': '150px', 'padding': '0 10px'}),
-                            html.Div([
-                                html.Label("Gameweeks to plan", style={'fontWeight': '600', 'marginBottom': '6px',
-                                                                       'display': 'block'}),
-                                dcc.RadioItems(id='tp-plan-gws', options=[{'label': f' {i}', 'value': i}
-                                                                          for i in (3, 4, 5, 6)],
-                                               value=5, inline=True,
-                                               inputStyle={'marginRight': '4px', 'marginLeft': '10px'}),
-                            ], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
-                            html.Div([
-                                html.Label("Most hits in a week", style={'fontWeight': '600', 'marginBottom': '6px',
-                                                                         'display': 'block'}),
-                                dcc.RadioItems(id='tp-max-hits', options=[{'label': ' None', 'value': 0},
-                                                                          {'label': ' 1', 'value': 1},
-                                                                          {'label': ' 2', 'value': 2}],
-                                               value=1, inline=True,
-                                               inputStyle={'marginRight': '4px', 'marginLeft': '10px'}),
-                            ], style={'flex': '1', 'minWidth': '200px', 'padding': '0 10px'}),
-                            html.Div([
-                                html.Button("Plan my transfers", id='tp-plan-btn', n_clicks=0, style={
-                                    'backgroundColor': COLORS['primary'], 'color': 'white', 'border': 'none',
-                                    'padding': '10px 22px', 'borderRadius': '6px', 'fontSize': '15px',
-                                    'fontWeight': '700', 'cursor': 'pointer', 'marginTop': '8px'}),
-                            ], style={'padding': '0 10px'}),
-                        ], style={'display': 'flex', 'flexWrap': 'wrap', 'alignItems': 'flex-end', 'gap': '8px'}),
-                    ], style=CARD_STYLE),
+                            html.Label("Free transfers now", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                            dcc.Dropdown(id='tp-ft', options=[{'label': str(i), 'value': i} for i in range(0, 6)],
+                                         value=1, clearable=False, searchable=False,
+                                         persistence=True, persistence_type='local'),
+                        ], className='tp-field tp-narrow'),
+                        html.Div([
+                            html.Label("Gameweeks", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                            dcc.RadioItems(id='tp-plan-gws', className='seg', value=5,
+                                           options=[{'label': str(i), 'value': i} for i in (3, 4, 5, 6)]),
+                        ], className='tp-field tp-auto'),
+                        html.Div([
+                            html.Label("Most hits a week", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                            dcc.RadioItems(id='tp-max-hits', className='seg', value=1,
+                                           options=[{'label': 'None', 'value': 0}, {'label': '1', 'value': 1},
+                                                    {'label': '2', 'value': 2}]),
+                        ], className='tp-field tp-auto'),
+                        html.Div([
+                            html.Button("Plan my transfers", id='tp-plan-btn', n_clicks=0, className='tp-go',
+                                        style={'backgroundColor': COLORS['primary'], 'color': 'white',
+                                               'border': 'none', 'padding': '11px 22px', 'fontSize': '15px',
+                                               'cursor': 'pointer', 'width': '100%'}),
+                        ], className='tp-field tp-auto'),
+                    ], className='tp-controls'),
                     dcc.Loading(html.Div(id='tp-plan-result'), type='circle', color=COLORS['primary']),
-                ], style={'padding': '20px 0'})
+                ], style=CARD_STYLE),
+
+                # 2. Compare two players
+                html.Div(id='tp-compare-card', children=[
+                    html.Div([html.Div([
+                        html.H3("Compare two players"),
+                        html.P("Pick the player you'd sell and the one you'd buy. Players in the same position "
+                               "are listed first, best projection at the top."),
+                    ])], className='lab-card-head'),
+                    html.Div([
+                        html.Div([
+                            html.Label("Player out", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                            dcc.Dropdown(id='tp-player-out', options=[], placeholder='Search player to sell',
+                                         optionHeight=50),
+                        ], className='tp-field tp-wide'),
+                        html.Div([
+                            html.Label("Player in", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                            dcc.Dropdown(id='tp-player-in', options=[], placeholder='Search player to buy',
+                                         optionHeight=50),
+                        ], className='tp-field tp-wide'),
+                        html.Div([
+                            html.Label("Over", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                            dcc.RadioItems(id='tp-horizon', className='seg', value='five',
+                                           options=[{'label': 'Next GW', 'value': 'next'},
+                                                    {'label': 'Next 5 GWs', 'value': 'five'}]),
+                        ], className='tp-field tp-auto'),
+                        html.Div([
+                            html.Label("Transfer", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                            dcc.RadioItems(id='tp-hit', className='seg', value=0,
+                                           options=[{'label': 'Free', 'value': 0}, {'label': '-4 hit', 'value': 4}]),
+                        ], className='tp-field tp-auto'),
+                    ], className='tp-controls'),
+                    html.Div(id='tp-result'),
+                ], style=CARD_STYLE),
             ]),
 
             # CHIP PLANNER PAGE
@@ -13873,35 +13907,46 @@ def load_my_squad(n_clicks, team_id, free_transfers=1):
 # TRANSFER PLANNER CALLBACKS
 # =============================================================================
 
+def _tp_label(r, pts=None):
+    base = f"{r.web_name} ({r.team_name} {r.position} £{r.price:.1f}m)"
+    return base if pts is None else f"{base} | {pts:.1f} pts next 5"
+
+
 @callback(
-    [Output('tp-player-out', 'options'), Output('tp-player-in', 'options')],
+    Output('tp-player-out', 'options'),
     Input('visit-transfer-planner', 'data'),
     prevent_initial_call=True
 )
-def populate_transfer_planner_options(page):
-    """Refresh the player pools whenever the page is visited (cheap, and
-    avoids serving a boot-time snapshot after a data refresh)."""
+def populate_transfer_out_options(page):
+    """Everyone, by name: you know who you're selling."""
     _need_visit(page)
-    data = get_data()
-    dfa = data.get('df_active', pd.DataFrame())
+    dfa = get_data().get('df_active', pd.DataFrame())
     if dfa.empty:
-        return [], []
-    pool = dfa.sort_values(['team_name', 'web_name'])
-    options = [
-        {'label': f"{r.web_name} ({r.team_name} {r.position} \u00a3{r.price:.1f}m)",
-         'value': int(r.id)}
-        for r in pool.itertuples()
-    ]
-    return options, options
+        return []
+    return [{'label': _tp_label(r), 'value': int(r.id)} for r in dfa.sort_values('web_name').itertuples()]
 
 
-def _tp_stat_row(label, out_val, in_val):
-    return html.Tr([
-        html.Td(label, style={'padding': '8px 12px', 'fontWeight': '600',
-                              'color': COLORS['text_light'], 'fontSize': '13px'}),
-        html.Td(out_val, style={'padding': '8px 12px', 'textAlign': 'center'}),
-        html.Td(in_val, style={'padding': '8px 12px', 'textAlign': 'center'}),
-    ], style={'borderBottom': '1px solid #eee'})
+@callback(
+    Output('tp-player-in', 'options'),
+    [Input('visit-transfer-planner', 'data'), Input('tp-player-out', 'value')],
+    prevent_initial_call=True
+)
+def populate_transfer_in_options(page, out_id):
+    """Same position as the player going out first, best 5-week projection
+    at the top; everyone else after (searching still finds anyone)."""
+    _need_visit(page)
+    dfa = get_data().get('df_active', pd.DataFrame())
+    if dfa.empty:
+        return []
+    d = dfa.assign(tp_p5=pd.to_numeric(dfa.get('proj_pts_5'), errors='coerce').fillna(0.0))
+    pos = None
+    if out_id:
+        hit = d[d['id'] == out_id]
+        pos = hit.iloc[0]['position'] if len(hit) else None
+        d = d[d['id'] != out_id]
+    d = d.assign(tp_same=(d['position'] == pos) if pos else True)
+    d = d.sort_values(['tp_same', 'tp_p5'], ascending=[False, False])
+    return [{'label': _tp_label(r, r.tp_p5), 'value': int(r.id)} for r in d.itertuples()]
 
 
 @callback(
@@ -13911,109 +13956,93 @@ def _tp_stat_row(label, out_val, in_val):
 )
 def update_transfer_gain(out_id, in_id, horizon, hit):
     if not out_id or not in_id:
-        return html.Div([
-            html.P("Select the player you'd sell and the player you'd buy.",
-                   style={'color': COLORS['text_light'], 'textAlign': 'center',
-                          'padding': '30px 0'})
-        ], style=CARD_STYLE)
-
+        return html.P("Choose both players to see the projected gain, week by week.", className='tp-hint')
     if out_id == in_id:
-        return html.Div([
-            html.P("That's the same player twice \u2014 the projected gain of doing nothing is reassuringly zero.",
-                   style={'color': COLORS['text_light'], 'textAlign': 'center', 'padding': '30px 0'})
-        ], style=CARD_STYLE)
+        return html.P("That's the same player twice.", className='tp-hint')
 
     data = get_data()
     dfa = data.get('df_active', pd.DataFrame())
-    out_rows = dfa[dfa['id'] == out_id]
-    in_rows = dfa[dfa['id'] == in_id]
+    out_rows, in_rows = dfa[dfa['id'] == out_id], dfa[dfa['id'] == in_id]
     if out_rows.empty or in_rows.empty:
-        return html.Div([html.P("Player data not found \u2014 try reloading the page.",
-                                style={'color': COLORS['danger_text']})], style=CARD_STYLE)
+        return html.P("Player data not found. Try reloading the page.", className='tp-hint')
     p_out, p_in = out_rows.iloc[0], in_rows.iloc[0]
-
-    proj_col = 'proj_pts_next' if horizon == 'next' else 'proj_pts_5'
-    horizon_label = 'next gameweek' if horizon == 'next' else 'next 5 gameweeks'
     hit = int(hit or 0)
 
-    def _proj(row):
-        v = row.get(proj_col)
-        return 0.0 if pd.isna(v) else float(v)
+    # Week by week, the same figures as the Projections page
+    nxt = int(data.get('next_gw_num') or 1)
+    gws = [g for g in range(nxt, nxt + (5 if horizon == 'five' else 1)) if g <= 38]
+    try:
+        proj, _ = planner_projections(data, gws, extra_ids=[out_id, in_id])
+        wk_out = [float(proj.at[out_id, g]) if out_id in proj.index else 0.0 for g in gws]
+        wk_in = [float(proj.at[in_id, g]) if in_id in proj.index else 0.0 for g in gws]
+    except Exception as e:
+        print(f"  Transfer compare: weekly projections unavailable ({e})")
+        col = 'proj_pts_next' if horizon != 'five' else 'proj_pts_5'
+        v = lambda r: 0.0 if pd.isna(r.get(col)) else float(r.get(col))
+        wk_out, wk_in, gws = [v(p_out)], [v(p_in)], gws[:1]
+    out_proj, in_proj = sum(wk_out), sum(wk_in)
+    net = in_proj - out_proj - hit
+    span = (f"GW{gws[0]}" if len(gws) == 1 else f"GW{gws[0]} to GW{gws[-1]}") if gws else "the next gameweek"
 
-    out_proj, in_proj = _proj(p_out), _proj(p_in)
-    raw_gain = in_proj - out_proj
-    net_gain = raw_gain - hit
-
-    if net_gain >= 2:
-        verdict, colour = f"Worth it: projected +{net_gain:.1f} pts over the {horizon_label}", COLORS['success']
-    elif net_gain > 0:
-        verdict, colour = f"Marginal: projected +{net_gain:.1f} pts over the {horizon_label}", COLORS['warning']
+    if net >= 2:
+        cls, title = 'good', f"Worth it: {net:+.1f} pts over {span}"
+    elif net > 0:
+        cls, title = 'meh', f"Marginal: {net:+.1f} pts over {span}"
     else:
-        verdict, colour = f"Don't: projected {net_gain:+.1f} pts over the {horizon_label}", COLORS['danger']
+        cls, title = 'bad', f"Don't: {net:+.1f} pts over {span}"
+    price_delta = float(p_in['price']) - float(p_out['price'])
+    bits = [f"{p_in['web_name']} {in_proj:.1f} v {p_out['web_name']} {out_proj:.1f}"]
+    if hit:
+        bits.append(f"minus the {hit}-point hit")
+    bits.append(f"price {'+' if price_delta >= 0 else '-'}£{abs(price_delta):.1f}m")
+    if abs(net) < 2:
+        bits.append("under 2 points is within the model's margin of error")
+    verdict = html.Div([html.Div(title, className='tp-verdict-title'),
+                        html.Div(" | ".join(bits), className='tp-verdict-sub')], className=f'tp-verdict {cls}')
 
-    position_warning = None
+    def side(row, tag, cls_, total):
+        avail = row.get('avail_pct')
+        flag = None
+        if pd.notna(avail) and avail < 100:
+            news = row.get('news') if isinstance(row.get('news'), str) and row.get('news') else f"{avail:.0f}% chance of playing"
+            flag = html.Div(news, className='tp-flag')
+        form = f"form {row['form']:.1f}" if pd.notna(row.get('form')) else ''
+        return html.Div([
+            html.Div(tag, className='tag'),
+            html.Div(row['web_name'], className='nm'),
+            html.Div(" | ".join(x for x in (row['team_name'], row['position'], f"£{row['price']:.1f}m", form) if x),
+                     className='meta'),
+            html.Div([f"{total:.1f}", html.Span(" pts")], className='big'),
+            flag,
+        ], className=f'tp-side {cls_}')
+
+    pair = html.Div([side(p_out, 'Out', 'out', out_proj), side(p_in, 'In', 'in', in_proj)], className='tp-pair')
+
+    fx = _pj_fixtures(data.get('fixtures_data'), data.get('teams_df'), set(gws))
+    rows = []
+    for g, a_, b_ in zip(gws, wk_out, wk_in):
+        diff = b_ - a_
+        rows.append(html.Tr([
+            html.Td(f"GW{g}", className='num'),
+            html.Td([f"{a_:.1f}", html.Span(fx.get(p_out['team'], {}).get(g, 'No fixture'), className='fx')],
+                    className='num' + (' win' if a_ > b_ + 0.05 else '')),
+            html.Td([f"{b_:.1f}", html.Span(fx.get(p_in['team'], {}).get(g, 'No fixture'), className='fx')],
+                    className='num' + (' win' if b_ > a_ + 0.05 else '')),
+            html.Td(f"{diff:+.1f}", className='num', style={'color': COLORS['success_text'] if diff > 0.05 else
+                                                            COLORS['danger_text'] if diff < -0.05 else COLORS['text_light']}),
+        ]))
+    weeks = html.Table([
+        html.Thead(html.Tr([html.Th("GW"), html.Th(f"Out: {p_out['web_name']}"), html.Th(f"In: {p_in['web_name']}"),
+                            html.Th("Gain")])),
+        html.Tbody(rows),
+    ], className='tp-weeks')
+
+    warn = None
     if p_out['position'] != p_in['position']:
-        position_warning = html.P(
-            f"\u26a0 Position mismatch: {p_out['web_name']} is a {p_out['position']}, "
-            f"{p_in['web_name']} is a {p_in['position']} \u2014 this can't be a direct one-for-one swap.",
-            style={'color': COLORS['danger_text'], 'fontWeight': '600', 'marginTop': '10px'})
-
-    price_delta = p_in['price'] - p_out['price']
-
-    def _fx(row):
-        v = row.get('fixture_string')
-        return v if isinstance(v, str) and v else '\u2014'
-
-    def _avail(row):
-        v = row.get('avail_pct')
-        return '100%' if pd.isna(v) else f"{v:.0f}%"
-
-    return html.Div([
-        html.Div([
-            html.Div(verdict, style={
-                'backgroundColor': colour,
-                # FPL green/amber are light fills: purple text on them, white on red
-                'color': 'white' if colour == COLORS['danger'] else COLORS['primary'],
-                'padding': '14px 24px',
-                'borderRadius': '8px', 'fontSize': '18px', 'fontWeight': '700',
-                'textAlign': 'center', 'marginBottom': '6px'
-            }),
-            html.P(
-                f"{p_in['web_name']} projects {in_proj:.1f}, {p_out['web_name']} projects {out_proj:.1f}"
-                + (f", minus the {hit}-point hit" if hit else "")
-                + f". Money move: {'+' if price_delta >= 0 else ''}\u00a3{price_delta:.1f}m.",
-                style={'color': COLORS['text_light'], 'textAlign': 'center', 'marginBottom': '16px'}),
-            html.Table([
-                html.Thead(html.Tr([
-                    html.Th("", style={'padding': '8px 12px'}),
-                    html.Th(f"OUT: {p_out['web_name']}",
-                            style={'padding': '8px 12px', 'color': COLORS['danger_text'], 'textAlign': 'center'}),
-                    html.Th(f"IN: {p_in['web_name']}",
-                            style={'padding': '8px 12px', 'color': COLORS['success_text'], 'textAlign': 'center'}),
-                ])),
-                html.Tbody([
-                    _tp_stat_row("Team", p_out['team_name'], p_in['team_name']),
-                    _tp_stat_row("Position", p_out['position'], p_in['position']),
-                    _tp_stat_row("Price", f"\u00a3{p_out['price']:.1f}m", f"\u00a3{p_in['price']:.1f}m"),
-                    _tp_stat_row("Proj next GW",
-                                 f"{0 if pd.isna(p_out.get('proj_pts_next')) else p_out['proj_pts_next']:.2f}",
-                                 f"{0 if pd.isna(p_in.get('proj_pts_next')) else p_in['proj_pts_next']:.2f}"),
-                    _tp_stat_row("Proj next 5",
-                                 f"{0 if pd.isna(p_out.get('proj_pts_5')) else p_out['proj_pts_5']:.1f}",
-                                 f"{0 if pd.isna(p_in.get('proj_pts_5')) else p_in['proj_pts_5']:.1f}"),
-                    _tp_stat_row("Form", f"{p_out['form']:.1f}" if pd.notna(p_out['form']) else '\u2014',
-                                 f"{p_in['form']:.1f}" if pd.notna(p_in['form']) else '\u2014'),
-                    _tp_stat_row("Availability", _avail(p_out), _avail(p_in)),
-                    _tp_stat_row("Next 5 fixtures", _fx(p_out), _fx(p_in)),
-                ])
-            ], style={'width': '100%', 'borderCollapse': 'collapse'}),
-            position_warning,
-            html.P("Projections come from the expected-points engine (xG/xA, minutes security, "
-                   "fixture-specific difficulty, DEFCON, availability). A projected gain under ~2 "
-                   "points is within model noise \u2014 treat it as a coin flip, not a signal.",
-                   style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginTop': '14px'})
-        ], style=CARD_STYLE)
-    ])
+        warn = html.P(f"{p_out['web_name']} is a {p_out['position']} and {p_in['web_name']} is a {p_in['position']}, "
+                      "so this can't be a straight swap.", className='tp-hint',
+                      style={'color': COLORS['danger_text'], 'fontWeight': '600'})
+    return html.Div([verdict, pair, weeks, warn])
 
 
 def planner_projections(data, gws, extra_ids=()):
@@ -14123,9 +14152,7 @@ def _load_entry_squad(team_id, data):
 )
 def run_transfer_plan(n_clicks, team_id, free_transfers, n_gws, max_hits):
     def note(msg, colour=None):
-        return html.Div([html.P(msg, style={'color': colour or COLORS['text_light'], 'fontWeight': '600',
-                                            'textAlign': 'center', 'padding': '20px 0', 'margin': 0})],
-                        style=CARD_STYLE)
+        return html.P(msg, className='tp-hint', style={'color': colour or COLORS['text_light'], 'fontWeight': '600'})
     if not team_id:
         return note("Enter your FPL team ID to plan your transfers.")
     data = get_data()
@@ -14163,73 +14190,125 @@ def run_transfer_plan(n_clicks, team_id, free_transfers, n_gws, max_hits):
     gain = net - base_total
     n_moves = sum(len(w['in']) for w in plan['weeks'])
 
-    span = f"GW{gws[0]}–GW{gws[-1]}" if len(gws) > 1 else f"GW{gws[0]}"
+    span = f"GW{gws[0]} to GW{gws[-1]}" if len(gws) > 1 else f"GW{gws[0]}"
     if n_moves == 0:
-        headline = f"Hold: no transfer beats rolling over {span}"
-        colour = COLORS['secondary']
+        cls, title = 'good', f"Hold: no transfer beats rolling over {span}"
     else:
-        headline = f"Plan: +{gain:.1f} projected points over {span} vs no transfers"
-        colour = COLORS['success'] if gain >= 2 else COLORS['warning']
+        cls, title = ('good' if gain >= 2 else 'meh'), f"{gain:+.1f} projected points over {span} vs no transfers"
+    head = html.Div([
+        html.Div(title, className='tp-verdict-title'),
+        html.Div(f"This plan: {net:.1f} pts after hits ({total_hits} hit{'s' if total_hits != 1 else ''}) | "
+                 f"keeping your squad: {base_total:.1f} | free transfers left at the end: {plan['ft_end']}",
+                 className='tp-verdict-sub'),
+    ], className=f'tp-verdict {cls}')
 
-    head = html.Div(headline, style={'backgroundColor': colour, 'color': COLORS['primary'],
-                                     'padding': '14px 20px', 'borderRadius': '8px', 'fontSize': '18px',
-                                     'fontWeight': '700', 'textAlign': 'center', 'marginBottom': '8px'})
-    sub = html.P(
-        f"This plan: {net:.1f} points after hits ({plan_total:.1f} before, {total_hits} hit"
-        f"{'s' if total_hits != 1 else ''}). Keeping your squad: {base_total:.1f}. "
-        f"Free transfers left at the end: {plan['ft_end']}.",
-        style={'color': COLORS['text_light'], 'textAlign': 'center', 'marginBottom': '14px'})
-
-    # One block per gameweek (stacks cleanly on a phone, unlike a wide table)
-    pill = {'display': 'inline-block', 'padding': '3px 10px', 'borderRadius': '20px', 'fontSize': '13px',
-            'fontWeight': '600', 'lineHeight': '1.35', 'maxWidth': '100%', 'margin': '0 6px 6px 0',
-            'backgroundColor': '#f0f0f0', 'color': COLORS['text_dark']}
     blocks = []
     for w, (bpts, _bxi, _bcap) in zip(plan['weeks'], base_weeks):
         used = len(w['in'])
         free_used = min(used, w['ft_before'])
+        if used:
+            act = (f"{used} transfer{'s' if used != 1 else ''}: {free_used} free"
+                   + (f" + {w['hits']} hit (-{HIT_COST * w['hits']})" if w['hits'] else ''))
+        else:
+            nxt = min(w['ft_before'] + 1, MAX_FREE_TRANSFERS)
+            act = (f"Roll the transfer: {nxt} free next week" if w['ft_before'] < MAX_FREE_TRANSFERS
+                   else "No transfer (free transfers at the cap)")
         moves = []
         for o, i in zip(sorted(w['out'], key=lambda q: positions.get(q, '')),
                         sorted(w['in'], key=lambda q: positions.get(q, ''))):
             moves.append(html.Div([
-                html.Span(f"{name.get(o, o)}", style={'color': COLORS['danger_text'], 'fontWeight': '600'}),
-                html.Span(f" (\u00a3{sell.get(o, info.at[o, 'price']):.1f}m) \u2192 ",
-                          style={'color': COLORS['text_light']}),
-                html.Span(f"{name.get(i, i)}", style={'color': COLORS['success_text'], 'fontWeight': '600'}),
-                html.Span(f" ({club.get(i, '')}, \u00a3{info.at[i, 'price']:.1f}m)",
-                          style={'color': COLORS['text_light']}),
-            ], style={'marginBottom': '4px'}))
-        if used:
-            xfer = (f"{used} transfer{'s' if used != 1 else ''}: {free_used} free"
-                    + (f" + {w['hits']} hit (\u2212{HIT_COST * w['hits']})" if w['hits'] else ''))
-        else:
-            nxt = min(w['ft_before'] + 1, MAX_FREE_TRANSFERS)
-            xfer = (f"Roll: {nxt} free transfers next week" if w['ft_before'] < MAX_FREE_TRANSFERS
-                    else "No transfer (free transfers at the cap)")
+                html.Div([
+                    html.Span("OUT ", className='m'), html.Span(name.get(o, o), className='o'),
+                    html.Span(f" £{sell.get(o, info.at[o, 'price']):.1f}m", className='m'),
+                    html.Br(),
+                    html.Span("IN ", className='m'), html.Span(name.get(i, i), className='i'),
+                    html.Span(f" {club.get(i, '')} £{info.at[i, 'price']:.1f}m", className='m'),
+                ], className='who'),
+                html.Button("Compare", id={'type': 'tp-compare', 'out': int(o), 'in': int(i)}, n_clicks=0,
+                            className='tp-cmp'),
+            ], className='tp-move'))
         diff = w['points'] - bpts
         blocks.append(html.Div([
             html.Div([
-                html.Span(f"GW{w['gw']}", style={**pill, 'backgroundColor': COLORS['primary'],
-                                                 'color': 'white'}),
-                html.Span(f"{w['points']:.1f} pts", style=pill),
-                html.Span(f"{diff:+.1f} vs keeping", style={**pill, 'color': COLORS['success_text']
-                                                             if diff > 0.05 else COLORS['text_light']}),
-                html.Span("C: " + str(name.get(w['captain'], '\u2014')), style=pill),
-                html.Span(f"Bank \u00a3{w['bank']:.1f}m", style=pill),
-            ]),
-            html.Div(xfer, style={'fontWeight': '600', 'marginBottom': '6px',
-                                  'color': COLORS['danger_text'] if w['hits'] else COLORS['text_dark']}),
+                html.Span(f"GW{w['gw']}", className='gw'),
+                html.Span(f"{w['points']:.1f} pts", className='pts'),
+                html.Span(f"{diff:+.1f} vs keeping", className='muted',
+                          style={'color': COLORS['success_text'], 'fontWeight': '700'} if diff > 0.05 else None),
+                html.Span(f"Captain {name.get(w['captain'], '-')}", className='muted'),
+                html.Span(f"Bank £{w['bank']:.1f}m", className='muted'),
+            ], className='tp-week-head'),
+            html.Div(act, className='tp-week-act',
+                     style={'color': COLORS['danger_text']} if w['hits'] else None),
             html.Div(moves),
-        ], style={'borderTop': '1px solid #eee', 'padding': '12px 0'}))
-    table = html.Div(blocks)
-    caveat = html.P(
-        "Weeks further out count a little less (their projections are less certain), and free "
-        f"transfers still banked at the end are valued at {PLANNER_FT_VALUE:g} points each. Doesn't "
-        "plan Wildcard or Free Hit, and assumes today's prices. Transfers you've already made for "
-        f"GW{gws[0]} don't show in FPL's public data until the deadline. Re-run each week: the plan "
-        "changes as news and odds come in, and only the first week's moves need acting on now.",
-        style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginTop': '14px'})
-    return html.Div([head, sub, table, caveat], style=CARD_STYLE)
+        ], className='tp-week'))
+    caveat = html.Details([
+        html.Summary("How the plan works"),
+        html.P("Weeks further out count a little less, because their projections are less certain, and free "
+               f"transfers still banked at the end are valued at {PLANNER_FT_VALUE:g} points each. It doesn't "
+               "plan a Wildcard or Free Hit and assumes today's prices. Transfers you've already made for "
+               f"GW{gws[0]} don't show in FPL's public data until the deadline. Re-run it each week: only the "
+               "first week's moves need acting on now, and the rest changes as news and odds come in."),
+    ], className='lab-how')
+    return html.Div([head, html.Div(blocks), caveat])
+
+
+# Compare button on a planned move: load it into "Compare two players"
+clientside_callback(
+    """
+    function(clicks) {
+        var noUp = window.dash_clientside.no_update;
+        var trig = (window.dash_clientside.callback_context.triggered || [])[0];
+        if (!trig || !trig.value) { return [noUp, noUp, noUp]; }
+        var id;
+        try { id = JSON.parse(trig.prop_id.substring(0, trig.prop_id.lastIndexOf('.'))); }
+        catch (e) { return [noUp, noUp, noUp]; }
+        setTimeout(function() {
+            var area = document.getElementById('content-area'), card = document.getElementById('tp-compare-card');
+            if (area && card) { area.scrollTop += card.getBoundingClientRect().top - area.getBoundingClientRect().top - 8; }
+        }, 50);
+        return [id.out, id['in'], 'five'];
+    }
+    """,
+    [Output('tp-player-out', 'value'), Output('tp-player-in', 'value'), Output('tp-horizon', 'value')],
+    Input({'type': 'tp-compare', 'out': ALL, 'in': ALL}, 'n_clicks'),
+    prevent_initial_call=True
+)
+
+
+# Team ID: typed once, remembered on this device, filled in everywhere.
+# Every box only feeds its page when a button is pressed, so filling them
+# in never sets anything off.
+TEAM_ID_INPUTS = ['squad-team-id-input', 'tp-team-id', 'cp-team-id', 'dd-team-id', 'pa-team-id', 'rv-my-id']
+clientside_callback(
+    """
+    function() {
+        var args = Array.prototype.slice.call(arguments);
+        var ids = %s, saved = args[args.length - 1];
+        var noUp = window.dash_clientside.no_update;
+        var trig = (window.dash_clientside.callback_context.triggered || []);
+        var one = trig.length === 1 ? trig[0].prop_id.split('.')[0] : null;
+        var ok = function(v) { return v !== null && v !== undefined && v !== '' && Number(v) > 0; };
+        var out = ids.map(function() { return noUp; });
+        var k = ids.indexOf(one);
+        if (k !== -1) {
+            // Typed in one box: copy to the others and remember it
+            var v = args[k];
+            if (!ok(v)) { out.push(noUp); return out; }
+            out = ids.map(function(_, j) { return j === k || args[j] === v ? noUp : v; });
+            out.push(v === saved ? noUp : v);
+            return out;
+        }
+        // Page load (or the saved value arriving): fill any empty box
+        if (ok(saved)) {
+            out = ids.map(function(_, j) { return ok(args[j]) ? noUp : saved; });
+        }
+        out.push(noUp);
+        return out;
+    }
+    """ % json.dumps(TEAM_ID_INPUTS),
+    [Output(i, 'value') for i in TEAM_ID_INPUTS] + [Output('saved-team-id', 'data')],
+    [Input(i, 'value') for i in TEAM_ID_INPUTS] + [Input('saved-team-id', 'data')],
+)
 
 
 # =============================================================================
