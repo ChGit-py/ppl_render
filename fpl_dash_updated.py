@@ -7318,6 +7318,10 @@ app.index_string = '''
             .cp-value { font-size: 15px; font-weight: 700; color: var(--brand); margin-top: 2px; }
             .cp-why { font-size: 14px; color: var(--text); margin-top: 8px; line-height: 1.45; }
             .cp-meta { font-size: 13px; color: var(--muted); margin-top: 6px; }
+            .cp-set { font-size: 15px; font-weight: 700; margin: 18px 0 2px; padding-top: 14px;
+                      border-top: 1px solid var(--border); color: var(--brand); }
+            .cp-timeline .cp-split { border-left: 2px solid var(--brand); }
+            .cp-set.first { margin-top: 4px; padding-top: 0; border-top: none; }
             .cp-warn { color: #7a5600; font-weight: 700; }
             .cp-timeline td, .cp-timeline th { white-space: nowrap; }
             .cp-timeline td:first-child { position: sticky; left: 0; background: #ffffff; }
@@ -14491,19 +14495,34 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
     import statistics as _stats
     first_gw = future_gws[0]
 
-    # --- Your chips: which are still held in the current set, and until when
-    windows = chip_windows(data.get('bootstrap_data'), first_gw)
+    # --- Your chips. FPL gives two sets a season (e.g. GW1-19 and GW20-38),
+    # each chip once per set; the windows come from FPL's own data.
+    chip_names = {'wildcard': 'Wildcard', 'freehit': 'Free Hit', 'bboost': 'Bench Boost', '3xc': 'Triple Captain'}
+    order = ('bboost', '3xc', 'freehit', 'wildcard')
+    all_win = {}
+    for c in (data.get('bootstrap_data') or {}).get('chips') or []:
+        nm, se, ee = c.get('name'), c.get('start_event'), c.get('stop_event')
+        if nm in chip_names and se and ee:
+            all_win.setdefault(nm, set()).add((int(se), int(ee)))
+    for k in chip_names:
+        all_win[k] = sorted(all_win.get(k) or {(1, 19), (20, 38)})
     try:
         my_used = fetch_entry_chips(int(team_id)) or []
     except Exception:
         my_used = []
-    chip_names = {'wildcard': 'Wildcard', 'freehit': 'Free Hit', 'bboost': 'Bench Boost', '3xc': 'Triple Captain'}
-    mine = {}
-    for key in chip_names:
-        lo, hi = windows.get(key, (1, 38))
-        played = [u for u in my_used if u.get('name') == key and lo <= (u.get('event') or 0) <= hi]
-        mine[key] = {'lo': lo, 'hi': hi, 'used': played[-1]['event'] if played else None,
+    sets = []          # the current set first, then the next one (if any)
+    for n in range(2):
+        st = {}
+        for k in chip_names:
+            wins = [w for w in all_win[k] if w[1] >= first_gw]
+            if len(wins) <= n:
+                continue
+            lo, hi = wins[n]
+            played = [u for u in my_used if u.get('name') == k and lo <= (u.get('event') or 0) <= hi]
+            st[k] = {'lo': lo, 'hi': hi, 'used': played[-1]['event'] if played else None,
                      'gws': [g for g in future_gws if lo <= g <= hi]}
+        if st:
+            sets.append(st)
 
     # Free Hit is judged on its EXCESS over the typical week: the best XI in
     # the game beats yours by a similar margin every week just for being the
@@ -14512,15 +14531,19 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
     for _r in rows:
         _r['fh_excess'] = round(_r['fh_delta'] - _fh_baseline, 1)
 
-    def pick(key, score):
-        """Best and next-best gameweek for a chip, within its window."""
-        cand = sorted((r for r in rows if r['gw'] in mine[key]['gws']), key=lambda r: -score(r))
-        return (cand[0] if cand else None), (cand[1] if len(cand) > 1 else None), cand
+    def pick(st, key, score):
+        """Best and next-best gameweek for a chip, within this set's window."""
+        if key not in st or st[key]['used']:
+            return None, None
+        cand = sorted((r for r in rows if r['gw'] in st[key]['gws']), key=lambda r: -score(r))
+        return (cand[0] if cand else None), (cand[1] if len(cand) > 1 else None)
 
-    best_bb, next_bb, bb_rows = pick('bboost', lambda r: r['bb_value'])
-    best_tc, next_tc, tc_rows = pick('3xc', lambda r: r['tc_score'])
-    best_fh, next_fh, fh_rows = pick('freehit', lambda r: r['fh_excess'])
-    fh_worth = bool(best_fh and best_fh['fh_excess'] >= 4.0)
+    plans = []
+    for st in sets:
+        bb, tc, fh = (pick(st, 'bboost', lambda r: r['bb_value']), pick(st, '3xc', lambda r: r['tc_score']),
+                      pick(st, 'freehit', lambda r: r['fh_excess']))
+        plans.append({'st': st, 'bb': bb, 'tc': tc, 'fh': fh,
+                      'fh_worth': bool(fh[0] and fh[0]['fh_excess'] >= 4.0)})
 
     league_chips, league_name_note, n_rivals_chips = None, '', 0
     chip_matrix_rows, my_league_rank, managers_above = [], None, []
@@ -14572,16 +14595,14 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
     def when(g):
         return "this week" if g == first_gw else f"GW{g}"
 
-    def card(key, call, call_cls, value, lines, nxt=None):
-        st = mine[key]
-        if st['used']:
-            badge, bcls = f"Used in GW{st['used']}", 'used'
-        else:
-            badge, bcls = "Available", 'ok'
+    def card(st, key, call, call_cls, value, lines, nxt=None, rivals=False, back_later=False):
+        c = st[key]
+        badge, bcls = (f"Used in GW{c['used']}", 'used') if c['used'] else ("Available", 'ok')
         body = [html.Div([html.Span(chip_names[key], className='cp-name'),
                           html.Span(badge, className=f'cp-badge {bcls}')], className='cp-top')]
-        if st['used']:
-            body.append(html.Div("Already played in this set.", className='cp-meta'))
+        if c['used']:
+            body.append(html.Div("Already played in this set." +
+                                 (" You get it back for the second set." if back_later else ""), className='cp-meta'))
         else:
             body.append(html.Div(call, className=f'cp-call {call_cls}'))
             if value:
@@ -14589,96 +14610,130 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
             body += [html.Div(t, className='cp-why') for t in lines if t]
             if nxt:
                 body.append(html.Div(nxt, className='cp-meta'))
-            if st['hi'] < 38 and st['hi'] >= first_gw:
-                left = st['hi'] - first_gw + 1
-                body.append(html.Div(f"Use by GW{st['hi']} ({left} gameweek{'s' if left != 1 else ''} left) "
+            if c['hi'] < 38 and c['hi'] >= first_gw:
+                left = c['hi'] - first_gw + 1
+                body.append(html.Div(f"Use by GW{c['hi']} ({left} gameweek{'s' if left != 1 else ''} left) "
                                      "or it's lost.", className='cp-meta cp-warn' if left <= 4 else 'cp-meta'))
-            body.append(rivals_line(key))
-        return html.Div(body, className='cp-card' + (' done' if st['used'] else ''))
+            if rivals:
+                body.append(rivals_line(key))
+        return html.Div(body, className='cp-card' + (' done' if c['used'] else ''))
 
-    cards = []
-    # Bench Boost
-    if best_bb:
-        cards.append(card('bboost', f"Best: {when(best_bb['gw'])}", 'go',
-                          f"+{best_bb['bb_value']:.1f} pts",
-                          [f"Your bench projects {best_bb['bench']:.1f}; about {best_bb['autosub_pts']:.1f} of that "
-                           "would come in through auto-subs anyway."],
-                          f"Next best: GW{next_bb['gw']} (+{next_bb['bb_value']:.1f})" if next_bb else None))
-    else:
-        cards.append(card('bboost', "No week in range", 'hold', None, []))
-    # Triple Captain
-    if best_tc:
-        opp = f" v {best_tc['tc_opp']}" if best_tc.get('tc_opp') else ""
-        cards.append(card('3xc', f"Best: {when(best_tc['gw'])}", 'go',
-                          f"{best_tc['tc_name']}{opp}",
-                          [f"Projects {best_tc['tc_pts']:.1f}, with a {best_tc.get('tc_haul', 0):.0f}% chance of a big "
-                           "haul. Picked for ceiling as well as average, because the chip multiplies a haul."],
-                          (f"Next best: {next_tc['tc_name']} in GW{next_tc['gw']} ({next_tc['tc_pts']:.1f})"
-                           if next_tc else None)))
-    else:
-        cards.append(card('3xc', "No week in range", 'hold', None, []))
-    # Free Hit
-    if best_fh and fh_worth:
-        why = ("your squad is short of fixtures" if best_fh['with_fixture'] < 11
-               else "that week's fixtures suit other players far better than yours")
-        cards.append(card('freehit', f"Best: {when(best_fh['gw'])}", 'go',
-                          f"+{best_fh['fh_excess']:.1f} pts vs a typical week",
-                          [f"Because {why}. You'd already own {best_fh['fh_owned']} of the 11."],
-                          None))
-    else:
-        cards.append(card('freehit', "Hold", 'hold', None,
-                          ["No week in range stands out. Free Hits pay off in blank and double gameweeks, "
-                           "which usually appear later in the season."]))
-    # Wildcard
-    wc = mine['wildcard']
-    cards.append(html.Div([
-        html.Div([html.Span('Wildcard', className='cp-name'),
-                  html.Span(f"Used in GW{wc['used']}" if wc['used'] else "Available",
-                            className='cp-badge ' + ('used' if wc['used'] else 'ok'))], className='cp-top'),
-        html.Div("Not modelled here. Worth it when your squad needs four or more transfers; the Transfer "
-                 "Planner shows how many moves are worth making.", className='cp-why'),
-        html.Div(f"Use by GW{wc['hi']} or it's lost." if (not wc['used'] and wc['hi'] < 38) else None,
-                 className='cp-meta'),
-    ], className='cp-card' + (' done' if wc['used'] else '')))
+    def set_cards(p, first):
+        st, out = p['st'], []
+        back = first and len(plans) > 1
+        if not any(st[k]['gws'] for k in st if not st[k]['used']) and not first:
+            return None
+        if 'bboost' in st:
+            best, nxt = p['bb']
+            out.append(card(st, 'bboost', f"Best: {when(best['gw'])}" if best else "No week in range",
+                            'go' if best else 'hold', f"+{best['bb_value']:.1f} pts" if best else None,
+                            [f"Your bench projects {best['bench']:.1f}" +
+                             (f"; about {best['autosub_pts']:.1f} of that would come in through auto-subs anyway."
+                              if best['autosub_pts'] >= 0.05 else ".")] if best else [],
+                            f"Next best: GW{nxt['gw']} (+{nxt['bb_value']:.1f})" if nxt else None,
+                            rivals=first, back_later=back))
+        if '3xc' in st:
+            best, nxt = p['tc']
+            opp = f" v {best['tc_opp']}" if best and best.get('tc_opp') else ""
+            out.append(card(st, '3xc', f"Best: {when(best['gw'])}" if best else "No week in range",
+                            'go' if best else 'hold', f"{best['tc_name']}{opp}" if best else None,
+                            [f"Projects {best['tc_pts']:.1f}, with a {best.get('tc_haul', 0):.0f}% chance of a "
+                             "big haul. Picked for ceiling as well as average, because the chip multiplies a "
+                             "haul."] if best else [],
+                            (f"Next best: {nxt['tc_name']} in GW{nxt['gw']} ({nxt['tc_pts']:.1f})" if nxt else None),
+                            rivals=first, back_later=back))
+        if 'freehit' in st:
+            best, _ = p['fh']
+            if best and p['fh_worth']:
+                why = ("your squad is short of fixtures" if best['with_fixture'] < 11
+                       else "that week's fixtures suit other players far better than yours")
+                out.append(card(st, 'freehit', f"Best: {when(best['gw'])}", 'go',
+                                f"+{best['fh_excess']:.1f} pts vs a typical week",
+                                [f"Because {why}. You'd already own {best['fh_owned']} of the 11."],
+                                rivals=first, back_later=back))
+            else:
+                out.append(card(st, 'freehit', "Hold", 'hold', None,
+                                ["No week in range stands out. Free Hits pay off in blank and double "
+                                 "gameweeks, which usually appear later in the season."],
+                                rivals=first, back_later=back))
+        if 'wildcard' in st:
+            wc = st['wildcard']
+            out.append(html.Div([
+                html.Div([html.Span('Wildcard', className='cp-name'),
+                          html.Span(f"Used in GW{wc['used']}" if wc['used'] else "Available",
+                                    className='cp-badge ' + ('used' if wc['used'] else 'ok'))], className='cp-top'),
+                html.Div(("Already played in this set." + (" You get it back for the second set." if back else ""))
+                         if wc['used'] else
+                         "Not modelled here. Worth it when your squad needs four or more transfers; the "
+                         "Transfer Planner shows how many moves are worth making.", className='cp-why'),
+                html.Div(f"Use by GW{wc['hi']} or it's lost." if (not wc['used'] and first_gw <= wc['hi'] < 38)
+                         else None, className='cp-meta'),
+            ], className='cp-card' + (' done' if wc['used'] else '')))
+        status = html.Div([html.Span([chip_names[k], html.B(" used" if st[k]['used'] else " held")],
+                                     className='cp-pill ' + ('used' if st[k]['used'] else 'ok'))
+                           for k in order if k in st], className='cp-status')
+        return status, html.Div(out, className='cp-grid')
 
-    status = html.Div([
-        html.Span([chip_names[k], html.B(" used" if mine[k]['used'] else " held")],
-                  className='cp-pill ' + ('used' if mine[k]['used'] else 'ok'))
-        for k in ('bboost', '3xc', 'freehit', 'wildcard')
-    ], className='cp-status')
+    sections = []
+    for i, p in enumerate(plans):
+        st = p['st']
+        lo, hi = min(v['lo'] for v in st.values()), max(v['hi'] for v in st.values())
+        built = set_cards(p, i == 0)
+        if i == 0:
+            head = (f"This set: GW{lo} to GW{hi}", f"Use these by GW{hi}; any left after that are lost."
+                    if hi < 38 else "Your chips for the rest of the season.")
+        else:
+            head = (f"Second set: GW{lo} to GW{hi}", "A fresh set of chips from GW" + str(lo) + ". These "
+                    "weeks are a long way off, so the advice rests mostly on fixtures: re-check nearer the time.")
+        if built is None:
+            sections.append(html.Div([html.H4(head[0], className='cp-set' + (' first' if i == 0 else '')),
+                                      html.P(f"Choose \"Rest of season\" above to plan the set that starts in GW{lo}.",
+                                             className='tp-hint')]))
+            continue
+        sections.append(html.Div([html.H4(head[0], className='cp-set' + (' first' if i == 0 else '')), html.P(head[1], className='cp-meta'),
+                                  built[0], built[1]]))
 
     clash = {}
-    for key, r, ok in (('Bench Boost', best_bb, not mine['bboost']['used']),
-                       ('Triple Captain', best_tc, not mine['3xc']['used']),
-                       ('Free Hit', best_fh if fh_worth else None, not mine['freehit']['used'])):
-        if r and ok:
-            clash.setdefault(r['gw'], []).append(key)
+    for p in plans:
+        for label, key, r in (('Bench Boost', 'bboost', p['bb'][0]), ('Triple Captain', '3xc', p['tc'][0]),
+                              ('Free Hit', 'freehit', p['fh'][0] if p['fh_worth'] else None)):
+            if r:
+                clash.setdefault(r['gw'], []).append(label)
     clash_notes = [html.P(f"{' and '.join(v)} both point at GW{g}. Only one chip can be played a week, so play "
                           "the bigger one there and the other in its next-best week.", className='tp-hint',
                           style={'color': COLORS['warning_text'], 'fontWeight': '600'})
                    for g, v in clash.items() if len(v) > 1]
 
-    # One timeline: each chip's value in each gameweek
-    def cell(key, r, val, txt, best):
-        if mine[key]['used'] or r['gw'] not in mine[key]['gws']:
-            return html.Td('-', className='num', style={'color': '#b9adc0'})
-        return html.Td(txt, className='num' + (' win' if best and r['gw'] == best['gw'] else ''))
+    # One timeline across both sets: each chip's value in each gameweek
+    split_gw = min(v['lo'] for v in plans[1]['st'].values()) if len(plans) > 1 else None
+    def sp(g):
+        return ' cp-split' if g == split_gw else ''
+
+    def cell(key, r, txt, which):
+        for p in plans:
+            c = p['st'].get(key)
+            if c and c['lo'] <= r['gw'] <= c['hi']:
+                if c['used'] or r['gw'] not in c['gws']:
+                    break
+                best = p[which][0] if which != 'fh' or p['fh_worth'] else None
+                return html.Td(txt, className='num' + (' win' if best and r['gw'] == best['gw'] else '') + sp(r['gw']))
+        return html.Td('-', className='num' + sp(r['gw']), style={'color': '#b9adc0'})
     tl = html.Div(html.Table([
-        html.Thead(html.Tr([html.Th('')] + [html.Th(f"GW{r['gw']}") for r in rows])),
+        html.Thead(html.Tr([html.Th('')] + [html.Th(f"GW{r['gw']}", className=sp(r['gw']).strip() or None)
+                                            for r in rows])),
         html.Tbody([
-            html.Tr([html.Td('Bench Boost' + (' (used)' if mine['bboost']['used'] else ''), className='num')] +
-                    [cell('bboost', r, r['bb_value'], f"{r['bb_value']:.1f}", best_bb) for r in rows]),
-            html.Tr([html.Td('Triple Captain' + (' (used)' if mine['3xc']['used'] else ''), className='num')] +
-                    [cell('3xc', r, r['tc_pts'], [f"{r['tc_pts']:.1f}", html.Span(r['tc_name'], className='fx')],
-                          best_tc) for r in rows]),
-            html.Tr([html.Td('Free Hit' + (' (used)' if mine['freehit']['used'] else ''), className='num')] +
-                    [cell('freehit', r, r['fh_excess'],
-                          '0.0' if abs(r['fh_excess']) < 0.05 else f"{r['fh_excess']:+.1f}",
-                          best_fh if fh_worth else None)
+            html.Tr([html.Td('Bench Boost', className='num')] +
+                    [cell('bboost', r, f"{r['bb_value']:.1f}", 'bb') for r in rows]),
+            html.Tr([html.Td('Triple Captain', className='num')] +
+                    [cell('3xc', r, [f"{r['tc_pts']:.1f}", html.Span(r['tc_name'], className='fx')], 'tc')
+                     for r in rows]),
+            html.Tr([html.Td('Free Hit', className='num')] +
+                    [cell('freehit', r, '0.0' if abs(r['fh_excess']) < 0.05 else f"{r['fh_excess']:+.1f}", 'fh')
                      for r in rows]),
         ]),
     ], className='tp-weeks cp-timeline'), className='chart-scroll')
 
+    best_fh = next((p['fh'][0] for p in plans if p['fh_worth']), None) or (plans[0]['fh'][0] if plans else None)
     folds = []
     if best_fh and best_fh.get('fh_detail'):
         folds.append(html.Details([
@@ -14738,11 +14793,14 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
     span = f"GW{rows[0]['gw']} to GW{rows[-1]['gw']}"
     return html.Div([
         html.Div([html.Div([html.Div([html.H3("Your chips"),
-                                      html.P(f"Recommendations for {span}, only for chips you still hold.")])],
+                                      html.P(f"Recommendations for {span}, only for chips you still hold." +
+                                             (" FPL gives a fresh set partway through the season, so each set is "
+                                              "planned on its own." if len(plans) > 1 else ""))])],
                            className='lab-card-head'),
-                  status, html.Div(cards, className='cp-grid'), *clash_notes], style=CARD_STYLE),
+                  *sections, *clash_notes], style=CARD_STYLE),
         html.Div([html.Div([html.Div([html.H3("Chip value by gameweek"),
-                                      html.P("Points each chip is worth in each week; the best week is shaded. "
+                                      html.P("Points each chip is worth in each week; the best week is shaded, and a line marks "
+                                             "where the second set of chips starts. "
                                              "Triple Captain shows the pick's projection, Free Hit the gain over "
                                              "a typical week.")])], className='lab-card-head'),
                   tl, *folds], style=CARD_STYLE),
