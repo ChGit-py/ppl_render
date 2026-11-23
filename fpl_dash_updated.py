@@ -5730,6 +5730,31 @@ def _norm_person(s):
     return ' '.join(s.split())
 
 
+# Letters that don't split into a base letter plus accent, spelled the way
+# people type them (Ødegaard -> Odegaard).
+_SEARCH_LETTERS = str.maketrans({'Ø': 'O', 'ø': 'o', 'Æ': 'Ae', 'æ': 'ae', 'ß': 'ss', 'Ł': 'L', 'ł': 'l',
+                                 'Đ': 'D', 'đ': 'd', 'Þ': 'Th', 'þ': 'th', 'ı': 'i', 'Œ': 'Oe', 'œ': 'oe'})
+
+
+def _player_search_text(data, pid, label):
+    """Hidden search text for a player dropdown option, so typing a first name,
+    full name or a name without accents ("Josko Gvardiol") finds the player.
+    The visible label is unchanged."""
+    boot = data.get('bootstrap_data') or {}
+    cached = data.get('_search_names')
+    if cached and cached[0] is boot:
+        names = cached[1]
+    else:
+        names = {}
+        for e in boot.get('elements') or []:
+            first, second, web = e.get('first_name') or '', e.get('second_name') or '', e.get('web_name') or ''
+            raw = f"{first} {second} {web}"
+            plain = _norm_person(raw.translate(_SEARCH_LETTERS))
+            names[e.get('id')] = f"{raw} {plain}"
+        data['_search_names'] = (boot, names)   # rebuilt after each refresh
+    return f"{label} {names.get(int(pid), '')}"
+
+
 def _person_candidates(df_fpl):
     """{team id: [(fpl id, full name, web name, first, second)]}, normalised."""
     cands = {}
@@ -10435,10 +10460,10 @@ app.layout = html.Div([
                                 dcc.Dropdown(
                                     id='sq-must-include',
                                     options=[
-                                        {
-                                            'label': f"{r['web_name']} ({r['team_name']}, {r['position']}, £{r['price']:.1f}m)",
-                                            'value': int(r['id'])}
+                                        {'label': lb, 'value': int(r['id']),
+                                         'search': _player_search_text(DATA, r['id'], lb)}
                                         for _, r in df_active.sort_values('web_name').iterrows()
+                                        for lb in [f"{r['web_name']} ({r['team_name']}, {r['position']}, £{r['price']:.1f}m)"]
                                     ],
                                     multi=True,
                                     placeholder='Search and select players to pin...',
@@ -10450,10 +10475,10 @@ app.layout = html.Div([
                                 dcc.Dropdown(
                                     id='sq-must-exclude',
                                     options=[
-                                        {
-                                            'label': f"{r['web_name']} ({r['team_name']}, {r['position']}, £{r['price']:.1f}m)",
-                                            'value': int(r['id'])}
+                                        {'label': lb, 'value': int(r['id']),
+                                         'search': _player_search_text(DATA, r['id'], lb)}
                                         for _, r in df_active.sort_values('web_name').iterrows()
+                                        for lb in [f"{r['web_name']} ({r['team_name']}, {r['position']}, £{r['price']:.1f}m)"]
                                     ],
                                     multi=True,
                                     placeholder='Search and select players to exclude...',
@@ -13933,10 +13958,12 @@ def _tp_label(r, pts=None):
 def populate_transfer_out_options(page):
     """Everyone, by name: you know who you're selling."""
     _need_visit(page)
-    dfa = get_data().get('df_active', pd.DataFrame())
+    data = get_data()
+    dfa = data.get('df_active', pd.DataFrame())
     if dfa.empty:
         return []
-    return [{'label': _tp_label(r), 'value': int(r.id)} for r in dfa.sort_values('web_name').itertuples()]
+    return [{'label': lb, 'value': int(r.id), 'search': _player_search_text(data, r.id, lb)}
+            for r in dfa.sort_values('web_name').itertuples() for lb in [_tp_label(r)]]
 
 
 @callback(
@@ -13948,7 +13975,8 @@ def populate_transfer_in_options(page, out_id):
     """Same position as the player going out first, best 5-week projection
     at the top; everyone else after (searching still finds anyone)."""
     _need_visit(page)
-    dfa = get_data().get('df_active', pd.DataFrame())
+    data = get_data()
+    dfa = data.get('df_active', pd.DataFrame())
     if dfa.empty:
         return []
     d = dfa.assign(tp_p5=pd.to_numeric(dfa.get('proj_pts_5'), errors='coerce').fillna(0.0))
@@ -13959,7 +13987,8 @@ def populate_transfer_in_options(page, out_id):
         d = d[d['id'] != out_id]
     d = d.assign(tp_same=(d['position'] == pos) if pos else True)
     d = d.sort_values(['tp_same', 'tp_p5'], ascending=[False, False])
-    return [{'label': _tp_label(r, r.tp_p5), 'value': int(r.id)} for r in d.itertuples()]
+    return [{'label': lb, 'value': int(r.id), 'search': _player_search_text(data, r.id, lb)}
+            for r in d.itertuples() for lb in [_tp_label(r, r.tp_p5)]]
 
 
 @callback(
