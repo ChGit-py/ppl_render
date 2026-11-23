@@ -7298,6 +7298,31 @@ app.index_string = '''
                 .tp-side .big { font-size: 21px; }
             }
 
+            /* Chip Planner */
+            .cp-status { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 14px; }
+            .cp-pill { border-radius: 999px; padding: 6px 12px; font-size: 13.5px; font-weight: 600; }
+            .cp-pill.ok { background: #e6fff2; color: var(--green-ink); }
+            .cp-pill.used { background: #f1ecf4; color: var(--muted); text-decoration: line-through; }
+            .cp-pill.used b { text-decoration: none; }
+            .cp-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+            .cp-card { border: 1px solid var(--border); border-radius: 14px; padding: 14px 16px; min-width: 0; }
+            .cp-card.done { background: var(--surface-2); opacity: 0.75; }
+            .cp-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
+            .cp-name { font-size: 16px; font-weight: 800; color: var(--brand); }
+            .cp-badge { font-size: 11.5px; font-weight: 700; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+            .cp-badge.ok { background: #e6fff2; color: var(--green-ink); }
+            .cp-badge.used { background: #f1ecf4; color: var(--muted); }
+            .cp-call { font-size: 20px; font-weight: 800; letter-spacing: -0.01em; }
+            .cp-call.go { color: var(--green-ink); }
+            .cp-call.hold { color: var(--muted); }
+            .cp-value { font-size: 15px; font-weight: 700; color: var(--brand); margin-top: 2px; }
+            .cp-why { font-size: 14px; color: var(--text); margin-top: 8px; line-height: 1.45; }
+            .cp-meta { font-size: 13px; color: var(--muted); margin-top: 6px; }
+            .cp-warn { color: #7a5600; font-weight: 700; }
+            .cp-timeline td, .cp-timeline th { white-space: nowrap; }
+            .cp-timeline td:first-child { position: sticky; left: 0; background: #ffffff; }
+            @media (max-width: 700px) { .cp-grid { grid-template-columns: 1fr; } }
+
             .lab-how { margin-top: 14px; }
             .lab-how summary { font-weight: 700; color: var(--brand); font-size: 14px; list-style: none; }
             .lab-how summary::-webkit-details-marker { display: none; }
@@ -10138,56 +10163,40 @@ app.layout = html.Div([
 
             # CHIP PLANNER PAGE
             html.Div(id='page-chip-planner', style={'display': 'none'}, children=[
+                _page_heading(
+                    "Chip Planner",
+                    "Which of your chips you still have, and the best gameweek to play each one, worked out "
+                    "from your own fifteen and their fixtures."),
                 html.Div([
                     html.Div([
-                        html.H3("Chip Planner", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
-                        html.P([
-                            "Chips are 30\u201360 points a season decided in a handful of choices \u2014 and the right week ",
-                            "depends on ", html.Strong("your specific fifteen"), ", not the community consensus. ",
-                            "This projects your actual squad gameweek by gameweek (DGW/BGW aware) and scores the best ",
-                            "windows for ", html.Strong("Bench Boost"), " (bench projection), ",
-                            html.Strong("Triple Captain"), " (best single-player week), and flags ",
-                            html.Strong("Free Hit"), " candidates (blank-hit weeks)."
-                        ], style={'color': COLORS['text_dark'], 'fontSize': '15px', 'marginBottom': '16px'}),
                         html.Div([
-                            html.Label("FPL Team ID",
-                                       style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
-                            html.Div([
-                                dcc.Input(
-                                    id='cp-team-id', type='number', placeholder='e.g. 1234567',
-                                    style={'padding': '10px 14px', 'borderRadius': '6px',
-                                           'border': f'2px solid {COLORS["primary"]}',
-                                           'fontSize': '16px', 'width': '200px', 'marginRight': '12px'}
-                                ),
-                                dcc.Input(
-                                    id='cp-league-id', type='number',
-                                    placeholder='League ID (optional)',
-                                    style={'padding': '10px 14px', 'borderRadius': '6px',
-                                           'border': '1px solid #999',
-                                           'fontSize': '16px', 'width': '200px', 'marginRight': '12px'}
-                                ),
-                                dcc.RadioItems(
-                                    id='cp-horizon',
-                                    options=[{'label': ' Next 10 GWs', 'value': 10},
-                                             {'label': ' Full season roadmap', 'value': 38}],
-                                    value=8, inline=True,
-                                    inputStyle={'marginRight': '4px', 'marginLeft': '10px'},
-                                    style={'marginRight': '12px'}
-                                ),
-                                html.Button(
-                                    "Analyse Chip Windows", id='cp-load-btn', n_clicks=0,
-                                    style={'backgroundColor': COLORS['primary'], 'color': 'white',
-                                           'border': 'none', 'padding': '10px 28px', 'borderRadius': '6px',
-                                           'fontSize': '15px', 'fontWeight': '700', 'cursor': 'pointer'}
-                                ),
-                            ], style={'display': 'flex', 'alignItems': 'center', 'flexWrap': 'wrap', 'gap': '8px'}),
-                        ]),
-                        html.P("Your team ID is in the URL on the FPL Points page: fantasy.premierleague.com/entry/XXXXXXX/…",
-                               style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginTop': '10px'})
-                    ], className='page-intro'),
-
-                    dcc.Loading(html.Div(id='cp-content'), type='circle', color=COLORS['primary'])
-                ], style={'padding': '20px 0'})
+                            html.Label("FPL team ID", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                            dcc.Input(id='cp-team-id', type='number', placeholder='e.g. 1234567',
+                                      inputMode='numeric', style={'width': '100%', 'padding': '8px'}),
+                        ], className='tp-field'),
+                        html.Div([
+                            html.Label("League ID (optional)", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                            dcc.Input(id='cp-league-id', type='number', placeholder="to see rivals' chips",
+                                      inputMode='numeric', style={'width': '100%', 'padding': '8px'}),
+                        ], className='tp-field'),
+                        html.Div([
+                            html.Label("Look ahead", style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
+                            dcc.RadioItems(id='cp-horizon', className='seg', value=10,
+                                           options=[{'label': 'Next 10 GWs', 'value': 10},
+                                                    {'label': 'Rest of season', 'value': 38}]),
+                        ], className='tp-field tp-auto'),
+                        html.Div([
+                            html.Button("Plan my chips", id='cp-load-btn', n_clicks=0,
+                                        style={'backgroundColor': COLORS['primary'], 'color': 'white',
+                                               'border': 'none', 'padding': '11px 22px', 'fontSize': '15px',
+                                               'cursor': 'pointer', 'width': '100%'}),
+                        ], className='tp-field tp-auto'),
+                    ], className='tp-controls'),
+                    html.P("Your team ID is in the address of your Points page: "
+                           "fantasy.premierleague.com/entry/1234567/...", className='tp-hint',
+                           style={'fontSize': '13px', 'marginTop': '8px'}),
+                ], style=CARD_STYLE),
+                dcc.Loading(html.Div(id='cp-content'), type='circle', color=COLORS['primary']),
             ]),
 
             # DEADLINE DASHBOARD PAGE
@@ -14324,9 +14333,8 @@ clientside_callback(
 )
 def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
     if not team_id:
-        return html.Div([html.P("Enter your FPL team ID above.",
-                                style={'color': COLORS['text_light'], 'textAlign': 'center',
-                                       'padding': '30px 0'})], style=CARD_STYLE)
+        return html.Div([html.P("Enter your FPL team ID above.", className='tp-hint',
+                                style={'textAlign': 'center'})], style=CARD_STYLE)
 
     data = get_data()
     current_gw_info = data.get('current_gw')
@@ -14480,40 +14488,40 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
             'blanks': blanks, 'with_fixture': with_fixture,
         })
 
-    best_bb = max(rows, key=lambda r: r['bb_value'])
-    best_tc = max(rows, key=lambda r: r['tc_score'])
-
-    # Free Hit ranked on EXCESS over the horizon median, not raw delta.
-    # The best XI in the game beats yours by 15-25 pts in ANY week purely
-    # because it is the best XI in the game — that constant squad-quality
-    # gap is present every gameweek and swamps the structural signal, so
-    # ranking on raw delta picks a week out of noise. The median IS that
-    # baseline gap; the excess over it is what the chip actually buys.
     import statistics as _stats
+    first_gw = future_gws[0]
+
+    # --- Your chips: which are still held in the current set, and until when
+    windows = chip_windows(data.get('bootstrap_data'), first_gw)
+    try:
+        my_used = fetch_entry_chips(int(team_id)) or []
+    except Exception:
+        my_used = []
+    chip_names = {'wildcard': 'Wildcard', 'freehit': 'Free Hit', 'bboost': 'Bench Boost', '3xc': 'Triple Captain'}
+    mine = {}
+    for key in chip_names:
+        lo, hi = windows.get(key, (1, 38))
+        played = [u for u in my_used if u.get('name') == key and lo <= (u.get('event') or 0) <= hi]
+        mine[key] = {'lo': lo, 'hi': hi, 'used': played[-1]['event'] if played else None,
+                     'gws': [g for g in future_gws if lo <= g <= hi]}
+
+    # Free Hit is judged on its EXCESS over the typical week: the best XI in
+    # the game beats yours by a similar margin every week just for being the
+    # best XI, so only the excess is something the chip buys.
     _fh_baseline = _stats.median(r['fh_delta'] for r in rows)
     for _r in rows:
         _r['fh_excess'] = round(_r['fh_delta'] - _fh_baseline, 1)
-    best_fh = max(rows, key=lambda r: r['fh_excess'])
 
-    # Chip EV in points, not rankings: value of the best window vs the
-    # median window over the horizon — i.e. what perfect timing is WORTH.
-    med_bb = _stats.median(r['bb_value'] for r in rows)
-    med_tc = _stats.median(r['tc_pts'] for r in rows)
-    med_fh = _stats.median(r['fh_delta'] for r in rows)
-    bb_ev_delta = round(best_bb['bb_value'] - med_bb, 1)
-    tc_ev_delta = round(best_tc['tc_pts'] - med_tc, 1)
-    fh_ev_delta = best_fh['fh_excess']
+    def pick(key, score):
+        """Best and next-best gameweek for a chip, within its window."""
+        cand = sorted((r for r in rows if r['gw'] in mine[key]['gws']), key=lambda r: -score(r))
+        return (cand[0] if cand else None), (cand[1] if len(cand) > 1 else None), cand
 
-    # --- League chip availability, fetched BEFORE the recommendations so it
-    # can weight each one rather than being tacked on as a footnote.
-    #
-    # A chip's value to your SCORE is its point delta. Its value to your
-    # RANK depends on whether the people around you can mirror it. If a
-    # rival still holds his Free Hit he can answer yours in the same blank
-    # and you net roughly nothing; if he has already spent it, you bank the
-    # whole delta against him. So the league-relative figure is the delta
-    # scaled by the share of rivals who cannot answer — a lower bound, since
-    # a rival who CAN answer may still choose not to.
+    best_bb, next_bb, bb_rows = pick('bboost', lambda r: r['bb_value'])
+    best_tc, next_tc, tc_rows = pick('3xc', lambda r: r['tc_score'])
+    best_fh, next_fh, fh_rows = pick('freehit', lambda r: r['fh_excess'])
+    fh_worth = bool(best_fh and best_fh['fh_excess'] >= 4.0)
+
     league_chips, league_name_note, n_rivals_chips = None, '', 0
     chip_matrix_rows, my_league_rank, managers_above = [], None, []
     if league_id and team_id:
@@ -14550,310 +14558,194 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
         except Exception as _e:
             print(f"  league chip check failed: {_e}")
 
-    _CHIP_KEY = {'Wildcard': 'wildcard', 'Free Hit': 'freehit',
-                 'Bench Boost': 'bboost', 'Triple Captain': '3xc'}
 
-    def _league_note(chip_label, delta):
-        """Name the managers above you who can and cannot answer this chip."""
-        if not league_chips or chip_label not in league_chips or n_rivals_chips == 0:
-            return ""
-        spent = league_chips[chip_label]['spent']
-        key = _CHIP_KEY.get(chip_label)
+    def rivals_line(key):
+        label = chip_names[key]
+        if not league_chips or label not in league_chips or not n_rivals_chips:
+            return None
+        text = f"{league_chips[label]['spent']} of {n_rivals_chips} league rivals have used theirs"
+        if managers_above:
+            gone = sum(1 for r in managers_above if r.get(key) != 'held')
+            text += f"; {gone} of the {len(managers_above)} above you"
+        return html.Div(text + ".", className='cp-meta')
 
-        detail = ""
-        if managers_above and key:
-            blocked = [r['manager'] for r in managers_above if r.get(key) != 'held']
-            holding = [r['manager'] for r in managers_above if r.get(key) == 'held']
-            if blocked:
-                _names = ', '.join(blocked[:3]) + ('...' if len(blocked) > 3 else '')
-                detail = (f" Above you, {_names} cannot answer it "
-                          f"({len(blocked)}/{len(managers_above)} of the managers you are "
-                          f"chasing)")
-                if holding:
-                    detail += f"; {', '.join(holding[:3])} still can."
-                else:
-                    detail += " — nobody above you can mirror this."
-            elif holding:
-                detail = (f" But every manager above you ({', '.join(holding[:3])}) still "
-                          f"holds theirs and can mirror you.")
+    def when(g):
+        return "this week" if g == first_gw else f"GW{g}"
 
-        if spent == 0:
-            return (f" All {n_rivals_chips} rivals still hold this chip, so it is table "
-                    f"stakes rather than an edge." + detail)
-        frac = spent / n_rivals_chips
-        return (f" {spent} of {n_rivals_chips} rivals have already spent theirs, worth "
-                f"roughly {delta * frac:.1f} pts against the league on top of the raw "
-                f"gain." + detail)
+    def card(key, call, call_cls, value, lines, nxt=None):
+        st = mine[key]
+        if st['used']:
+            badge, bcls = f"Used in GW{st['used']}", 'used'
+        else:
+            badge, bcls = "Available", 'ok'
+        body = [html.Div([html.Span(chip_names[key], className='cp-name'),
+                          html.Span(badge, className=f'cp-badge {bcls}')], className='cp-top')]
+        if st['used']:
+            body.append(html.Div("Already played in this set.", className='cp-meta'))
+        else:
+            body.append(html.Div(call, className=f'cp-call {call_cls}'))
+            if value:
+                body.append(html.Div(value, className='cp-value'))
+            body += [html.Div(t, className='cp-why') for t in lines if t]
+            if nxt:
+                body.append(html.Div(nxt, className='cp-meta'))
+            if st['hi'] < 38 and st['hi'] >= first_gw:
+                left = st['hi'] - first_gw + 1
+                body.append(html.Div(f"Use by GW{st['hi']} ({left} gameweek{'s' if left != 1 else ''} left) "
+                                     "or it's lost.", className='cp-meta cp-warn' if left <= 4 else 'cp-meta'))
+            body.append(rivals_line(key))
+        return html.Div(body, className='cp-card' + (' done' if st['used'] else ''))
 
-    rec_lines = [
-        html.P([html.Strong("Bench Boost: "),
-                f"GW{best_bb['gw']} \u2014 worth {best_bb['bb_value']:.1f} pts there "
-                f"(bench projects {best_bb['bench']:.1f}, but ~{best_bb['autosub_pts']:.1f} "
-                f"of that would arrive via autosubs anyway). "
-                f"Timing it right is worth +{bb_ev_delta} pts vs an average window."
-                + _league_note('Bench Boost', best_bb['bb_value'])],
-               style={'color': COLORS['text_dark'], 'marginBottom': '8px'}),
-        html.P([html.Strong("Triple Captain: "),
-                f"{best_tc['tc_name']} in GW{best_tc['gw']}"
-                + (f" vs {best_tc['tc_opp']}" if best_tc.get('tc_opp') else "")
-                + f" \u2014 {best_tc['tc_pts']:.1f} projected with a "
-                + f"{best_tc.get('tc_haul', 0):.0f}% haul probability "
-                + f"(+{tc_ev_delta} vs an average week). Picks are ranked on "
-                + f"EV \u00d7 ceiling, not average alone \u2014 TC multiplies a haul, "
-                + f"not a mean."
-                + (f" Alternative: {best_tc['tc_alt']}." if best_tc.get('tc_alt') else "")
-                + _league_note('Triple Captain', best_tc['tc_pts'])],
-               style={'color': COLORS['text_dark'], 'marginBottom': '8px'}),
-    ]
-
-    # Free Hit, priced the same way as the other two: what the best XI money
-    # can buy that week beats the XI you'd otherwise field.
-    if best_fh['fh_excess'] >= 4.0:
-        _why = ("your squad is short of fixtures" if best_fh['with_fixture'] < 11
-                else "that week's fixtures suit the pool far better than your squad")
-        rec_lines.append(html.P([
-            html.Strong("Free Hit: "),
-            f"GW{best_fh['gw']} \u2014 {best_fh['fh_excess']:+.1f} pts better than a "
-            f"typical week, because {_why}. Best available XI projects "
-            f"{best_fh['fh_best']:.1f} vs your {best_fh['xi']:.1f} on a "
-            f"\u00a3{fh_budget:.1f}m budget; {best_fh['with_fixture']}/15 of your squad "
-            f"have a fixture. You already own {best_fh['fh_owned']}/11 of that XI."
-            + _league_note('Free Hit', best_fh['fh_excess'])],
-            style={'color': COLORS['text_dark'], 'marginBottom': '8px'}))
+    cards = []
+    # Bench Boost
+    if best_bb:
+        cards.append(card('bboost', f"Best: {when(best_bb['gw'])}", 'go',
+                          f"+{best_bb['bb_value']:.1f} pts",
+                          [f"Your bench projects {best_bb['bench']:.1f}; about {best_bb['autosub_pts']:.1f} of that "
+                           "would come in through auto-subs anyway."],
+                          f"Next best: GW{next_bb['gw']} (+{next_bb['bb_value']:.1f})" if next_bb else None))
     else:
-        rec_lines.append(html.P([
-            html.Strong("Free Hit: "),
-            f"hold \u2014 no week in the next {len(rows)} stands out. The best "
-            f"(GW{best_fh['gw']}) is only {best_fh['fh_excess']:+.1f} pts better than "
-            f"average, which is noise, not opportunity. Blanks and doubles form "
-            f"from cup progression and rarely appear before late February."
-            + _league_note('Free Hit', best_fh['fh_excess'])],
-            style={'color': COLORS['text_dark'], 'marginBottom': '8px'}))
-    rec_lines.append(html.P(
-        f"Reading the Free Hit numbers: the best XI in the game beats yours by "
-        f"~{_fh_baseline:.0f} pts in ANY week simply because it is the best XI in "
-        f"the game. That baseline is not a reason to play the chip \u2014 only the "
-        f"excess above it is.",
-        style={'color': COLORS['text_light'], 'fontSize': '13px',
-               'marginBottom': '8px'}))
+        cards.append(card('bboost', "No week in range", 'hold', None, []))
+    # Triple Captain
+    if best_tc:
+        opp = f" v {best_tc['tc_opp']}" if best_tc.get('tc_opp') else ""
+        cards.append(card('3xc', f"Best: {when(best_tc['gw'])}", 'go',
+                          f"{best_tc['tc_name']}{opp}",
+                          [f"Projects {best_tc['tc_pts']:.1f}, with a {best_tc.get('tc_haul', 0):.0f}% chance of a big "
+                           "haul. Picked for ceiling as well as average, because the chip multiplies a haul."],
+                          (f"Next best: {next_tc['tc_name']} in GW{next_tc['gw']} ({next_tc['tc_pts']:.1f})"
+                           if next_tc else None)))
+    else:
+        cards.append(card('3xc', "No week in range", 'hold', None, []))
+    # Free Hit
+    if best_fh and fh_worth:
+        why = ("your squad is short of fixtures" if best_fh['with_fixture'] < 11
+               else "that week's fixtures suit other players far better than yours")
+        cards.append(card('freehit', f"Best: {when(best_fh['gw'])}", 'go',
+                          f"+{best_fh['fh_excess']:.1f} pts vs a typical week",
+                          [f"Because {why}. You'd already own {best_fh['fh_owned']} of the 11."],
+                          None))
+    else:
+        cards.append(card('freehit', "Hold", 'hold', None,
+                          ["No week in range stands out. Free Hits pay off in blank and double gameweeks, "
+                           "which usually appear later in the season."]))
+    # Wildcard
+    wc = mine['wildcard']
+    cards.append(html.Div([
+        html.Div([html.Span('Wildcard', className='cp-name'),
+                  html.Span(f"Used in GW{wc['used']}" if wc['used'] else "Available",
+                            className='cp-badge ' + ('used' if wc['used'] else 'ok'))], className='cp-top'),
+        html.Div("Not modelled here. Worth it when your squad needs four or more transfers; the Transfer "
+                 "Planner shows how many moves are worth making.", className='cp-why'),
+        html.Div(f"Use by GW{wc['hi']} or it's lost." if (not wc['used'] and wc['hi'] < 38) else None,
+                 className='cp-meta'),
+    ], className='cp-card' + (' done' if wc['used'] else '')))
 
-    # One chip per gameweek — flag collisions rather than recommending both.
-    _clash = {}
-    for _label, _r in (('Bench Boost', best_bb), ('Triple Captain', best_tc),
-                       ('Free Hit', best_fh)):
-        _clash.setdefault(_r['gw'], []).append(_label)
-    for _g, _names in _clash.items():
-        if len(_names) > 1:
-            rec_lines.append(html.P(
-                f"Note: {' and '.join(_names)} both point at GW{_g}, and FPL allows "
-                f"only one chip per gameweek. Play the higher-value one there and "
-                f"take the next-best window for the other.",
-                style={'color': COLORS['warning_text'], 'fontSize': '13px',
-                       'fontWeight': '600', 'marginBottom': '8px'}))
+    status = html.Div([
+        html.Span([chip_names[k], html.B(" used" if mine[k]['used'] else " held")],
+                  className='cp-pill ' + ('used' if mine[k]['used'] else 'ok'))
+        for k in ('bboost', '3xc', 'freehit', 'wildcard')
+    ], className='cp-status')
 
-    if missing:
-        rec_lines.append(html.P(f"Note: {missing} squad player(s) had no projection data "
-                                f"(usually zero minutes so far) and count as 0.",
-                                style={'color': COLORS['text_light'], 'fontSize': '13px'}))
+    clash = {}
+    for key, r, ok in (('Bench Boost', best_bb, not mine['bboost']['used']),
+                       ('Triple Captain', best_tc, not mine['3xc']['used']),
+                       ('Free Hit', best_fh if fh_worth else None, not mine['freehit']['used'])):
+        if r and ok:
+            clash.setdefault(r['gw'], []).append(key)
+    clash_notes = [html.P(f"{' and '.join(v)} both point at GW{g}. Only one chip can be played a week, so play "
+                          "the bigger one there and the other in its next-best week.", className='tp-hint',
+                          style={'color': COLORS['warning_text'], 'fontWeight': '600'})
+                   for g, v in clash.items() if len(v) > 1]
 
-    # Rival chip-window collision: can anyone in your league answer your
-    # planned window? A BB into a week the leader has already spent his on
-    # is worth double its raw points in league terms.
-    # League chip standings, as a summary line beneath the recommendations.
-    # The old version counted every chip a rival had EVER played, which is
-    # wrong under two chip sets: a Free Hit spent in GW5 does not stop anyone
-    # playing another one after the split. summarise_league_chips scopes the
-    # count to the window that actually applies.
-    if league_chips and n_rivals_chips:
-        _parts = ', '.join(
-            f"{r['spent']}/{n_rivals_chips} spent {label}"
-            for label, r in league_chips.items())
-        _rank_note = (f" You are {my_league_rank}"
-                      + {1: 'st', 2: 'nd', 3: 'rd'}.get(my_league_rank % 100 if my_league_rank else 0, 'th')
-                      + f", chasing {len(managers_above)}."
-                      if my_league_rank else "")
-        rec_lines.append(html.P([
-            html.Strong(f"League chip standings"
-                        + (f" ({league_name_note})" if league_name_note else "") + ": "),
-            _parts + "." + _rank_note
-            + " Windows come from the game's own chip calendar, so a chip played in the "
-              "first half does not count against the second."],
-            style={'color': COLORS['text_dark'], 'marginBottom': '8px',
-                   'backgroundColor': '#f0e6f5', 'padding': '10px', 'borderRadius': '6px'}))
+    # One timeline: each chip's value in each gameweek
+    def cell(key, r, val, txt, best):
+        if mine[key]['used'] or r['gw'] not in mine[key]['gws']:
+            return html.Td('-', className='num', style={'color': '#b9adc0'})
+        return html.Td(txt, className='num' + (' win' if best and r['gw'] == best['gw'] else ''))
+    tl = html.Div(html.Table([
+        html.Thead(html.Tr([html.Th('')] + [html.Th(f"GW{r['gw']}") for r in rows])),
+        html.Tbody([
+            html.Tr([html.Td('Bench Boost' + (' (used)' if mine['bboost']['used'] else ''), className='num')] +
+                    [cell('bboost', r, r['bb_value'], f"{r['bb_value']:.1f}", best_bb) for r in rows]),
+            html.Tr([html.Td('Triple Captain' + (' (used)' if mine['3xc']['used'] else ''), className='num')] +
+                    [cell('3xc', r, r['tc_pts'], [f"{r['tc_pts']:.1f}", html.Span(r['tc_name'], className='fx')],
+                          best_tc) for r in rows]),
+            html.Tr([html.Td('Free Hit' + (' (used)' if mine['freehit']['used'] else ''), className='num')] +
+                    [cell('freehit', r, r['fh_excess'],
+                          '0.0' if abs(r['fh_excess']) < 0.05 else f"{r['fh_excess']:+.1f}",
+                          best_fh if fh_worth else None)
+                     for r in rows]),
+        ]),
+    ], className='tp-weeks cp-timeline'), className='chart-scroll')
 
-    # All three chips on ONE points axis, so the comparison is direct.
-    _x = [f"GW{r['gw']}" for r in rows]
-    bench_fig = go.Figure()
-    bench_fig.add_trace(go.Bar(
-        name='Bench Boost', x=_x, y=[r['bb_value'] for r in rows],
-        marker_color=[COLORS['success'] if r['gw'] == best_bb['gw'] else COLORS['info']
-                      for r in rows],
-        text=[f"{r['bb_value']:.1f}" for r in rows], textposition='outside',
-        hovertemplate=('%{x}<br>Bench Boost gain: %{y:.1f} pts<br>'
-                       'Raw bench %{customdata[0]:.1f} less ~%{customdata[1]:.1f} '
-                       'autosubs<extra></extra>'),
-        customdata=[[r['bench'], r['autosub_pts']] for r in rows],
-    ))
-    bench_fig.add_trace(go.Scatter(
-        name='Free Hit', x=_x, y=[r['fh_delta'] for r in rows],
-        mode='lines+markers', line=dict(color=COLORS['accent'], width=2),
-        hovertemplate=('%{x}<br>Free Hit gain: %{y:.1f} pts<br>'
-                       'Best available XI %{customdata:.1f}<extra></extra>'),
-        customdata=[r['fh_best'] for r in rows],
-    ))
-    bench_fig.update_layout(template='plotly_white', height=340,
-                            yaxis_title='Chip gain (points)',
-                            legend=dict(orientation='h', yanchor='bottom', y=1.02,
-                                        xanchor='center', x=0.5),
-                            margin=dict(t=50, b=30, l=50, r=20),
-                            font=dict(family=FONT_FAMILY))
-
-    table_rows = [{
-        'gw': f"GW{r['gw']}", 'xi': r['xi'], 'bench': r['bb_value'],
-        'fh_delta': r['fh_delta'], 'fh_excess': r['fh_excess'],
-        'squad_total': r['squad_total'],
-        'tc': f"{r['tc_name']} ({r['tc_pts']:.1f} pts, {r.get('tc_haul', 0):.0f}% haul"
-              + (f" vs {r['tc_opp']}" if r.get('tc_opp') else "") + ")",
-        'blanks': r['blanks'],
-    } for r in rows]
-
-    return html.Div([
-        html.Div([
-            html.H3("Chip Windows \u2014 Recommendations", style={'color': COLORS['primary'], 'marginBottom': '12px'}),
-            *rec_lines
-        ], style={**CARD_STYLE, 'backgroundColor': '#f8f9fa'}),
-
-        html.Div([
-            html.H3("Who Can Answer You", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-            html.P(["Named, in league order. ", html.Strong("Green = still held"),
-                    " means that manager can mirror your chip in the same week; a gameweek "
-                    "number means they have already spent it and cannot. Rows above yours are "
-                    "the ones that decide whether you close the gap \u2014 a chip that only "
-                    "beats the people below you protects a position, it does not win one."],
-                   style={'color': COLORS['text_light'], 'marginBottom': '12px'}),
-            dash_table.DataTable(
-                data=chip_matrix_rows,
-                columns=[
-                    {'name': 'Rank', 'id': 'rank'},
-                    {'name': 'Manager', 'id': 'manager'},
-                    {'name': 'Wildcard', 'id': 'wildcard'},
-                    {'name': 'Free Hit', 'id': 'freehit'},
-                    {'name': 'Bench Boost', 'id': 'bboost'},
-                    {'name': 'Triple Captain', 'id': '3xc'},
-                ],
-                sort_action='native', page_size=25,
-                style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
-                style_data=TABLE_STYLE_DATA,
-                style_data_conditional=[
-                    {'if': {'filter_query': '{manager} contains "(you)"'},
-                     'backgroundColor': '#fff8e1', 'fontWeight': '700'},
-                ] + [
-                    {'if': {'filter_query': '{%s} = held' % c, 'column_id': c},
-                     'backgroundColor': '#e6fff2', 'fontWeight': '600'}
-                    for c in ('wildcard', 'freehit', 'bboost', '3xc')
-                ] + [
-                    {'if': {'filter_query': '{%s} != held' % c, 'column_id': c},
-                     'color': COLORS['text_light']}
-                    for c in ('wildcard', 'freehit', 'bboost', '3xc')
-                ]),
-        ], style=CARD_STYLE) if chip_matrix_rows else html.Div(),
-
-        html.Div([
-            html.H3(f"Free Hit XI \u2014 GW{best_fh['gw']}", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-            html.P([f"Formation {best_fh['fh_formation']}. XI costs "
-                    f"\u00a3{best_fh['fh_spend']:.1f}m of your \u00a3{fh_budget:.1f}m "
-                    f"(squad value + bank), with only \u00a3{best_fh['fh_reserve']:.1f}m held "
-                    f"back for the four cheapest bench fillers in the game \u2014 on a Free "
-                    f"Hit the bench is filler, so every remaining penny goes into the XI. ",
-                    html.Strong(f"You already own {best_fh['fh_owned']} of these 11"),
-                    " \u2014 if that number is high, transfers may get you most of the way "
-                    "without spending the chip."],
-                   style={'color': COLORS['text_light'], 'marginBottom': '12px'}),
+    folds = []
+    if best_fh and best_fh.get('fh_detail'):
+        folds.append(html.Details([
+            html.Summary(f"Free Hit team for GW{best_fh['gw']}"),
+            html.P(f"Formation {best_fh['fh_formation']}. The XI costs £{best_fh['fh_spend']:.1f}m of your "
+                   f"£{fh_budget:.1f}m (squad value plus bank). Shaded players are ones you already own.",
+                   className='tp-hint'),
             dash_table.DataTable(
                 data=best_fh['fh_detail'],
-                columns=[
-                    {'name': 'Player', 'id': 'name'},
-                    {'name': 'Pos', 'id': 'position'},
-                    {'name': 'Team', 'id': 'team'},
-                    {'name': 'Price', 'id': 'price', 'type': 'numeric', 'format': {'specifier': '.1f'}},
-                    {'name': 'Proj', 'id': 'proj', 'type': 'numeric', 'format': {'specifier': '.1f'}},
-                    {'name': 'Owned', 'id': 'owned'},
-                ],
-                style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
-                style_data=TABLE_STYLE_DATA,
-                style_data_conditional=[
-                    {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
-                    {'if': {'filter_query': '{owned} = yes'}, 'backgroundColor': '#e6fff2'},
-                ]),
-        ], style=CARD_STYLE) if best_fh.get('fh_detail') else html.Div(),
-
-        html.Div([
-            html.H4("Formation Comparison", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-            html.P([
-                (f"{best_fh['fh_formation']} wins by {best_fh['fh_margin']:.1f} pts over the "
-                 f"next-best shape. " if best_fh.get('fh_margin') is not None else ""),
-                html.Strong(
-                    "That margin is noise \u2014 take whichever shape you prefer."
-                    if best_fh.get('fh_margin', 0) < 1.5 else
-                    "That is a real read on this week's fixtures, not a coin flip."),
-                " The optimiser scores every legal shape and reports the highest total, but it "
-                "maximises EXPECTED points and knows nothing about your league position. Five at "
-                "the back is a tight, reliable distribution; three at the back with three forwards "
-                "has a fatter tail both ways. If you are chasing, the bigger ceiling is usually "
-                "worth a point or two of mean."],
-                style={'color': COLORS['text_light'], 'marginBottom': '12px'}),
+                columns=[{'name': 'Player', 'id': 'name'}, {'name': 'Pos', 'id': 'position'},
+                         {'name': 'Team', 'id': 'team'},
+                         {'name': '£m', 'id': 'price', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                         {'name': 'Proj', 'id': 'proj', 'type': 'numeric', 'format': {'specifier': '.1f'}}],
+                style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER, style_data=TABLE_STYLE_DATA,
+                style_data_conditional=[{'if': {'filter_query': '{owned} = yes'}, 'backgroundColor': '#e6fff2'}]),
+        ], className='lab-how'))
+    if chip_matrix_rows:
+        folds.append(html.Details([
+            html.Summary("Rivals' chips" + (f" ({league_name_note})" if league_name_note else "")),
+            html.P("Held means that manager can still answer your chip in the same week. Managers above you "
+                   "are the ones that matter for catching up.", className='tp-hint'),
             dash_table.DataTable(
-                data=best_fh.get('fh_formation_table', []),
-                columns=[
-                    {'name': 'Formation', 'id': 'formation'},
-                    {'name': 'Proj', 'id': 'total', 'type': 'numeric', 'format': {'specifier': '.1f'}},
-                    {'name': 'XI cost', 'id': 'xi_spend', 'type': 'numeric', 'format': {'specifier': '.1f'}},
-                    {'name': 'Bench held back', 'id': 'bench_reserve', 'type': 'numeric',
-                     'format': {'specifier': '.1f'}},
-                ],
-                style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
-                style_data=TABLE_STYLE_DATA,
-                style_data_conditional=[
-                    {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
-                    {'if': {'row_index': 0}, 'backgroundColor': '#e6fff2', 'fontWeight': '600'},
-                ]),
-        ], style=CARD_STYLE) if best_fh.get('fh_formation_table') else html.Div(),
+                data=chip_matrix_rows,
+                columns=[{'name': 'Rank', 'id': 'rank'}, {'name': 'Manager', 'id': 'manager'},
+                         {'name': 'Wildcard', 'id': 'wildcard'}, {'name': 'Free Hit', 'id': 'freehit'},
+                         {'name': 'Bench Boost', 'id': 'bboost'}, {'name': 'Triple Captain', 'id': '3xc'}],
+                sort_action='native', page_size=25,
+                style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER, style_data=TABLE_STYLE_DATA,
+                style_data_conditional=[{'if': {'filter_query': '{manager} contains "(you)"'},
+                                         'backgroundColor': '#fff8e1', 'fontWeight': '700'}] + [
+                    {'if': {'filter_query': '{%s} = held' % c, 'column_id': c}, 'backgroundColor': '#e6fff2'}
+                    for c in ('wildcard', 'freehit', 'bboost', '3xc')]),
+        ], className='lab-how'))
+    folds.append(html.Details([
+        html.Summary("Your squad week by week"),
+        dash_table.DataTable(
+            data=[{'gw': f"GW{r['gw']}", 'xi': r['xi'], 'bench': r['bench'], 'blanks': r['blanks']} for r in rows],
+            columns=[{'name': 'GW', 'id': 'gw'},
+                     {'name': 'Best XI', 'id': 'xi', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                     {'name': 'Bench', 'id': 'bench', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                     {'name': 'Players without a fixture', 'id': 'blanks', 'type': 'numeric'}],
+            style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER, style_data=TABLE_STYLE_DATA,
+            style_data_conditional=[{'if': {'filter_query': '{blanks} > 0', 'column_id': 'blanks'},
+                                     'backgroundColor': '#fde8ef', 'fontWeight': '600'}]),
+    ], className='lab-how'))
+    folds.append(html.Details([
+        html.Summary("How it's worked out"),
+        html.P("Everything assumes you keep your current fifteen. Doubles count both matches and blanks count "
+               "nothing. Bench Boost is worth your bench's points minus what auto-subs would bring in anyway. "
+               "Triple Captain picks the player with the best mix of projected points and chance of a big haul. "
+               "Free Hit compares the best team your budget can buy that week with the XI you'd field, and only "
+               f"counts what's above the usual gap (about {_fh_baseline:.0f} points, which the best possible "
+               "team has over yours in any week). Re-run after transfers or when doubles and blanks are announced."
+               + (f" {missing} squad player(s) have no projection yet and count as 0." if missing else "")),
+    ], className='lab-how'))
 
-        html.Div([
-            html.H3("Chip Gain by Gameweek", style={'color': COLORS['primary'], 'marginBottom': '8px'}),
-            html.P("Both chips priced in points so they compare directly. Bars are Bench Boost's gain "
-                   "net of autosubs; the line is Free Hit's gain over the XI you'd otherwise field. "
-                   "Re-run after wildcards or DGW announcements.",
-                   style={'color': COLORS['text_light']}),
-            dcc.Graph(figure=bench_fig, config={'displayModeBar': False})
-        ], style=CARD_STYLE),
-
-        html.Div([
-            html.H4("Gameweek-by-Gameweek Squad Projection", style={'color': COLORS['primary'], 'marginBottom': '16px'}),
-            dash_table.DataTable(
-                data=table_rows,
-                columns=[
-                    {'name': 'GW', 'id': 'gw'},
-                    {'name': 'Best XI Proj', 'id': 'xi', 'type': 'numeric'},
-                    {'name': 'BB gain', 'id': 'bench', 'type': 'numeric'},
-                    {'name': 'FH gain', 'id': 'fh_delta', 'type': 'numeric'},
-                    {'name': 'FH vs typical', 'id': 'fh_excess', 'type': 'numeric',
-                     'format': {'specifier': '+.1f'}},
-                    {'name': 'Full Squad Proj', 'id': 'squad_total', 'type': 'numeric'},
-                    {'name': 'Best TC Pick', 'id': 'tc'},
-                    {'name': 'Players Blanking', 'id': 'blanks', 'type': 'numeric'},
-                ],
-                style_cell=TABLE_STYLE_CELL, style_header=TABLE_STYLE_HEADER,
-                style_data=TABLE_STYLE_DATA,
-                style_data_conditional=[
-                    {'if': {'row_index': 'odd'}, 'backgroundColor': '#fafafa'},
-                    {'if': {'filter_query': '{blanks} > 0', 'column_id': 'blanks'},
-                     'backgroundColor': '#fde8ef', 'fontWeight': '600'},
-                ]
-            ),
-            html.P("Projections assume your current fifteen held over the horizon; DGWs count both fixtures, blanks count zero.",
-                   style={'color': COLORS['text_light'], 'fontSize': '13px', 'marginTop': '12px'})
-        ], style=CARD_STYLE),
+    span = f"GW{rows[0]['gw']} to GW{rows[-1]['gw']}"
+    return html.Div([
+        html.Div([html.Div([html.Div([html.H3("Your chips"),
+                                      html.P(f"Recommendations for {span}, only for chips you still hold.")])],
+                           className='lab-card-head'),
+                  status, html.Div(cards, className='cp-grid'), *clash_notes], style=CARD_STYLE),
+        html.Div([html.Div([html.Div([html.H3("Chip value by gameweek"),
+                                      html.P("Points each chip is worth in each week; the best week is shaded. "
+                                             "Triple Captain shows the pick's projection, Free Hit the gain over "
+                                             "a typical week.")])], className='lab-card-head'),
+                  tl, *folds], style=CARD_STYLE),
     ])
 
 
