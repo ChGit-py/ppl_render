@@ -5427,14 +5427,67 @@ def _shots_conn():
 _US_SESSION = None
 
 
+def _us_page_vars(html_text):
+    """Data Understat embeds in its pages as  var x = JSON.parse('...');
+    (hex-escaped). Returns {name: parsed value}."""
+    out = {}
+    for name, raw in re.findall(r"var\s+(\w+)\s*=\s*JSON\.parse\('(.*?)'\)", html_text, flags=re.S):
+        try:
+            txt = raw.encode('utf-8').decode('unicode_escape')
+            try:   # \xC3\x98-style escapes are UTF-8 bytes: put them back together
+                txt = txt.encode('latin-1').decode('utf-8')
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                pass
+            out[name] = json.loads(txt)
+        except Exception:
+            pass
+    return out
+
+
+def _us_describe(r):
+    """Short description of a non-JSON reply, for the sync notice."""
+    t = r.text or ''
+    m = re.search(r'<title>(.*?)</title>', t, flags=re.S | re.I)
+    what = f'page "{m.group(1).strip()[:60]}"' if m else (repr(t[:60]) if t.strip() else 'empty reply')
+    return f"HTTP {r.status_code}, {r.headers.get('Content-Type', '?').split(';')[0]}, {what}"
+
+
 def _understat_get(path):
+    """JSON from Understat's data endpoints. If Understat answers with a web
+    page instead (it has changed how it serves data before), read the same
+    data from the page itself; failing that, raise with what came back."""
     global _US_SESSION
+    parts = path.split('/')
+    page = (f"league/{parts[1]}/{parts[2]}" if parts[0] == 'getLeagueData' and len(parts) >= 3 else
+            f"match/{parts[1]}" if parts[0] == 'getMatchData' and len(parts) >= 2 else '')
     if _US_SESSION is None:
         _US_SESSION = requests.Session()
         _US_SESSION.headers.update(UNDERSTAT_HEADERS)
-    r = _US_SESSION.get(UNDERSTAT_BASE + path, timeout=20)
-    r.raise_for_status()
-    return r.json()   # ValueError if Understat served HTML instead
+        try:   # an ordinary page visit first, for any cookies the data calls need
+            _US_SESSION.get(UNDERSTAT_BASE + (page or ''), timeout=20,
+                            headers={'X-Requested-With': None, 'Accept': 'text/html,*/*;q=0.8'})
+        except Exception:
+            pass
+    r = _US_SESSION.get(UNDERSTAT_BASE + path, timeout=20,
+                        headers={'Referer': UNDERSTAT_BASE + page} if page else None)
+    if r.ok:
+        try:
+            return r.json()
+        except ValueError:
+            pass
+    first = _us_describe(r)
+    if page:
+        try:
+            p = _US_SESSION.get(UNDERSTAT_BASE + page, timeout=20,
+                                headers={'X-Requested-With': None, 'Accept': 'text/html,*/*;q=0.8'})
+            v = _us_page_vars(p.text) if p.ok else {}
+            if parts[0] == 'getLeagueData' and v.get('datesData'):
+                return {'dates': v['datesData'], 'teams': v.get('teamsData'), 'players': v.get('playersData')}
+            if parts[0] == 'getMatchData' and v.get('shotsData'):
+                return {'shots': v['shotsData'], 'rosters': v.get('rostersData') or {}}
+        except Exception:
+            pass
+    raise ValueError(first)
 
 
 def parse_understat_match(match_id, payload, season, meta):
@@ -5487,7 +5540,7 @@ def sync_understat_shots():
                 dates = league.get('dates') or []
             except Exception as e:
                 dates = []
-                error = f"Understat unreachable ({type(e).__name__})"
+                error = f"Understat unreachable ({type(e).__name__}{': ' + str(e)[:110] if isinstance(e, ValueError) else ''})"
                 print(f"  Shot data: {error}: {e}")
             finished = [d for d in dates if str(d.get('isResult')).lower() in ('true', '1')]
             have = {row[0] for row in conn.execute(
