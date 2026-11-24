@@ -117,7 +117,7 @@ The saves go to a separate **private GitHub repository** (see [Configuration](#c
 | [Understat](https://understat.com/) | Shot-level xG with locations and situations (Shot Profiles, Matchups, Chance Quality) | No |
 | [football-data.co.uk](https://www.football-data.co.uk/) | Pre-match bookmaker odds for team ratings (this season and last) | No |
 | [The Odds API](https://the-odds-api.com/) | Live match odds and anytime-scorer odds | Yes, `ODDS_API_KEY` (optional) |
-| GitHub API | Saving and reading Model Lab projections | Yes, `FPL_LOG_GITHUB_TOKEN` (optional) |
+| GitHub API | Saving and reading Model Lab projections, and the backup of downloaded shot data | Yes, `FPL_LOG_GITHUB_TOKEN` (optional) |
 
 Without the optional keys the app still works: projections use the model's own goal chances, and Model Lab saves stay on the server, which Render clears on every deploy.
 
@@ -163,7 +163,7 @@ Set these as environment variables (in Render: **Service → Environment**).
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `FPL_LOG_GITHUB_TOKEN` | – | GitHub fine-grained token with **Contents: Read and write** on the log repository. Enables permanent Model Lab tracking. |
+| `FPL_LOG_GITHUB_TOKEN` | – | GitHub fine-grained token with **Contents: Read and write** on the log repository. Enables permanent Model Lab tracking, and keeps downloaded Understat shot data (`shots/<season>.json.gz`) through restarts and deploys. |
 | `FPL_LOG_REPO` | – | The log repository, e.g. `ChGit-py/fpl-model-log`. Use a separate repo so saves don't trigger deploys. |
 | `FPL_LOG_BRANCH` | repo default | Branch to save to. |
 | `ODDS_API_KEY` | – | The Odds API key for live match and anytime-scorer odds. |

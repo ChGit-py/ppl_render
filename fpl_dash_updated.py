@@ -5424,6 +5424,79 @@ def _shots_conn():
     return conn
 
 
+# --- Backup to GitHub -------------------------------------------------------
+# Render resets the server's disk on every deploy and every restart (including
+# the ones caused by running out of memory), which would throw away every match
+# downloaded since. When the projections log repo is set up, the season's shot
+# data is also kept there as one compressed file and read back on start-up, so
+# only genuinely new matches are fetched from Understat.
+SHOTS_BACKUP_DIR = 'shots'
+_SHOT_TABLES = ('us_matches', 'us_shots', 'us_rosters')
+
+
+def _shots_backup_path(season):
+    return f"{SHOTS_BACKUP_DIR}/{int(season)}.json.gz"
+
+
+def save_shots_github(conn, season):
+    """Write the season's matches, shots and rosters to the log repo."""
+    import base64
+    import gzip
+    data = {'season': int(season), 'saved_at': datetime.utcnow().isoformat(timespec='seconds')}
+    for t in _SHOT_TABLES:
+        cur = conn.execute(f"SELECT * FROM {t} WHERE season = ?", (int(season),))
+        data[t] = {'cols': [c[0] for c in cur.description], 'rows': cur.fetchall()}
+    blob = gzip.compress(json.dumps(data, separators=(',', ':')).encode('utf-8'))
+    path = _shots_backup_path(season)
+    n = len(data['us_matches']['rows'])
+    body = {'message': f"Shot data {season}: {n} matches",
+            'content': base64.b64encode(blob).decode('ascii')}
+    if MODEL_LOG_BRANCH:
+        body['branch'] = MODEL_LOG_BRANCH
+    for attempt in range(2):
+        r = requests.get(_gh_url(path), headers=_gh_headers(), params=_gh_params(), timeout=20)
+        if r.status_code == 200:
+            body['sha'] = r.json().get('sha')
+        elif r.status_code != 404:
+            r.raise_for_status()
+        r = requests.put(_gh_url(path), headers=_gh_headers(), json=body, timeout=60)
+        if r.status_code in (200, 201):
+            return n
+        if r.status_code != 409 or attempt:
+            r.raise_for_status()
+
+
+def restore_shots_github(conn, season):
+    """Add any matches from the backup that this server doesn't have yet.
+    Returns how many matches were added (0 if there's no backup)."""
+    import gzip
+    r = requests.get(_gh_url(_shots_backup_path(season)), params=_gh_params(), timeout=60,
+                     headers={**_gh_headers(), 'Accept': 'application/vnd.github.raw'})
+    if r.status_code == 404:
+        return 0
+    r.raise_for_status()
+    data = json.loads(gzip.decompress(r.content).decode('utf-8'))
+    have = {row[0] for row in conn.execute("SELECT match_id FROM us_matches WHERE season = ?",
+                                           (int(season),))}
+    m = data.get('us_matches') or {}
+    mid_at = m.get('cols', []).index('match_id') if 'match_id' in m.get('cols', []) else None
+    new_ids = {row[mid_at] for row in m.get('rows', []) if mid_at is not None and row[mid_at] not in have}
+    if not new_ids:
+        return 0
+    with conn:
+        for t in ('us_shots', 'us_rosters', 'us_matches'):   # matches last: marks it complete
+            block = data.get(t) or {}
+            cols = block.get('cols') or []
+            if 'match_id' not in cols:
+                continue
+            i = cols.index('match_id')
+            rows = [row for row in block.get('rows') or [] if row[i] in new_ids]
+            if rows:
+                conn.executemany(f"INSERT OR REPLACE INTO {t} ({', '.join(cols)}) "
+                                 f"VALUES ({', '.join('?' * len(cols))})", rows)
+    return len(new_ids)
+
+
 _US_SESSION = None
 
 
@@ -5531,10 +5604,20 @@ def sync_understat_shots():
             return
         DATA['shots_syncing'] = True
     error, fetched, pending = None, 0, 0
+    backup = DATA.get('shots_backup')
     try:
         season = _season_start_year()
         conn = _shots_conn()
         try:
+            if model_log_enabled() and not DATA.get('shots_restored'):
+                try:
+                    added = restore_shots_github(conn, season)
+                    DATA['shots_restored'] = True
+                    backup = f"restored {added} match(es) from backup" if added else backup
+                    print(f"  Shot data: {added} match(es) restored from GitHub backup")
+                except Exception as e:
+                    backup = f"backup read failed ({type(e).__name__})"
+                    print(f"  Shot data: backup read failed: {e}")
             try:
                 league = _understat_get(f'getLeagueData/EPL/{season}')
                 dates = league.get('dates') or []
@@ -5579,6 +5662,15 @@ def sync_understat_shots():
                 fetched += 1
                 time.sleep(SHOTS_REQUEST_GAP)
 
+            if fetched and model_log_enabled():
+                try:
+                    n = save_shots_github(conn, season)
+                    backup = f"backed up ({n} matches)"
+                    print(f"  Shot data: backed up {n} matches to GitHub")
+                except Exception as e:
+                    backup = f"backup save failed ({type(e).__name__})"
+                    print(f"  Shot data: backup save failed: {e}")
+
             shots = pd.read_sql_query("SELECT * FROM us_shots WHERE season = ?", conn,
                                       params=(season,))
             rosters = pd.read_sql_query("SELECT * FROM us_rosters WHERE season = ?", conn,
@@ -5599,6 +5691,7 @@ def sync_understat_shots():
                 'synced_at': time.time(), 'matches': int(len(matches)),
                 'pending': pending, 'error': error, 'fetched': fetched,
             }
+            DATA['shots_backup'] = backup
         if intel is not None:
             print(f"  Shot data: {len(matches)} matches, {len(shots)} shots stored "
                   f"({fetched} new). Orientation: {intel['orientation_note']}")
@@ -15540,6 +15633,14 @@ def _shot_intel_status(data):
         tone = 'warn'
     if str(intel.get('orientation_note', '')).startswith('default'):
         extra.append(" Left/right orientation not yet verified from the data (needs a few more matches).")
+    bk = DATA.get('shots_backup')
+    if bk:
+        extra.append(f" GitHub backup: {bk}.")
+    elif model_log_enabled():
+        extra.append(" GitHub backup: on (saves after new matches download).")
+    else:
+        extra.append(" Not backed up: set FPL_LOG_GITHUB_TOKEN and FPL_LOG_REPO to keep downloaded "
+                     "matches through restarts.")
     if st.get('error'):
         extra.append(f" Last sync issue: {st['error']}.")
         tone = 'warn'
