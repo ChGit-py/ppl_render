@@ -5520,6 +5520,11 @@ def _us_page_vars(html_text):
 def _us_describe(r):
     """Short description of a non-JSON reply, for the sync notice."""
     t = r.text or ''
+    # Understat's outage page: a title of just "Understat.com" and this line.
+    # It is served to every request, data endpoints included, so say so
+    # plainly rather than as "HTTP 200, text/html".
+    if re.search(r'come\s+back\s+soon', t, flags=re.I):
+        return 'Understat is showing its "We will come back soon" page (down, or not serving this server)'
     m = re.search(r'<title>(.*?)</title>', t, flags=re.S | re.I)
     what = f'page "{m.group(1).strip()[:60]}"' if m else (repr(t[:60]) if t.strip() else 'empty reply')
     return f"HTTP {r.status_code}, {r.headers.get('Content-Type', '?').split(';')[0]}, {what}"
@@ -5623,8 +5628,10 @@ def sync_understat_shots():
                 dates = league.get('dates') or []
             except Exception as e:
                 dates = []
-                error = f"Understat unreachable ({type(e).__name__}{': ' + str(e)[:110] if isinstance(e, ValueError) else ''})"
-                print(f"  Shot data: {error}: {e}")
+                error = (str(e)[:140] if isinstance(e, ValueError) and 'come back soon' in str(e)
+                         else f"Understat unreachable ({type(e).__name__}"
+                              f"{': ' + str(e)[:110] if isinstance(e, ValueError) else ''})")
+                print(f"  Shot data: {error}" + ('' if str(e)[:110] in error else f": {e}"))
             finished = [d for d in dates if str(d.get('isResult')).lower() in ('true', '1')]
             have = {row[0] for row in conn.execute(
                 "SELECT match_id FROM us_matches WHERE season = ?", (season,))}
@@ -9582,7 +9589,7 @@ app.layout = html.Div([
                                     # debounce: only applied on Enter / leaving the box, so
                                     # the number isn't rewritten while you're typing it
                                     dcc.Input(id='diff-max-own-input', type='number', value=15,
-                                              step='any', debounce=True, inputMode='decimal',
+                                              step='any', debounce=True,
                                               style={'width': '70px', 'marginLeft': '12px', 'padding': '8px',
                                                      'borderRadius': '4px', 'border': '1px solid #ccc'})
                                 ], style={'display': 'flex', 'alignItems': 'center'})
@@ -9727,7 +9734,7 @@ app.layout = html.Div([
                             # No min/max on the box itself: the browser would reject
                             # half-typed values. The callback clamps to 0-100.
                             dcc.Input(id='pj-own', type='number', value=None, placeholder='Any (0 to 100)',
-                                      debounce=True, inputMode='decimal',
+                                      debounce=True,
                                       style={'width': '100%', 'padding': '8px', 'fontSize': '14px'}),
                         ], style={'flex': '1', 'minWidth': '120px', 'padding': '0 10px'}),
                         html.Div([
@@ -10559,7 +10566,7 @@ app.layout = html.Div([
                                            style={'fontWeight': '600', 'marginBottom': '6px', 'display': 'block'}),
                                 dcc.Input(
                                     id='sq-budget', type='number', min=75, max=110, step=0.1, value=100,
-                                    inputMode='decimal', placeholder='e.g. 100.0',
+                                    placeholder='e.g. 100.0',
                                     style={'width': '100%', 'padding': '8px', 'borderRadius': '4px',
                                            'border': '1px solid #ccc', 'fontSize': '15px',
                                            'boxSizing': 'border-box'}
