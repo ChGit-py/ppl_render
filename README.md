@@ -85,7 +85,7 @@ Every player gets a projected points figure for the next gameweek and the next f
 
 1. **Minutes** – how likely he is to start and how long he plays, from recent matches and FPL's availability flags.
 2. **Goals and assists** – from his xG and xA, adjusted for the opponent.
-3. **Fixtures** – team attack and defence ratings fitted from xG and, where available, bookmaker prices.
+3. **Fixtures** – team attack and defence ratings fitted from this season's and last season's xG (both FPL's own) and, where available, bookmaker prices.
 4. **Clean sheets and goals conceded** – from the expected goals of each fixture.
 5. **Defensive contributions, saves and bonus.**
 6. **Upside** – a simulation that gives each player's chance of a big score (used by Ceiling and the haul columns).
@@ -114,7 +114,8 @@ The saves go to a separate **private GitHub repository** (see [Configuration](#c
 | Source | Used for | Key needed? |
 |---|---|---|
 | [FPL API](https://fantasy.premierleague.com/api/bootstrap-static/) | Players, prices, fixtures, ownership, live points, squads, leagues, standings | No |
-| [Understat](https://understat.com/) | Shot-level xG with locations and situations (Shot Profiles, Matchups, Chance Quality) | No |
+| [vaastav/Fantasy-Premier-League](https://github.com/vaastav/Fantasy-Premier-League) | Last season's FPL expected goals for every match, used in the team ratings | No |
+| [Understat](https://understat.com/) | Shot-level xG with locations and situations (Shot Profiles, Matchups, Chance Quality); last season's team xG if the FPL data above isn't available | No |
 | [football-data.co.uk](https://www.football-data.co.uk/) | Pre-match bookmaker odds for team ratings (this season and last) | No |
 | [The Odds API](https://the-odds-api.com/) | Live match odds and anytime-scorer odds | Yes, `ODDS_API_KEY` (optional) |
 | GitHub API | Saving and reading Model Lab projections, and the backup of downloaded shot data | Yes, `FPL_LOG_GITHUB_TOKEN` (optional) |

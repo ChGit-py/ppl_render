@@ -2282,8 +2282,8 @@ def _custom_fdr_from_ratings(fixtures, teams_df, anchor_gw, num_gameweeks, ratin
 # scoring rates span about 2x) and can ship as all zeros, which leaves the
 # team models running on a few weeks of form. These ratings are fitted from
 # expected goals instead: this season's match-by-match xG (the keeper-built
-# ledger, actual goals where a match is missing) plus last season's Understat
-# xG, with recent matches counting more.
+# ledger, actual goals where a match is missing) plus last season's FPL xG
+# (Understat's if that isn't available), with recent matches counting more.
 #
 #   log(expected goals) = season level + home advantage (home side only)
 #                         + attacker's attack + defender's defence
@@ -2360,7 +2360,7 @@ def _us_team_matches_conn():
     return conn
 
 
-def load_last_season_team_xg():
+def _load_last_season_understat():
     """Last season's Premier League results with team xG, from Understat.
     Downloaded once (one request), stored in the snapshot DB and read from
     there afterwards — a finished season never changes. Fails soft to []."""
@@ -2394,6 +2394,89 @@ def load_last_season_team_xg():
         return []
     return [{'kickoff': r[0], 'h_team': r[1], 'a_team': r[2], 'h_short': r[3], 'a_short': r[4],
              'h_xg': r[5], 'a_xg': r[6], 'h_goals': r[7], 'a_goals': r[8]} for r in rows]
+
+
+# Last season's team xG from FPL itself. FPL's match-by-match expected goals
+# (Opta's) for every player in every match of a finished season are kept in
+# vaastav's public Fantasy-Premier-League dataset on GitHub. Summed per team
+# per match they give the same kind of number this season's keeper-built
+# ledger uses, so both seasons are on one xG model. Understat is the fallback.
+VAASTAV_BASE = os.environ.get(
+    'FPL_LAST_SEASON_DATA_URL',
+    'https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data')
+
+
+def _load_last_season_fpl_xg():
+    """Last season's results with team xG from FPL's own per-player data.
+    One download, stored in the snapshot DB and read from there afterwards.
+    Raises if the season isn't there or looks incomplete."""
+    season = _season_start_year() - 1
+    folder = f"{VAASTAV_BASE}/{season}-{(season + 1) % 100:02d}"
+    conn = _us_team_matches_conn()
+    try:
+        conn.execute("""CREATE TABLE IF NOT EXISTS fpl_team_matches (
+            season INTEGER, match_id INTEGER, kickoff TEXT,
+            h_team TEXT, a_team TEXT, h_short TEXT, a_short TEXT,
+            h_xg REAL, a_xg REAL, h_goals INTEGER, a_goals INTEGER,
+            PRIMARY KEY (season, match_id))""")
+        rows = conn.execute("SELECT kickoff, h_team, a_team, h_short, a_short, h_xg, a_xg, "
+                            "h_goals, a_goals FROM fpl_team_matches WHERE season = ?",
+                            (season,)).fetchall()
+        if len(rows) >= 300:
+            return rows
+        r = requests.get(f"{folder}/gws/merged_gw.csv", timeout=60)
+        r.raise_for_status()
+        p = pd.read_csv(io.StringIO(r.text),
+                        usecols=['team', 'fixture', 'was_home', 'expected_goals', 'kickoff_time',
+                                 'team_h_score', 'team_a_score'])
+        del r
+        short = {}
+        try:
+            t = requests.get(f"{folder}/teams.csv", timeout=20)
+            t.raise_for_status()
+            tdf = pd.read_csv(io.StringIO(t.text), usecols=['name', 'short_name'])
+            short = dict(zip(tdf['name'], tdf['short_name']))
+        except Exception:
+            pass   # names alone match FPL's; short names are only a second try
+        p['was_home'] = p['was_home'].astype(str).str.lower().isin(('true', '1'))
+        p['expected_goals'] = pd.to_numeric(p['expected_goals'], errors='coerce').fillna(0.0)
+        sides = p.groupby(['fixture', 'was_home']).agg(
+            team=('team', 'first'), xg=('expected_goals', 'sum'), kickoff=('kickoff_time', 'first'),
+            hg=('team_h_score', 'first'), ag=('team_a_score', 'first'))
+        new = []
+        for fid in sides.index.get_level_values(0).unique():
+            if (fid, True) not in sides.index or (fid, False) not in sides.index:
+                continue
+            h, a = sides.loc[(fid, True)], sides.loc[(fid, False)]
+            if pd.isna(h['hg']) or pd.isna(h['ag']):
+                continue
+            new.append((season, int(fid), str(h['kickoff']), h['team'], a['team'],
+                        short.get(h['team']), short.get(a['team']),
+                        round(float(h['xg']), 3), round(float(a['xg']), 3),
+                        int(h['hg']), int(h['ag'])))
+        if len(new) < 300:
+            raise ValueError(f"only {len(new)} matches in {folder}")
+        with conn:
+            conn.executemany("INSERT OR REPLACE INTO fpl_team_matches VALUES "
+                             "(?,?,?,?,?,?,?,?,?,?,?)", new)
+        print(f"  Team ratings: stored {len(new)} matches of FPL xG for {season}/{season + 1}")
+        return [n[2:] for n in new]
+    finally:
+        conn.close()
+
+
+def load_last_season_team_xg():
+    """Last season's Premier League results with team xG: FPL's own xG first
+    (same model as this season's), Understat if that isn't available. Fails
+    soft to []."""
+    try:
+        rows = _load_last_season_fpl_xg()
+        return [{'kickoff': r[0], 'h_team': r[1], 'a_team': r[2], 'h_short': r[3], 'a_short': r[4],
+                 'h_xg': r[5], 'a_xg': r[6], 'h_goals': r[7], 'a_goals': r[8]} for r in rows]
+    except Exception as e:
+        print(f"  Team ratings: last season's FPL xG unavailable ({type(e).__name__}: {e}) "
+              f"— trying Understat")
+    return _load_last_season_understat()
 
 
 def _map_understat_teams(rows, teams_df):
@@ -2589,7 +2672,7 @@ def rating_lambda(ratings, attacker, defender, attacker_venue):
 
 
 def compute_team_ratings(fixtures_data, teams_df, xg_ledger=None):
-    """Live ratings: this season's ledger + last season's Understat xG +
+    """Live ratings: this season's ledger + last season's xG +
     stored bookmaker prices. Returns (ratings or None, records) — records
     are kept for the backtest."""
     last = load_last_season_team_xg()
