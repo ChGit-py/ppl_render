@@ -14513,13 +14513,6 @@ clientside_callback(
 # CHIP PLANNER CALLBACK
 # =============================================================================
 
-@callback(
-    Output('cp-content', 'children'),
-    Input('cp-load-btn', 'n_clicks'),
-    [State('cp-team-id', 'value'), State('cp-horizon', 'value'),
-     State('cp-league-id', 'value')],
-    prevent_initial_call=True
-)
 def double_blank_weeks(fixtures_data, teams_df, from_gw):
     """Doubles (a team plays twice) and blanks (a team doesn't play) from
     GW from_gw to the end, straight from FPL's fixture list, so they show as
@@ -14598,6 +14591,13 @@ def bench_boost_moves(players, pool, bank, max_moves=2):
     return moves, cur
 
 
+@callback(
+    Output('cp-content', 'children'),
+    Input('cp-load-btn', 'n_clicks'),
+    [State('cp-team-id', 'value'), State('cp-horizon', 'value'),
+     State('cp-league-id', 'value')],
+    prevent_initial_call=True
+)
 def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
     if not team_id:
         return html.Div([html.P("Enter your FPL team ID above.", className='tp-hint',
