@@ -7492,6 +7492,16 @@ app.index_string = '''
             .cp-set { font-size: 15px; font-weight: 700; margin: 18px 0 2px; padding-top: 14px;
                       border-top: 1px solid var(--border); color: var(--brand); }
             .cp-timeline .cp-split { border-left: 2px solid var(--brand); }
+            .cp-alerts { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; margin: 4px 0 8px; }
+            .cp-alerts.has { border-color: #f0c36d; background: #fffaf0; }
+            .cp-alert-head, .cp-boost-head { font-weight: 700; font-size: 14px; margin-bottom: 4px; }
+            .cp-alerts ul, .cp-boost ul { margin: 4px 0 0; padding-left: 18px; font-size: 14px; line-height: 1.5; }
+            .cp-alerts li.blank b { color: var(--muted); }
+            .cp-alerts li.note { color: var(--muted); list-style: none; margin-left: -18px; margin-top: 4px; }
+            .cp-boost { margin-top: 10px; padding: 10px 12px; border-radius: 10px; background: #f3fbf6;
+                        border: 1px solid #cdebd8; }
+            .cp-boost-sum { font-weight: 600; font-size: 14px; margin-top: 6px; }
+            .cp-dgw { color: #8a5a00; font-weight: 600; }
             .cp-set.first { margin-top: 4px; padding-top: 0; border-top: none; }
             .cp-warn { color: #7a5600; font-weight: 700; }
             .cp-timeline td, .cp-timeline th { white-space: nowrap; }
@@ -14510,6 +14520,84 @@ clientside_callback(
      State('cp-league-id', 'value')],
     prevent_initial_call=True
 )
+def double_blank_weeks(fixtures_data, teams_df, from_gw):
+    """Doubles (a team plays twice) and blanks (a team doesn't play) from
+    GW from_gw to the end, straight from FPL's fixture list, so they show as
+    soon as FPL schedules them. Returns ({gw: {'double': [team ids],
+    'blank': [team ids]}}, number of matches not yet given a gameweek)."""
+    teams = [int(t) for t in teams_df['id']] if teams_df is not None and not teams_df.empty else []
+    counts, unscheduled = {}, 0
+    for f in fixtures_data or []:
+        ev = f.get('event')
+        if ev is None:
+            if not f.get('finished'):
+                unscheduled += 1
+            continue
+        if int(ev) < from_gw:
+            continue
+        c = counts.setdefault(int(ev), {})
+        for t in (f.get('team_h'), f.get('team_a')):
+            if t is not None:
+                c[int(t)] = c.get(int(t), 0) + 1
+    out = {}
+    for gw in sorted(counts):
+        c = counts[gw]
+        dbl = [t for t in teams if c.get(t, 0) >= 2]
+        blk = [t for t in teams if c.get(t, 0) == 0]
+        if dbl or blk:
+            out[gw] = {'double': dbl, 'blank': blk}
+    return out, unscheduled
+
+
+def bench_boost_moves(players, pool, bank, max_moves=2):
+    """Up to `max_moves` swaps of this week's bench players for better
+    same-position players you can afford (current prices, 3-per-club rule),
+    each picked greedily for the biggest gain in that week. `players` are
+    the squad's dicts for the week (id, name, position, proj, team_id, price,
+    exp_mins); `pool` has id, web_name, position, team, price, proj_gw.
+    Returns (moves, new player list)."""
+    cur = [dict(p) for p in players]
+    _, bench = pick_best_xi(cur)
+    swappable = {p['id'] for p in bench}
+    clubs = {}
+    for p in cur:
+        clubs[p['team_id']] = clubs.get(p['team_id'], 0) + 1
+    moves = []
+    for _ in range(max_moves):
+        owned = {p['id'] for p in cur}
+        best = None
+        for p in cur:
+            if p['id'] not in swappable:
+                continue
+            c = pool[(pool['position'] == p['position']) & (pool['price'] <= p['price'] + bank + 1e-9)
+                     & ~pool['id'].isin(owned)]
+            if c.empty:
+                continue
+            ok = c['team'].map(lambda t: clubs.get(t, 0) < 3 or t == p['team_id'])
+            c = c[ok]
+            if c.empty:
+                continue
+            top = c.loc[c['proj_gw'].idxmax()]
+            gain = float(top['proj_gw']) - p['proj']
+            if gain >= 0.5 and (best is None or gain > best[0]):
+                best = (gain, p, top)
+        if best is None:
+            break
+        gain, p, top = best
+        new = {'id': int(top['id']), 'name': top['web_name'], 'position': p['position'],
+               'proj': float(top['proj_gw']), 'team_id': int(top['team']), 'price': float(top['price']),
+               'exp_mins': float(top.get('exp_mins_next', np.nan)) if 'exp_mins_next' in top else np.nan,
+               'haul': 0.0, 'tc_score': 0.0}
+        bank -= new['price'] - p['price']
+        clubs[p['team_id']] -= 1
+        clubs[new['team_id']] = clubs.get(new['team_id'], 0) + 1
+        cur = [new if q['id'] == p['id'] else q for q in cur]
+        swappable.discard(p['id'])
+        moves.append({'out': p['name'], 'out_id': p['id'], 'in': new['name'], 'in_id': new['id'],
+                      'in_team': new['team_id'], 'in_price': new['price'], 'gain': round(gain, 1)})
+    return moves, cur
+
+
 def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
     if not team_id:
         return html.Div([html.P("Enter your FPL team ID above.", className='tp-hint',
@@ -14605,7 +14693,8 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
             lam_g = max(lam_n * env * max(info.get('count', 0), 0), 0.0)
             p_haul = float(1 - np.exp(-lam_g) * (1 + lam_g)) if lam_g > 0 else 0.0
             tc_score = proj * (0.6 + 0.8 * p_haul)
-            players.append({'name': r.web_name, 'position': r.position, 'proj': proj,
+            players.append({'id': int(r.id), 'price': float(getattr(r, 'price', 0) or 0),
+                            'name': r.web_name, 'position': r.position, 'proj': proj,
                             'team_id': r.team, 'haul': round(p_haul * 100, 1),
                             'tc_score': round(tc_score, 2),
                             'exp_mins': (float(getattr(r, 'exp_mins_next', np.nan))
@@ -14664,7 +14753,7 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
             'tc_alt': (f"{runner['name']} ({runner['haul']:.0f}%)" if runner else ''),
             'tc_opp': _binfo.get('opp', ''),
             'tc_env': _binfo.get('fix_mult', 1.0),
-            'blanks': blanks, 'with_fixture': with_fixture,
+            'blanks': blanks, 'with_fixture': with_fixture, 'players': players,
         })
 
     import statistics as _stats
@@ -14770,7 +14859,118 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
     def when(g):
         return "this week" if g == first_gw else f"GW{g}"
 
-    def card(st, key, call, call_cls, value, lines, nxt=None, rivals=False, back_later=False):
+    # --- "Boost your Bench Boost": swaps for the bench in the best BB week
+    bank = float(_eh.get('bank', 0) or 0) / 10.0
+    p5 = (dict(zip(dfa['id'], pd.to_numeric(dfa['proj_pts_5'], errors='coerce')))
+          if 'proj_pts_5' in dfa.columns else {})
+    _pool_cache = {}
+
+    def boosted(row):
+        g = row['gw']
+        if g not in _pool_cache:
+            _pool_cache[g] = fh_pool.assign(proj_gw=project_pool_for_gw(fh_pool, gw_lookup.get(g, {}),
+                                                                        avail_col_for_week(g - gw_num)))
+        moves, after = bench_boost_moves(row['players'], _pool_cache[g], bank)
+        if not moves:
+            return None
+        xi2, bench2 = pick_best_xi(after)
+        for m in moves:
+            m['out_p5'], m['in_p5'] = p5.get(m['out_id']), p5.get(m['in_id'])
+        return {'gw': g, 'moves': moves, 'bb_before': row['bb_value'],
+                'bb_after': round(max(sum(q['proj'] for q in bench2) - estimate_autosub_points(xi2, bench2), 0.0), 1),
+                'total_before': row['squad_total'], 'total_after': round(sum(q['proj'] for q in after), 1)}
+
+    # Try the swaps in every week the Bench Boost can still be played: with
+    # transfers, a different week (often a double) can come out on top.
+    for p in plans:
+        p['boost'] = None
+        bb = p['st'].get('bboost')
+        if not p['bb'][0] or fh_pool.empty or not bb or bb['used']:
+            continue
+        found = []
+        for row in rows:
+            if row['gw'] in bb['gws']:
+                try:
+                    b = boosted(row)
+                except Exception as e:
+                    print(f"  Chip planner: bench boost moves failed for GW{row['gw']}: {e}")
+                    b = None
+                if b:
+                    found.append(b)
+        if found:
+            # Stay with the usual best week unless another clearly wins: far-off
+            # weeks are rough, so a point or so between them is noise.
+            top = max(found, key=lambda b: b['bb_after'])
+            home = next((b for b in found if b['gw'] == p['bb'][0]['gw']), None)
+            p['boost'] = home if home and top['bb_after'] - home['bb_after'] < 1.5 else top
+
+    # --- Double and blank gameweeks for the rest of the season
+    dbw, unscheduled = double_blank_weeks(fixtures_data, teams_df, first_gw)
+    squad_team = {int(r.id): int(r.team) for r in squad.itertuples()}
+    my_teams = list(squad_team.values())
+    tname = lambda ids: ', '.join(_team_short.get(t, str(t)) for t in ids)
+
+    def boost_block(p):
+        b = p.get('boost')
+        if not b:
+            return None
+        items = [html.Li([html.B(m['out']), " \u2192 ", html.B(m['in']),
+                          f" ({_team_short.get(m['in_team'], '')}, \u00a3{m['in_price']:.1f}m): "
+                          f"+{m['gain']:.1f} in GW{b['gw']}" +
+                          (f"; next 5 GWs from now {m['in_p5']:.1f} vs {m['out_p5']:.1f}"
+                           if m.get('in_p5') is not None and m.get('out_p5') is not None
+                           and not (pd.isna(m['in_p5']) or pd.isna(m['out_p5'])) else '')])
+                 for m in b['moves']]
+        return html.Div([
+            html.Div("Boost it", className='cp-boost-head'),
+            html.Ul(items),
+            html.Div(f"With these, GW{b['gw']} becomes your best Bench Boost week." if b['gw'] != p['bb'][0]['gw']
+                     else None, className='cp-why cp-dgw'),
+            html.Div(f"Bench Boost in GW{b['gw']}: +{b['bb_before']:.1f} \u2192 +{b['bb_after']:.1f}; all 15 project "
+                     f"{b['total_before']:.1f} \u2192 {b['total_after']:.1f} that week.", className='cp-boost-sum'),
+            html.Div("Make these with free transfers in the weeks before. Uses current prices; your "
+                     "selling price can be a little lower.", className='cp-meta'),
+        ], className='cp-boost')
+
+    def dgw_hint(st, key, best):
+        if key not in st:
+            return None
+        lo, hi = st[key]['lo'], st[key]['hi']
+        d = [g for g in sorted(dbw) if lo <= g <= hi and dbw[g]['double'] and (not best or g != best['gw'])]
+        if key == 'bboost':   # weeks in range are already tried with transfers above
+            d = [g for g in d if g not in future_gws]
+        if not d:
+            return None
+        g = d[0]
+        return (f"GW{g} is a double gameweek ({tname(dbw[g]['double'])} play twice). With players from those "
+                f"teams it may beat {('GW' + str(best['gw'])) if best else 'any week here'}." +
+                ("" if g in future_gws else " Choose \"Rest of season\" above to include it."))
+
+    alert_items = []
+    for g in sorted(dbw):
+        v = dbw[g]
+        far = "" if g in future_gws else " (beyond your look-ahead)"
+        if v['double']:
+            n = sum(1 for t in my_teams if t in v['double'])
+            alert_items.append(html.Li([html.B(f"GW{g} double: "), f"{tname(v['double'])} play twice. "
+                                        f"{n} of your players {'is' if n == 1 else 'are'} in those teams.{far}"]))
+        if v['blank'] and len(v['blank']) < len(_team_short or v['blank']):
+            n = sum(1 for t in my_teams if t in v['blank'])
+            alert_items.append(html.Li([html.B(f"GW{g} blank: "), f"{tname(v['blank'])} don't play. "
+                                        f"{n} of your players {'is' if n == 1 else 'are'} affected.{far}"],
+                                       className='blank'))
+    if unscheduled:
+        alert_items.append(html.Li(f"{unscheduled} postponed match{'es' if unscheduled != 1 else ''} not yet "
+                                   "given a gameweek. Rescheduled matches usually create double gameweeks "
+                                   "later on.", className='note'))
+    alerts = html.Div([
+        html.Div("Double and blank gameweeks", className='cp-alert-head'),
+        html.Ul(alert_items) if alert_items else
+        html.P("None scheduled yet. FPL adds them when matches are moved, usually from around January; "
+               "this list updates on its own when they appear.", className='cp-meta'),
+    ], className='cp-alerts' + (' has' if any(dbw[g]['double'] or dbw[g]['blank'] for g in dbw) else ''))
+
+    def card(st, key, call, call_cls, value, lines, nxt=None, rivals=False, back_later=False, extra=None):
         c = st[key]
         badge, bcls = (f"Used in GW{c['used']}", 'used') if c['used'] else ("Available", 'ok')
         body = [html.Div([html.Span(chip_names[key], className='cp-name'),
@@ -14785,6 +14985,7 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
             body += [html.Div(t, className='cp-why') for t in lines if t]
             if nxt:
                 body.append(html.Div(nxt, className='cp-meta'))
+            body += [x for x in (extra or []) if x]
             if c['hi'] < 38 and c['hi'] >= first_gw:
                 left = c['hi'] - first_gw + 1
                 body.append(html.Div(f"Use by GW{c['hi']} ({left} gameweek{'s' if left != 1 else ''} left) "
@@ -14806,7 +15007,9 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
                              (f"; about {best['autosub_pts']:.1f} of that would come in through auto-subs anyway."
                               if best['autosub_pts'] >= 0.05 else ".")] if best else [],
                             f"Next best: GW{nxt['gw']} (+{nxt['bb_value']:.1f})" if nxt else None,
-                            rivals=first, back_later=back))
+                            rivals=first, back_later=back,
+                            extra=[html.Div(dgw_hint(st, 'bboost', best), className='cp-why cp-dgw')
+                                   if dgw_hint(st, 'bboost', best) else None, boost_block(p)]))
         if '3xc' in st:
             best, nxt = p['tc']
             opp = f" v {best['tc_opp']}" if best and best.get('tc_opp') else ""
@@ -14816,7 +15019,9 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
                              "big haul. Picked for ceiling as well as average, because the chip multiplies a "
                              "haul."] if best else [],
                             (f"Next best: {nxt['tc_name']} in GW{nxt['gw']} ({nxt['tc_pts']:.1f})" if nxt else None),
-                            rivals=first, back_later=back))
+                            rivals=first, back_later=back,
+                            extra=[html.Div(dgw_hint(st, '3xc', best), className='cp-why cp-dgw')
+                                   if dgw_hint(st, '3xc', best) else None]))
         if 'freehit' in st:
             best, _ = p['fh']
             if best and p['fh_worth']:
@@ -14972,7 +15177,7 @@ def analyse_chip_windows(n_clicks, team_id, horizon, league_id):
                                              (" FPL gives a fresh set partway through the season, so each set is "
                                               "planned on its own." if len(plans) > 1 else ""))])],
                            className='lab-card-head'),
-                  *sections, *clash_notes], style=CARD_STYLE),
+                  alerts, *sections, *clash_notes], style=CARD_STYLE),
         html.Div([html.Div([html.Div([html.H3("Chip value by gameweek"),
                                       html.P("Points each chip is worth in each week; the best week is shaded, and a line marks "
                                              "where the second set of chips starts. "
